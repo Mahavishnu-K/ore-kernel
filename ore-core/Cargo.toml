@@ -1,0 +1,11 @@
+[package]
+name = "ore-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ore-common = { path = "../ore-common" }
+tokio = { version = "1", features = ["full"] } # Async Runtime
+tracing = "0.1" # Standard Logging
+thiserror = "1.0" # Library Error Handling
+anyhow = "1.0"
