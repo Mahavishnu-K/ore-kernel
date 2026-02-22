@@ -1,9 +1,19 @@
-# ORE: The Operating System for Local Intelligence
+<h1 align="center">ORE: The Operating System for Local Intelligence</h1>
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![License](https://img.shields.io/badge/license-MIT)]()
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)]()
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)]()
+<p align="center">
+  <a href="#">
+    <img src="https://img.shields.io/badge/build-passing-brightgreen" alt="Build Status">
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
+  </a>
+  <a href="#">
+    <img src="https://img.shields.io/badge/rust-1.75%2B-orange" alt="Rust Version">
+  </a>
+  <a href="#">
+    <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey" alt="Platform">
+  </a>
+</p>
 
 > **"Building AI apps today is like building software in the 1980s before Operating Systems existed. ORE is the POSIX standard for the AI era."**
 
