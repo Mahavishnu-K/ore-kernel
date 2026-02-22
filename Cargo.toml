@@ -4,7 +4,7 @@ members = [
     "ore-common",
     "ore-core",
     "ore-server",
-    "ore-cli"      # <-- ADD THIS
+    "ore-cli"
 ]
 
 # Optimize release builds for speed and small file size!

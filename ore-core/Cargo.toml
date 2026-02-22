@@ -9,3 +9,6 @@ tokio = { version = "1", features = ["full"] } # Async Runtime
 tracing = "0.1" # Standard Logging
 thiserror = "1.0" # Library Error Handling
 anyhow = "1.0"
+regex = "1.12.3"
+toml = "1.0.3"
+serde = { version = "1.0.228", features = ["derive"] }

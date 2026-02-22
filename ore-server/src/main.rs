@@ -6,6 +6,8 @@ use axum::{
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use serde::{Deserialize, Serialize};
+use ore_core::firewall::ContextFirewall;
+use tokio::sync::Semaphore;
 
 // -------------------------------------------------------------
 // THE KERNEL STATE
@@ -13,6 +15,7 @@ use serde::{Deserialize, Serialize};
 struct KernelState {
     ollama_url: String,
     model_name: String,
+    gpu_lock: Arc<Semaphore>,
 }
 
 #[tokio::main]
@@ -20,9 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== ORE SYSTEM KERNEL BOOTING (OLLAMA DRIVER) ===");
 
     // Configuration
-    let shared_state = Arc::new(KernelState { 
-        ollama_url: "http://127.0.0.1:11434".to_string(), // Default Ollama port
-        model_name: "llama3.2:1b".to_string(),               // The model we will use
+    let shared_state = Arc::new(KernelState {
+        ollama_url: "http://127.0.0.1:11434".to_string(),
+        model_name: "llama3.2:1b".to_string(),
+        gpu_lock: Arc::new(Semaphore::new(1)), // 1 concurrent GPU job
     });
 
     let app = Router::new()
@@ -73,22 +77,34 @@ async fn ask_ai(
     println!("-> Incoming App Request: {}", clean_prompt);
     
     // =========================================================
-    // 1. ORE SECURITY LAYER (The Firewall)
-    // This is the magic of ORE. We intercept malicious prompts.
+    // 1. ORE ENTERPRISE FIREWALL
     // =========================================================
-    let lower_prompt = clean_prompt.to_lowercase();
-    if lower_prompt.contains("password") || lower_prompt.contains("delete system") {
-        println!("-> [BLOCKED] Security Threat Detected. Dropping request.");
-        return "ORE KERNEL ALERT: Request blocked by Firewall. Access Denied.".to_string();
-    }
+    // We simulate that the request is coming from the "openclaw" app.
+    let secured_prompt = match ContextFirewall::secure_request("openclaw", &clean_prompt) {
+        Ok(safe_text) => {
+            println!("-> Security Check Passed.");
+            if safe_text != clean_prompt {
+                println!("-> [NOTICE] PII Redacted from prompt.");
+            }
+            safe_text
+        },
+        Err(e) => {
+            println!("-> [BLOCKED] {}", e);
+            return format!("ORE KERNEL ALERT: {}", e);
+        }
+    };
 
-    println!("-> Security Check Passed. Routing to Ollama Driver...");
+    println!("-> Waiting for GPU availability...");
 
-    // 2. Prepare the Request for Ollama
+    // 2. THE SCHEDULER (GPU Lock)
+    let _permit = state.gpu_lock.acquire().await.unwrap();
+    println!("-> GPU Lock Acquired! Routing to Ollama Driver...");
+
+    // 3. Prepare the Request for Ollama using the SECURED prompt
     let client = reqwest::Client::new();
     let request_body = OllamaRequest {
         model: state.model_name.clone(),
-        prompt: clean_prompt,
+        prompt: secured_prompt, // <-- Send the scrubbed prompt!
         stream: false,
     };
 

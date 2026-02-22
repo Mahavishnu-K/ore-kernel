@@ -3,6 +3,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use thiserror::Error; // Fixed: :: instead of :
 
+pub mod firewall;
+
 #[derive(Error, Debug)]
 pub enum OreError {
     #[error("Model not found: {0}")]
