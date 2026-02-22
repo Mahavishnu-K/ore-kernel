@@ -1,7 +1,12 @@
 [package]
-name = "ore-cli"
-version = "0.1.0"
+name = "ore-kernel"
+version = "0.0.1"
 edition = "2024"
+description = "The CLI tool for the ORE AI Kernel."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Mahavishnu-K/ore-kernel"
+keywords = ["ai", "kernel", "llm", "local-ai", "cli"] 
+categories = ["command-line-utilities", "science"]
 
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }

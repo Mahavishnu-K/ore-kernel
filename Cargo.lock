@@ -1067,16 +1067,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ore-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "colored",
- "reqwest 0.13.2",
- "tokio",
-]
-
-[[package]]
 name = "ore-common"
 version = "0.1.0"
 dependencies = [
@@ -1096,6 +1086,16 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "ore-kernel"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "colored",
+ "reqwest 0.13.2",
+ "tokio",
 ]
 
 [[package]]
