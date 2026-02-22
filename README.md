@@ -167,11 +167,10 @@ Please read `CONTRIBUTING.md` for details on our code of conduct and the process
 
 ## 📄 License
 
-Licensed under either of:
+Licensed under:
 
 - MIT license ([LICENSE-MIT](http://opensource.org/licenses/MIT))
 
-at your option.
 
 Copyright © 2026 Mahavishnu-K.  
 Built with 🦀 in Rust.
