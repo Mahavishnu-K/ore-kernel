@@ -7,7 +7,15 @@ members = [
     "ore-cli"
 ]
 
-# Optimize release builds for speed and small file size!
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Mahavishnu-K"]
+license = "MIT"
+repository = "https://github.com/Mahavishnu-K/ore-kernel"
+description = "The Operating System for Local Intelligence. ⚙️"
+
+# Optimize release builds for speed
 [profile.release]
 opt-level = 3
 lto = true
