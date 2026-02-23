@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 use ore_core::firewall::ContextFirewall;
 use tokio::sync::Semaphore;
 
-// -------------------------------------------------------------
-// THE KERNEL STATE
-// -------------------------------------------------------------
+// kernel state shared across handlers
 struct KernelState {
     ollama_url: String,
     model_name: String,
@@ -48,9 +46,7 @@ async fn health_check() -> &'static str {
     "ORE Kernel is ALIVE. Connected to Ollama Backend."
 }
 
-// -------------------------------------------------------------
-// OLLAMA REQUEST/RESPONSE STRUCTURES
-// -------------------------------------------------------------
+// ollama requests/responses structs
 #[derive(Serialize)]
 struct OllamaRequest {
     model: String,
@@ -64,9 +60,7 @@ struct OllamaResponse {
     done: bool,
 }
 
-// -------------------------------------------------------------
-// INFERENCE ENGINE (The Proxy & Firewall)
-// -------------------------------------------------------------
+// inference engine (The Proxy & Firewall)
 async fn ask_ai(
     State(state): State<Arc<KernelState>>,
     Path(prompt): Path<String>,
@@ -76,10 +70,6 @@ async fn ask_ai(
     println!("\n========================================");
     println!("-> Incoming App Request: {}", clean_prompt);
     
-    // =========================================================
-    // 1. ORE ENTERPRISE FIREWALL
-    // =========================================================
-    // We simulate that the request is coming from the "openclaw" app.
     let secured_prompt = match ContextFirewall::secure_request("openclaw", &clean_prompt) {
         Ok(safe_text) => {
             println!("-> Security Check Passed.");
@@ -96,26 +86,23 @@ async fn ask_ai(
 
     println!("-> Waiting for GPU availability...");
 
-    // 2. THE SCHEDULER (GPU Lock)
+    // the GPU scheduler
     let _permit = state.gpu_lock.acquire().await.unwrap();
     println!("-> GPU Lock Acquired! Routing to Ollama Driver...");
 
-    // 3. Prepare the Request for Ollama using the SECURED prompt
     let client = reqwest::Client::new();
     let request_body = OllamaRequest {
         model: state.model_name.clone(),
-        prompt: secured_prompt, // <-- Send the scrubbed prompt!
+        prompt: secured_prompt, 
         stream: false,
     };
 
-    // 3. Send to Ollama
     let res = client
         .post(format!("{}/api/generate", state.ollama_url))
         .json(&request_body)
         .send()
         .await;
 
-    // 4. Return the Answer
     match res {
         Ok(response) => {
             match response.json::<OllamaResponse>().await {

@@ -54,7 +54,7 @@ async fn main() {
         }
         Commands::Top => {
             println!("{} Fetching Kernel Telemetry...", "[*]".bright_blue());
-            // In the future, this will hit a /metrics endpoint on the server
+            // this will hit a /metrics endpoint on the server
             println!("\n{}", "=== ORE KERNEL TELEMETRY ===".bold());
             println!("{:<20} | {}", "Subsystem", "Status");
             println!("{:<20} | {}", "-------------------", "------");
@@ -64,7 +64,7 @@ async fn main() {
             println!("{:<20} | {}", "Connected Apps", "0");
         }
         Commands::Kill { app_id } => {
-            // This is the emergency stop command!
+            // emergency stop command
             println!("{} Sending SIGTERM to App: {}", "[!]".red().bold(), app_id.red());
             println!("{} App context wiped from GPU Memory.", "[+]".green());
         }
