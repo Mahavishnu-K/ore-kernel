@@ -2,7 +2,7 @@ use ore_common::{InferenceRequest, InferenceResponse};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use thiserror::Error;
-
+pub mod driver;
 pub mod firewall;
 
 #[derive(Error, Debug)]

@@ -1079,9 +1079,12 @@ name = "ore-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "ore-common",
  "regex",
+ "reqwest 0.13.2",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "toml",
