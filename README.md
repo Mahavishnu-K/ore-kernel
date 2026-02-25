@@ -27,7 +27,7 @@
 
 ## 🧠 What is ORE?
 
-**ORE (Open Runtime Environment)** is a **kernel-level process manager** for local Artificial Intelligence — written entirely in Rust.
+**ORE (Open Runtime Environment)** is a **kernel-level process manager** for local Artificial Intelligence, written entirely in Rust.
 
 It sits between your user-facing applications (OpenClaw, AutoGPT, custom terminals) and raw hardware inference engines (Ollama, vLLM, Llama.cpp), providing the critical abstraction layer that nobody else has built:
 
@@ -70,7 +70,7 @@ They talk to ORE. ORE enforces the rules.
 Sits at the IPC layer and intercepts every prompt before it reaches the model. Performs real-time heuristic analysis to detect prompt injections, scans for PII (credit cards, tokens, emails), and enforces per-app content policies.
 
 **⚙️ Preemptive Scheduler**
-Implements a semaphore-based priority queue for GPU access. Multiple applications can request inference concurrently — ORE pauses, queues, and resumes jobs based on declared priority, eliminating OOM crashes entirely.
+Implements a semaphore-based priority queue for GPU access. Multiple applications can request inference concurrently. ORE pauses, queues, and resumes jobs based on declared priority, eliminating OOM crashes entirely.
 
 **🔌 Hardware Abstraction Layer**
 Decouples application logic from the physical inference engine. Swap Ollama for vLLM or Metal without touching a single line of app code. ORE owns the driver relationship.
@@ -227,13 +227,13 @@ v0.3  ░░░░░░░░░░░░░░░░░░░░  📐  Semant
 v1.0  ░░░░░░░░░░░░░░░░░░░░  🌐  ORE Mesh — distributed inference over LAN
 ```
 
-**v0.2 — Unix Domain Sockets**
+**v0.2 - Unix Domain Sockets**
 Replace TCP-based IPC with UDS for sub-millisecond latency on local communication. Critical for real-time agent loops.
 
-**v0.3 — Semantic File System (SFS)**
+**v0.3 - Semantic File System (SFS)**
 A shared, persistent vector memory space accessible by all registered apps. Agents can read and write embeddings without duplicating context.
 
-**v1.0 — ORE Mesh**
+**v1.0 - ORE Mesh**
 Distribute inference load across devices on your local network. Offload heavy compute from a laptop to a desktop tower over Wi-Fi. One kernel, many GPUs.
 
 ---
