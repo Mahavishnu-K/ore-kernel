@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚙️ ORE — Open Runtime Environment
+# ⚙️ ORE - Open Runtime Environment For LLMs
 
 ### *The Operating System for Local Intelligence*
 
