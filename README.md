@@ -57,7 +57,7 @@ Every AI application ships bundled model weights. Three apps = three copies of t
 
 ## 🛡️ The ORE Solution
 
-ORE runs as a **kernel daemon** (`ored`) — a persistent background process that virtualizes all access to intelligence.
+ORE runs as a **kernel daemon** (`ored`) - a persistent background process that virtualizes all access to intelligence.
 
 ```
 Applications never talk to the GPU directly.
@@ -178,7 +178,7 @@ No code changes. No SDK swap. ORE is a transparent security proxy.
 
 ### AppManifest Permissions
 
-Every application registers a manifest declaring exactly what it is allowed to do. ORE enforces this at the kernel level — not the application level.
+Every application registers a manifest declaring exactly what it is allowed to do. ORE enforces this at the kernel level - not the application level.
 
 ```toml
 # example: openclaw.manifest.toml
