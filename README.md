@@ -14,8 +14,8 @@
 
 <br>
 
-> *"Building AI apps today is like building software in the 1980s — before Operating Systems existed.*
-> ***ORE is the POSIX standard for the AI era."***
+ *"Building AI apps today is like building software in the 1980s, before Operating Systems existed.*
+ ***ORE is the POSIX standard for the AI era."***
 
 <br>
 
