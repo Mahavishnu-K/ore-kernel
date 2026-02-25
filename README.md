@@ -44,13 +44,13 @@ It sits between your user-facing applications (OpenClaw, AutoGPT, custom termina
 
 Modern local AI stacks are **dangerously fragile**. Three failures define the landscape today:
 
-**1 — The Root Access Nightmare**
+**The Root Access Nightmare**
 Agents like OpenClaw run with unrestricted file system access. A single well-crafted prompt injection can exfiltrate your SSH keys, read `.env` secrets, or silently delete files. There is no permission boundary.
 
-**2 — The VRAM Mutex**
+**The VRAM Mutex**
 Try running a coding agent alongside a writing assistant. The GPU crashes. There is no scheduler, no queue, no arbitration. Raw inference engines were not designed for concurrent multi-agent workloads.
 
-**3 — Dependency Hell**
+**Dependency Hell**
 Every AI application ships bundled model weights. Three apps = three copies of the same 7B model eating 12GB of RAM. There is no shared model registry, no deduplication, no HAL.
 
 ---
