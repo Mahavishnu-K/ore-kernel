@@ -1,0 +1,5 @@
+app_id = "terminal_user"
+
+[permissions]
+can_read_files = true
+can_access_internet = true

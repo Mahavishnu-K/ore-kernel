@@ -1,0 +1,7 @@
+# D:\ore-system\manifests\openclaw.toml
+app_id = "openclaw"
+
+[permissions]
+can_read_files = false
+can_access_internet = true
+max_tokens_per_request = 1000

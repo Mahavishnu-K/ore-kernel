@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, State, Json},
     routing::get,
+    routing::post,
     Router,
 };
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use tokio::net::TcpListener;
 use serde::{Deserialize, Serialize};
 use ore_core::firewall::ContextFirewall;
 use ore_core::driver::{InferenceDriver, OllamaDriver};
+use ore_core::registry::AppRegistry;
 use tokio::sync::Semaphore;
 
 // kernel state shared across handlers
@@ -15,23 +17,30 @@ struct KernelState {
     ollama_url: String,
     model_name: String,
     gpu_lock: Arc<Semaphore>,
+    registry: AppRegistry,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== ORE SYSTEM KERNEL BOOTING (OLLAMA DRIVER) ===");
+    println!("=== ORE SYSTEM KERNEL BOOTING ===");
+    println!("-> Sweeping /manifests for installed Apps...");
+    let app_registry = AppRegistry::boot_load("../manifests")
+        .expect("FATAL: Failed to initialize App Registry");
 
     // configuration
     let shared_state = Arc::new(KernelState {
         ollama_url: "http://127.0.0.1:11434".to_string(),
         model_name: "llama3.2:1b".to_string(),
         gpu_lock: Arc::new(Semaphore::new(1)), // 1 concurrent GPU job
+        registry: app_registry,
     });
 
     
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/ask/:prompt", get(ask_ai))
+        .route("/ps", get(process_status))
+        .route("/ls", get(list_models))
         .route("/expel/:model", get(expel_model))
         .route("/pull/:model", get(pull_model))
         .route("/load/:model", get(load_model)) 
@@ -60,6 +69,7 @@ struct OllamaRequest {
     stream: bool, 
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct OllamaResponse {
     response: String,
@@ -81,8 +91,14 @@ async fn ask_ai(
     
     println!("\n========================================");
     println!("-> Incoming App Request: {}", clean_prompt);
+
+    let app_id = "openclaw"; // In the future, this comes from an API Key/Token
+    let manifest = match state.registry.get_app(app_id) {
+        Some(m) => m,
+        None => return format!("ORE KERNEL ALERT: Unregistered Agent '{}'.", app_id),
+    };
     
-    let secured_prompt = match ContextFirewall::secure_request("openclaw", &clean_prompt) {
+    let secured_prompt = match ContextFirewall::secure_request(manifest, &clean_prompt) {
         Ok(safe_text) => {
             println!("-> Security Check Passed.");
             if safe_text != clean_prompt {
@@ -136,8 +152,14 @@ async fn run_process(
 ) -> String {
     println!("\n========================================");
     println!("-> [EXEC] Model: {} | Prompt: {}", payload.model, payload.prompt);
+
+    let app_id = "terminal_user"; 
+    let manifest = match state.registry.get_app(app_id) {
+        Some(m) => m,
+        None => return format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id),
+    };
     
-    let secured_prompt = match ContextFirewall::secure_request("terminal_user", &payload.prompt) {
+    let secured_prompt = match ContextFirewall::secure_request(manifest, &payload.prompt) {
         Ok(safe_text) => {
             println!("-> Security Check Passed.");
             safe_text
@@ -187,16 +209,47 @@ async fn process_status() -> String {
     
     match driver.get_running_models().await {
         Ok(models) => {
-            let mut output = format!("{:<25} | {}\n", "MODEL (VRAM)", "SIZE");
-            output.push_str("----------------------------------------\n");
+            let mut output = format!("{:<25} | {:<12} | {:<12}\n", "MODEL", "TOTAL RAM", "GPU VRAM");
+            output.push_str("----------------------------------------------------------\n");
             
             if models.is_empty() {
-                output.push_str("No models currently loaded in VRAM.\n");
+                output.push_str("No models currently loaded in memory.\n");
             } else {
                 for m in models {
                     // Convert bytes to Megabytes
-                    let mb = m.size_vram_bytes / 1024 / 1024;
-                    output.push_str(&format!("{:<25} | {} MB\n", m.model_name, mb));
+                    let total_mb = m.size_bytes / 1024 / 1024;
+                    let vram_mb = m.size_vram_bytes / 1024 / 1024;
+                    
+                    output.push_str(&format!(
+                        "{:<25} | {:<9} MB | {:<9} MB\n", 
+                        m.model_name, total_mb, vram_mb
+                    ));
+                }
+            }
+            output
+        }
+        Err(e) => format!("Kernel Error: {}", e),
+    }
+}
+
+async fn list_models() -> String {
+    let driver = OllamaDriver::new("http://127.0.0.1:11434");
+    
+    match driver.list_local_models().await {
+        Ok(models) => {
+            // Linux 'docker images' style formatting
+            let mut output = format!("{:<25} | {:<10} | {}\n", "REPOSITORY", "SIZE", "UPDATED");
+            output.push_str("------------------------------------------------------\n");
+            
+            if models.is_empty() {
+                output.push_str("No models installed. Use 'ore install <model>'.\n");
+            } else {
+                for m in models {
+                    let gb = m.size_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
+                    output.push_str(&format!(
+                        "{:<25} | {:.2} GB   | {}\n", 
+                        m.name, gb, m.modified_at
+                    ));
                 }
             }
             output

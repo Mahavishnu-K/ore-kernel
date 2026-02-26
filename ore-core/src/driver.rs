@@ -11,6 +11,13 @@ pub enum DriverError {
     ApiError(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalModel {
+    pub name: String,
+    pub size_bytes: u64,
+    pub modified_at: String,
+}
+
 // =====================================================================
 // 1. THE OS DATA STRUCTURES
 // No matter what engine is running, ORE translates their data into this.
@@ -18,6 +25,7 @@ pub enum DriverError {
 #[derive(Debug, Clone)]
 pub struct VramProcess {
     pub model_name: String,
+    pub size_bytes: u64,
     pub size_vram_bytes: u64,
 }
 
@@ -40,6 +48,8 @@ pub trait InferenceDriver: Send + Sync {
     async fn preload_model(&self, model: &str) -> Result<(), DriverError>;
 
     async fn pull_model(&self, model_name: &str) -> Result<(), DriverError>;
+
+    async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError>;
 }
 
 // =====================================================================
@@ -68,12 +78,25 @@ struct OllamaPsResponse {
 #[derive(Deserialize)]
 struct OllamaModelProcess {
     name: String,
+    size: u64,
     size_vram: u64,
 }
 
 #[derive(Deserialize)]
 struct OllamaGenerateResponse {
     response: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagModel>,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagModel {
+    name: String,
+    size: u64,
+    modified_at: String,
 }
 
 #[async_trait]
@@ -98,6 +121,7 @@ impl InferenceDriver for OllamaDriver {
         // Translate Ollama's JSON into ORE's standard Process list
         let processes = data.models.into_iter().map(|m| VramProcess {
             model_name: m.name,
+            size_bytes: m.size,
             size_vram_bytes: m.size_vram,
         }).collect();
 
@@ -179,5 +203,27 @@ impl InferenceDriver for OllamaDriver {
         } else {
             Err(DriverError::ApiError(format!("Failed to install model: {}", res.status())))
         }
+    }
+
+    async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError> {
+        let url = format!("{}/api/tags", self.base_url);
+        let res = self.client.get(&url).send().await
+            .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Err(DriverError::ApiError(format!("Failed to fetch tags: {}", res.status())));
+        }
+
+        let data: OllamaTagsResponse = res.json().await
+            .map_err(|e| DriverError::ApiError(e.to_string()))?;
+
+        let models = data.models.into_iter().map(|m| LocalModel {
+            name: m.name,
+            size_bytes: m.size,
+            // Ollama returns a long ISO date, we just take the first 10 chars (YYYY-MM-DD)
+            modified_at: m.modified_at.chars().take(10).collect(),
+        }).collect();
+
+        Ok(models)
     }
 }

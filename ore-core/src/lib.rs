@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 use thiserror::Error;
 pub mod driver;
 pub mod firewall;
+pub mod registry;
 
 #[derive(Error, Debug)]
 pub enum OreError {

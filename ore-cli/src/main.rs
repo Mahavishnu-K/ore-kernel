@@ -26,6 +26,8 @@ enum Commands {
     Top,
     /// Shows the models currently loaded into VRAM
     Ps,
+    /// List all installed models on the local disk
+    Ls,
     /// Forcefully evict a model from the GPU VRAM
     Expel {
         /// The name of the model (e.g., llama3.21b)
@@ -95,6 +97,15 @@ async fn main() {
         }
         Commands::Ps => {
             match client.get(format!("{}/ps", kernel_url)).send().await {
+                Ok(response) => {
+                    let text = response.text().await.unwrap_or_default();
+                    println!("\n{}", text);
+                }
+                Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
+            }
+        }
+        Commands::Ls => {
+            match client.get(format!("{}/ls", kernel_url)).send().await {
                 Ok(response) => {
                     let text = response.text().await.unwrap_or_default();
                     println!("\n{}", text);
