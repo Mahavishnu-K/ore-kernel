@@ -15,7 +15,9 @@ Look, `ore-kernel` is young. It was born in a caffeine-fueled sprint.
 - Some code is **beautiful Rust**. (Preemptive async scheduling? *Chef's kiss*).
 - Some code **sucks**. (We might, nah.. we *have* `.unwrap()` in places we shouldn't. The error handling might be a bit dramatic).
 
-If you see garbage code, don't just judge it - **fix it :)**. Refactors are not just welcome; they are **celebrated** 🎉. Make this kernel bulletproof.
+If you see garbage code, don't just judge it - **fix it :)**. 
+
+Refactors are not just welcome; they are **celebrated** 🎉. Make this kernel bulletproof.
 
 ---
 
