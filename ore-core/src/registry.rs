@@ -12,13 +12,13 @@ pub enum RegistryError {
     ParseError(String, String),
 }
 
-// app resgistry manifest structure 
+// app resgistry manifest structure
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct AppManifest {
     pub app_id: String,
     pub description: String,
     pub version: String,
-    
+
     #[serde(default)]
     pub privacy: Privacy,
     #[serde(default)]
@@ -85,7 +85,10 @@ impl AppRegistry {
 
         if !path.exists() {
             fs::create_dir_all(path).map_err(|e| RegistryError::IoError(e.to_string()))?;
-            println!("-> [REGISTRY] Created new manifests directory at {}", manifests_dir);
+            println!(
+                "-> [REGISTRY] Created new manifests directory at {}",
+                manifests_dir
+            );
             return Ok(Self { apps });
         }
 
@@ -96,12 +99,10 @@ impl AppRegistry {
             if file_path.extension().and_then(|s| s.to_str()) == Some("toml") {
                 let toml_string = fs::read_to_string(&file_path)
                     .map_err(|e| RegistryError::IoError(e.to_string()))?;
-                
-                let manifest: AppManifest = toml::from_str(&toml_string)
-                    .map_err(|e| RegistryError::ParseError(
-                        file_path.display().to_string(), 
-                        e.to_string()
-                    ))?;
+
+                let manifest: AppManifest = toml::from_str(&toml_string).map_err(|e| {
+                    RegistryError::ParseError(file_path.display().to_string(), e.to_string())
+                })?;
 
                 println!("-> [REGISTRY] Verified & Loaded App: {}", manifest.app_id);
                 apps.insert(manifest.app_id.clone(), manifest);

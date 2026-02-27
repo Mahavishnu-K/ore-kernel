@@ -1,7 +1,7 @@
 use ore_common::{InferenceRequest, InferenceResponse};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use thiserror::Error;
+use tokio::sync::Mutex;
 pub mod driver;
 pub mod firewall;
 pub mod registry;
@@ -26,11 +26,10 @@ impl OreEngine {
     }
 
     pub async fn infer(&self, req: InferenceRequest) -> Result<InferenceResponse, OreError> {
-        
         let mut _guard = self.active_model.lock().await;
 
         println!("Core: Processing request for model {:?}", req.model_id);
-        
+
         // simulate model loading time
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 

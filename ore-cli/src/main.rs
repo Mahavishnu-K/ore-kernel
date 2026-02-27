@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
+use colored::*;
 use dialoguer::{Confirm, Input, MultiSelect, Select};
+use reqwest::Client;
 use std::fs;
 use std::path::Path;
-use colored::*;
-use reqwest::Client;
 use std::process::exit;
 
 /// ORE: The Operating System for Local Intelligence
@@ -44,11 +44,11 @@ enum Commands {
         /// List all downloaded LLM models
         #[arg(long)]
         models: bool,
-        
+
         /// List all agents currently under ORE control
         #[arg(long)]
         agents: bool,
-        
+
         /// List all raw permission manifests created by the user
         #[arg(long)]
         manifests: bool,
@@ -96,7 +96,7 @@ async fn main() {
     match &cli.command {
         Commands::Status => {
             println!("{} Pinging ORE Kernel...", "[*]".bright_blue());
-            
+
             match client.get(format!("{}/health", kernel_url)).send().await {
                 Ok(response) => {
                     if response.status().is_success() {
@@ -104,11 +104,19 @@ async fn main() {
                         println!("{} Kernel is {}", "[+]".green(), "ONLINE".green().bold());
                         println!("{} System Message: {}", "[i]".bright_blue(), text.italic());
                     } else {
-                        println!("{} Kernel returned an error: {}", "[-]".red(), response.status());
+                        println!(
+                            "{} Kernel returned an error: {}",
+                            "[-]".red(),
+                            response.status()
+                        );
                     }
                 }
                 Err(_) => {
-                    println!("{} ORE Kernel is {}!", "[-]".red().bold(), "OFFLINE".red().bold());
+                    println!(
+                        "{} ORE Kernel is {}!",
+                        "[-]".red().bold(),
+                        "OFFLINE".red().bold()
+                    );
                     println!("    Run `cargo run -p ore-server` to boot the OS.");
                     exit(1);
                 }
@@ -125,23 +133,25 @@ async fn main() {
             println!("{:<20} | {}", "Context Firewall", "ENFORCING".green());
             println!("{:<20} | {}", "Connected Apps", "0");
         }
-        Commands::Ps => {
-            match client.get(format!("{}/ps", kernel_url)).send().await {
-                Ok(response) => {
-                    let text = response.text().await.unwrap_or_default();
-                    println!("\n{}", text);
-                }
-                Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
+        Commands::Ps => match client.get(format!("{}/ps", kernel_url)).send().await {
+            Ok(response) => {
+                let text = response.text().await.unwrap_or_default();
+                println!("\n{}", text);
             }
-        }
-        Commands::Ls { models, agents, manifests} => {
+            Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
+        },
+        Commands::Ls {
+            models,
+            agents,
+            manifests,
+        } => {
             if *agents {
                 match client.get(format!("{}/agents", kernel_url)).send().await {
                     Ok(response) => println!("\n{}", response.text().await.unwrap_or_default()),
                     Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
                 }
             }
-            
+
             // If the user wants Manifests
             if *manifests {
                 match client.get(format!("{}/manifests", kernel_url)).send().await {
@@ -158,9 +168,17 @@ async fn main() {
             }
         }
         Commands::Expel { model_name } => {
-            println!("{} Sending SIGKILL to VRAM process: {}", "[!]".red().bold(), model_name.yellow());
-            
-            match client.get(format!("{}/expel/{}", kernel_url, model_name)).send().await {
+            println!(
+                "{} Sending SIGKILL to VRAM process: {}",
+                "[!]".red().bold(),
+                model_name.yellow()
+            );
+
+            match client
+                .get(format!("{}/expel/{}", kernel_url, model_name))
+                .send()
+                .await
+            {
                 Ok(response) => {
                     let text = response.text().await.unwrap_or_default();
                     if text.starts_with("SUCCESS") {
@@ -173,11 +191,19 @@ async fn main() {
             }
         }
         Commands::Pull { model_name } => {
-            println!("{} Instructing Kernel to download and install: {}", "[*]".bright_blue(), model_name.yellow().bold());
+            println!(
+                "{} Instructing Kernel to download and install: {}",
+                "[*]".bright_blue(),
+                model_name.yellow().bold()
+            );
             println!("    (This may take a few minutes depending on your internet speed...)");
-            
+
             // Because downloading takes time, we wait for the server's response
-            match client.get(format!("{}/pull/{}", kernel_url, model_name)).send().await {
+            match client
+                .get(format!("{}/pull/{}", kernel_url, model_name))
+                .send()
+                .await
+            {
                 Ok(response) => {
                     let text = response.text().await.unwrap_or_default();
                     if text.starts_with("SUCCESS") {
@@ -190,17 +216,26 @@ async fn main() {
             }
         }
         Commands::Run { model, prompt } => {
-            println!("{} Routing task to {}...", "[*]".bright_blue(), model.yellow().bold());
-            
+            println!(
+                "{} Routing task to {}...",
+                "[*]".bright_blue(),
+                model.yellow().bold()
+            );
+
             let payload = RunPayload {
                 model: model.clone(),
                 prompt: prompt.clone(),
             };
 
-            match client.post(format!("{}/run", kernel_url)).json(&payload).send().await {
+            match client
+                .post(format!("{}/run", kernel_url))
+                .json(&payload)
+                .send()
+                .await
+            {
                 Ok(response) => {
                     let text = response.text().await.unwrap_or_default();
-                    
+
                     if text.starts_with("ORE KERNEL ALERT") {
                         println!("\n{} {}", "[!]".red().bold(), text.red().bold());
                     } else {
@@ -211,9 +246,17 @@ async fn main() {
             }
         }
         Commands::Load { model_name } => {
-            println!("{} Instructing Kernel to allocate VRAM for: {}", "[*]".bright_blue(), model_name.yellow().bold());
-            
-            match client.get(format!("{}/load/{}", kernel_url, model_name)).send().await {
+            println!(
+                "{} Instructing Kernel to allocate VRAM for: {}",
+                "[*]".bright_blue(),
+                model_name.yellow().bold()
+            );
+
+            match client
+                .get(format!("{}/load/{}", kernel_url, model_name))
+                .send()
+                .await
+            {
                 Ok(response) => {
                     let text = response.text().await.unwrap_or_default();
                     if text.starts_with("SUCCESS") {
@@ -226,12 +269,16 @@ async fn main() {
             }
         }
         Commands::Kill { app_id } => {
-            println!("{} Sending SIGTERM to App: {}", "[!]".red().bold(), app_id.red());
+            println!(
+                "{} Sending SIGTERM to App: {}",
+                "[!]".red().bold(),
+                app_id.red()
+            );
             println!("{} App context wiped from GPU Memory.", "[+]".green());
         }
         Commands::Manifest { app_id } => {
             use dialoguer::theme::SimpleTheme;
-            
+
             println!("\n ORE KERNEL :: SECURE MANIFEST FORGE");
             println!(" Target agent :: {}", app_id);
             println!(" Use [SPACE] to toggle modules, [ENTER] to confirm.\n");
@@ -242,12 +289,30 @@ async fn main() {
             }
 
             let modules = [
-                Module { name: "Privacy", label: "Privacy      [ PII Redaction ]" },
-                Module { name: "Resources", label: "Resources    [ GPU Quotas & Models ]" },
-                Module { name: "File System", label: "File System  [ File System Boundaries ]" },
-                Module { name: "Network", label: "Network      [ Network Egress Control ]" },
-                Module { name: "Execution", label: "Execution    [ WASM/Shell Sandbox ]" },
-                Module { name: "IPC", label: "IPC          [ Agent-to-Agent Swarm ]" },
+                Module {
+                    name: "Privacy",
+                    label: "Privacy      [ PII Redaction ]",
+                },
+                Module {
+                    name: "Resources",
+                    label: "Resources    [ GPU Quotas & Models ]",
+                },
+                Module {
+                    name: "File System",
+                    label: "File System  [ File System Boundaries ]",
+                },
+                Module {
+                    name: "Network",
+                    label: "Network      [ Network Egress Control ]",
+                },
+                Module {
+                    name: "Execution",
+                    label: "Execution    [ WASM/Shell Sandbox ]",
+                },
+                Module {
+                    name: "IPC",
+                    label: "IPC          [ Agent-to-Agent Swarm ]",
+                },
             ];
 
             let labels: Vec<&str> = modules.iter().map(|m| m.label).collect();
@@ -257,7 +322,7 @@ async fn main() {
                 .items(&labels)
                 .interact()
                 .unwrap();
-            
+
             println!("\nSelected modules:");
             for i in &selections {
                 println!("{}", modules[*i].name);
@@ -268,8 +333,11 @@ async fn main() {
             }
 
             let format_list = |input: String| -> String {
-                if input.trim().is_empty() { return "[]".to_string(); }
-                let items: Vec<String> = input.split(',')
+                if input.trim().is_empty() {
+                    return "[]".to_string();
+                }
+                let items: Vec<String> = input
+                    .split(',')
                     .map(|s| format!("\"{}\"", s.trim()))
                     .collect();
                 format!("[{}]", items.join(", "))
@@ -286,7 +354,8 @@ async fn main() {
                 let pii = Confirm::with_theme(&SimpleTheme)
                     .with_prompt("Enforce PII Redaction (strip passwords/emails)?")
                     .default(true)
-                    .interact().unwrap();
+                    .interact()
+                    .unwrap();
                 toml_output.push_str("[privacy]\n");
                 toml_output.push_str(&format!("enforce_pii_redaction = {}\n\n", pii));
             }
@@ -305,14 +374,20 @@ async fn main() {
                 let selected_models_formatted;
 
                 if available_models.is_empty() {
-                    println!("{} No installed models detected, or Driver is offline.", "[WARN]".yellow());
-                    println!("       You can type them manually now, and install them later using 'ore pull <model>'.");
-                    
+                    println!(
+                        "{} No installed models detected, or Driver is offline.",
+                        "[WARN]".yellow()
+                    );
+                    println!(
+                        "       You can type them manually now, and install them later using 'ore pull <model>'."
+                    );
+
                     let manual: String = Input::with_theme(&SimpleTheme)
                         .with_prompt("Allowed models (comma-separated, e.g., qwen2.5:0.5b)")
                         .default("".into())
-                        .interact_text().unwrap();
-                        
+                        .interact_text()
+                        .unwrap();
+
                     selected_models_formatted = format_list(manual);
                 } else {
                     let selection_indices = MultiSelect::with_theme(&SimpleTheme)
@@ -322,27 +397,33 @@ async fn main() {
                         .unwrap();
 
                     if selection_indices.is_empty() {
-                        println!("{} No models selected. Agent will have no brain!", "[WARN]".yellow());
+                        println!(
+                            "{} No models selected. Agent will have no brain!",
+                            "[WARN]".yellow()
+                        );
                         selected_models_formatted = "[]".to_string();
                     } else {
-                        let selected: Vec<String> = selection_indices.into_iter()
+                        let selected: Vec<String> = selection_indices
+                            .into_iter()
                             .map(|i| format!("\"{}\"", available_models[i]))
                             .collect();
                         selected_models_formatted = format!("[{}]", selected.join(", "));
                     }
                 }
-                
+
                 let tokens: u32 = Input::with_theme(&SimpleTheme)
                     .with_prompt("Max tokens per minute (Rate Limit)")
                     .default(10000)
-                    .interact_text().unwrap();
+                    .interact_text()
+                    .unwrap();
 
                 let priorities = &["low", "normal", "high"];
                 let p_idx = Select::with_theme(&SimpleTheme)
                     .with_prompt("GPU Priority level")
-                    .default(1) 
+                    .default(1)
                     .items(priorities)
-                    .interact().unwrap();
+                    .interact()
+                    .unwrap();
 
                 toml_output.push_str("[resources]\n");
                 toml_output.push_str(&format!("allowed_models = {}\n", selected_models_formatted));
@@ -356,21 +437,30 @@ async fn main() {
                 let read_paths: String = Input::with_theme(&SimpleTheme)
                     .with_prompt("Allowed READ paths (comma-separated, leave blank for none)")
                     .default("".into())
-                    .interact_text().unwrap();
-                
+                    .interact_text()
+                    .unwrap();
+
                 let write_paths: String = Input::with_theme(&SimpleTheme)
                     .with_prompt("Allowed WRITE paths (comma-separated, leave blank for none)")
                     .default("".into())
-                    .interact_text().unwrap();
+                    .interact_text()
+                    .unwrap();
 
                 let max_mb: u32 = Input::with_theme(&SimpleTheme)
                     .with_prompt("Max file size allowed to read (MB)")
                     .default(5)
-                    .interact_text().unwrap();
+                    .interact_text()
+                    .unwrap();
 
                 toml_output.push_str("[file_system]\n");
-                toml_output.push_str(&format!("allowed_read_paths = {}\n", format_list(read_paths)));
-                toml_output.push_str(&format!("allowed_write_paths = {}\n", format_list(write_paths)));
+                toml_output.push_str(&format!(
+                    "allowed_read_paths = {}\n",
+                    format_list(read_paths)
+                ));
+                toml_output.push_str(&format!(
+                    "allowed_write_paths = {}\n",
+                    format_list(write_paths)
+                ));
                 toml_output.push_str(&format!("max_file_size_mb = {}\n\n", max_mb));
             }
 
@@ -380,12 +470,14 @@ async fn main() {
                 let domains: String = Input::with_theme(&SimpleTheme)
                     .with_prompt("Allowed external domains (comma-separated)")
                     .default("github.com, wikipedia.org".into())
-                    .interact_text().unwrap();
+                    .interact_text()
+                    .unwrap();
 
                 let localhost = Confirm::with_theme(&SimpleTheme)
                     .with_prompt("Allow LOCALHOST access? (WARNING: High Risk for SSRF Attacks)")
                     .default(false)
-                    .interact().unwrap();
+                    .interact()
+                    .unwrap();
 
                 toml_output.push_str("[network]\n");
                 toml_output.push_str("network_enabled = true\n");
@@ -399,17 +491,22 @@ async fn main() {
                 let shell = Confirm::with_theme(&SimpleTheme)
                     .with_prompt("Allow raw SHELL execution? (WARNING: Extreme Risk)")
                     .default(false)
-                    .interact().unwrap();
+                    .interact()
+                    .unwrap();
 
                 let wasm = Confirm::with_theme(&SimpleTheme)
                     .with_prompt("Allow WebAssembly (WASM) Sandbox execution?")
                     .default(true)
-                    .interact().unwrap();
+                    .interact()
+                    .unwrap();
 
                 let tools: String = Input::with_theme(&SimpleTheme)
-                    .with_prompt("Allowed Agent Tools (comma-separated, e.g., git_commit, file_search)")
+                    .with_prompt(
+                        "Allowed Agent Tools (comma-separated, e.g., git_commit, file_search)",
+                    )
                     .default("".into())
-                    .interact_text().unwrap();
+                    .interact_text()
+                    .unwrap();
 
                 toml_output.push_str("[execution]\n");
                 toml_output.push_str(&format!("can_execute_shell = {}\n", shell));
@@ -423,10 +520,14 @@ async fn main() {
                 let targets: String = Input::with_theme(&SimpleTheme)
                     .with_prompt("Allowed Agent-to-Agent targets (comma-separated)")
                     .default("".into())
-                    .interact_text().unwrap();
+                    .interact_text()
+                    .unwrap();
 
                 toml_output.push_str("[ipc]\n");
-                toml_output.push_str(&format!("allowed_ipc_targets = {}\n\n", format_list(targets)));
+                toml_output.push_str(&format!(
+                    "allowed_ipc_targets = {}\n\n",
+                    format_list(targets)
+                ));
             }
 
             // Write to disk
@@ -434,9 +535,9 @@ async fn main() {
             if !Path::new("../manifests").exists() {
                 fs::create_dir_all("../manifests").unwrap();
             }
-            
+
             fs::write(&file_path, &toml_output).expect("Failed to write manifest");
-            
+
             println!("\n==================================================");
             println!("[OK] MANIFEST FORGED SUCCESSFULLY.");
             println!("PATH   :: {}", file_path);
