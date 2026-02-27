@@ -41,6 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/ask/:prompt", get(ask_ai))
         .route("/ps", get(process_status))
         .route("/ls", get(list_models))
+        .route("/agents", get(list_agents))       
+        .route("/manifests", get(list_manifests))
         .route("/expel/:model", get(expel_model))
         .route("/pull/:model", get(pull_model))
         .route("/load/:model", get(load_model)) 
@@ -307,4 +309,101 @@ async fn load_model(Path(model_name): Path<String>) -> String {
             format!("KERNEL ERROR: Could not load model. {}", e)
         }
     }
+}
+
+async fn list_agents(State(state): State<Arc<KernelState>>) -> String {
+    let apps = state.registry.list_apps();
+    
+    let mut output = format!("{:<20} | {:<10} | {:<20} | {:<10} | {}\n", 
+        "AGENT ID", "VERSION", "ALLOWED MODELS", "PRIORITY", "STATUS");
+    output.push_str("----------------------------------------------------------------------------------\n");
+    
+    if apps.is_empty() {
+        output.push_str("No agents registered. Use 'ore manifest <name>' to create one.\n");
+    } else {
+        for app in apps {
+            // 1. Handle Empty Models
+            let models = if app.resources.allowed_models.is_empty() {
+                "-".to_string()
+            } else {
+                app.resources.allowed_models.join(", ")
+            };
+            
+            // Truncate if too long
+            let models_disp = if models.len() > 17 { format!("{}...", &models[..17]) } else { models };
+
+            // 2. Handle Empty Priority
+            // If the string is empty, show "-", otherwise UPPERCASE it.
+            let priority = if app.resources.gpu_priority.trim().is_empty() {
+                "-".to_string()
+            } else {
+                app.resources.gpu_priority.to_uppercase()
+            };
+
+            let status = if app.execution.can_execute_shell || !app.privacy.enforce_pii_redaction {
+                "UNSAFE" 
+            } else if app.resources.allowed_models.is_empty() && !app.network.network_enabled {
+                "DORMANT"
+            } else {
+                "SECURED"
+            };
+
+            output.push_str(&format!(
+                "{:<20} | {:<10} | {:<20} | {:<10} | {}\n", 
+                app.app_id, 
+                app.version,
+                models_disp,
+                priority,
+                status
+            ));
+        }
+    }
+    output
+}
+
+async fn list_manifests(State(state): State<Arc<KernelState>>) -> String {
+    let apps = state.registry.list_apps();
+    
+    let mut output = format!("{:<20} | {:<10} | {:<12} | {:<15} | {}\n", 
+        "MANIFEST FILE", "NETWORK", "FILE I/O", "EXECUTION", "PII SCRUBBING");
+    output.push_str("------------------------------------------------------------------------------------\n");
+    
+    if apps.is_empty() {
+        output.push_str("No manifests found in /manifests directory.\n");
+    } else {
+        for app in apps {
+            let can_read = !app.file_system.allowed_read_paths.is_empty();
+            let can_write = !app.file_system.allowed_write_paths.is_empty();
+            let fs_status = match (can_read, can_write) {
+                (true, true) => "Read/Write",
+                (true, false) => "Read-Only",
+                (false, true) => "Write-Only",
+                (false, false) => "Air-gapped",
+            };
+
+            let exec_status = if app.execution.can_execute_shell {
+                "SHELL (RISK)" 
+            } else if app.execution.can_execute_wasm {
+                "WASM Sandbox"
+            } else {
+                "Disabled"
+            };
+
+            let pii_status = if app.privacy.enforce_pii_redaction { 
+                "ACTIVE" 
+            } else { 
+                "OFF (RISK)" 
+            };
+
+            output.push_str(&format!(
+                "{:<20} | {:<10} | {:<12} | {:<15} | {}\n", 
+                format!("{}.toml", app.app_id), 
+                if app.network.network_enabled { "ENABLED" } else { "BLOCKED" },
+                fs_status,
+                exec_status,
+                pii_status
+            ));
+        }
+    }
+    output
 }

@@ -18,10 +18,8 @@ pub struct LocalModel {
     pub modified_at: String,
 }
 
-// =====================================================================
-// 1. THE OS DATA STRUCTURES
+// OS DATA STRUCTURES
 // No matter what engine is running, ORE translates their data into this.
-// =====================================================================
 #[derive(Debug, Clone)]
 pub struct VramProcess {
     pub model_name: String,
@@ -29,18 +27,14 @@ pub struct VramProcess {
     pub size_vram_bytes: u64,
 }
 
-// =====================================================================
-// 2. THE HARDWARE ABSTRACTION LAYER (HAL)
+// HARDWARE ABSTRACTION LAYER (HAL)
 // Any backend (Ollama, LM Studio, vLLM) MUST implement these functions.
-// =====================================================================
 #[async_trait]
 pub trait InferenceDriver: Send + Sync {
     async fn is_online(&self) -> bool;
     
-    // NEW: Ask the driver exactly what is loaded in the GPU right now
     async fn get_running_models(&self) -> Result<Vec<VramProcess>, DriverError>;
     
-    // The actual math execution
     async fn generate(&self, prompt: &str, model: &str) -> Result<String, DriverError>;
 
     async fn unload_model(&self, model: &str) -> Result<(), DriverError>;
@@ -52,9 +46,7 @@ pub trait InferenceDriver: Send + Sync {
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError>;
 }
 
-// =====================================================================
-// 3. THE OLLAMA IMPLEMENTATION
-// =====================================================================
+// OLLAMA IMPLEMENTATION
 pub struct OllamaDriver {
     pub base_url: String,
     client: Client,
@@ -105,7 +97,7 @@ impl InferenceDriver for OllamaDriver {
         self.client.get(&self.base_url).send().await.is_ok()
     }
 
-    // TAKING CONTROL: This scans Ollama's RAM/VRAM
+    // This scans Ollama's RAM/VRAM
     async fn get_running_models(&self) -> Result<Vec<VramProcess>, DriverError> {
         let url = format!("{}/api/ps", self.base_url);
         let res = self.client.get(&url).send().await
@@ -220,7 +212,6 @@ impl InferenceDriver for OllamaDriver {
         let models = data.models.into_iter().map(|m| LocalModel {
             name: m.name,
             size_bytes: m.size,
-            // Ollama returns a long ISO date, we just take the first 10 chars (YYYY-MM-DD)
             modified_at: m.modified_at.chars().take(10).collect(),
         }).collect();
 
