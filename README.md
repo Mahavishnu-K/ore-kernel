@@ -11,6 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)]()
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey?style=for-the-badge&logo=linux&logoColor=white)]()
 [![Status](https://img.shields.io/badge/status-alpha-red?style=for-the-badge)]()
+[![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ZdGYnwZe)
 
 <br>
 
@@ -19,7 +20,7 @@
 
 <br>
 
-[**Get Started**](#-quick-start) · [**Architecture**](#️-architecture) · [**Project Structure**](#-project-structure) · [**CLI Reference**](#-cli-reference) · [**Security**](#-security-features) · [**Roadmap**](#️-roadmap) · [**Contributing**](#-contributing)
+[**Get Started**](#-quick-start) · [**Architecture**](#️-architecture) · [**Project Structure**](#-project-structure) · [**CLI Reference**](#-cli-reference) · [**Security**](#-security-features) · [**Roadmap**](#️-roadmap) · [**Contributing**](#-contributing) · [**Discord**](https://discord.gg/ZdGYnwZe)
 
 </div>
 
@@ -386,6 +387,8 @@ Areas where contributions are especially welcome:
 - **Scheduler** - Priority-based scheduling policies, multi-GPU support
 - **Manifest enforcement** - Runtime file system, network, and execution sandboxing
 - **Documentation & examples** - Integration guides, tutorials, example manifests
+
+Join us on [**Discord**](https://discord.gg/ZdGYnwZe) 👾 - we hang out in `#dev-core`.
 
 ---
 
