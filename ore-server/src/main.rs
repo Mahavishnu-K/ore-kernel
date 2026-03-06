@@ -1,5 +1,8 @@
 use axum::{
-    extract::{Json, Path, State},
+    extract::{Request, Json, Path, State},
+    middleware::{self, Next},
+    response::Response,
+    http::{StatusCode, HeaderMap},
     routing::get,
     routing::post,
     Router,
@@ -7,8 +10,11 @@ use axum::{
 use ore_core::driver::{InferenceDriver, OllamaDriver};
 use ore_core::firewall::ContextFirewall;
 use ore_core::registry::AppRegistry;
+use ore_core::ipc::{SemanticBus, RateLimiter, MessageBus, AgentMessage};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::fs;
+use uuid::Uuid;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
@@ -18,11 +24,20 @@ struct KernelState {
     model_name: String,
     gpu_lock: Arc<Semaphore>,
     registry: AppRegistry,
+    semantic_bus: SemanticBus,
+    message_bus: MessageBus,
+    rate_limiter: RateLimiter,
+    auth_token: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== ORE SYSTEM KERNEL BOOTING ===");
+
+    let session_token = Uuid::new_v4().to_string();
+    fs::write("ore-kernel.token", &session_token).expect("Failed to write security token.");
+    println!("-> [SECURITY] Master Token generated and secured to disk.");
+
     println!("-> Sweeping /manifests for installed Apps...");
     let app_registry =
         AppRegistry::boot_load("../manifests").expect("FATAL: Failed to initialize App Registry");
@@ -33,6 +48,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_name: "llama3.2:1b".to_string(),
         gpu_lock: Arc::new(Semaphore::new(1)), // 1 concurrent GPU job
         registry: app_registry,
+        semantic_bus: SemanticBus::new(),
+        message_bus: MessageBus::new(),
+        rate_limiter: RateLimiter::new(),
+        auth_token: session_token,
     });
 
     let app = Router::new()
@@ -46,6 +65,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/pull/:model", get(pull_model))
         .route("/load/:model", get(load_model))
         .route("/run", post(run_process))
+        .route("/ipc/share", post(sys_share_context))
+        .route("/ipc/search", post(sys_search_context))
+        .route("/ipc/send", post(ipc_send))          
+        .route("/ipc/listen/:app_id", get(ipc_listen))
+        .layer(middleware::from_fn_with_state(shared_state.clone(), auth_middleware))
         .with_state(shared_state);
 
     let addr = "127.0.0.1:3000";
@@ -55,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
+    let _ = fs::remove_file("ore-kernel.token");
     Ok(())
 }
 
@@ -81,6 +106,20 @@ struct OllamaResponse {
 pub struct RunRequest {
     pub model: String,
     pub prompt: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct IpcShareRequest {
+    pub source_app: String,
+    pub target_pipe: String,
+    pub knowledge_text: String, 
+}
+
+#[derive(serde::Deserialize)]
+pub struct IpcSearchRequest {
+    pub source_app: String,
+    pub target_pipe: String,
+    pub query: String, 
 }
 
 // inference engine (The Proxy & Firewall)
@@ -157,6 +196,15 @@ async fn run_process(
         Some(m) => m,
         None => return format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id),
     };
+
+    let limit = manifest.resources.max_tokens_per_minute;
+
+    // Assuming ~500 tokens per request
+    // future update: calculate tokens based on prompt length or use a more dynamic approach
+    if !state.rate_limiter.check_and_add(app_id, limit, 500) {
+        println!("-> [BLOCKED] Agent '{}' exceeded GPU rate limit.", app_id);
+        return format!("ORE KERNEL ALERT: Rate Limit Exceeded. Quota is {} tokens/min.", limit);
+    }
 
     let secured_prompt = match ContextFirewall::secure_request(manifest, &payload.prompt) {
         Ok(safe_text) => {
@@ -437,4 +485,143 @@ async fn list_manifests(State(state): State<Arc<KernelState>>) -> String {
         }
     }
     output
+}
+
+const SYSTEM_EMBEDDER: &str = "nomic-embed-text";
+
+async fn sys_share_context(
+    State(state): State<Arc<KernelState>>,
+    Json(payload): Json<IpcShareRequest>,
+) -> String {
+
+    let manifest = match state.registry.get_app(&payload.source_app) {
+        Some(m) => m,
+        None => {
+            println!("->[SECURITY ALERT] Ghost Agent '{}' tried to write to memory!", payload.source_app);
+            return format!("KERNEL ALERT: Unregistered Agent '{}'. Access Denied.", payload.source_app);
+        }
+    };
+
+    println!("-> [SEMANTIC BUS] Verified Agent '{}' is uploading data to pipe '{}'", manifest.app_id, payload.target_pipe);
+    
+    let driver = OllamaDriver::new(&state.ollama_url);
+    
+    // Chunking Algorithm (Splits large text into 100-word blocks)
+    let words: Vec<&str> = payload.knowledge_text.split_whitespace().collect();
+    let chunks: Vec<String> = words.chunks(100).map(|c| c.join(" ")).collect();
+    
+    println!("-> [SEMANTIC BUS] Text chunked into {} blocks. Waking up CPU Embedder...", chunks.len());
+
+    // Convert text to Math Vectors
+    for chunk in chunks {
+        match driver.generate_embeddings(SYSTEM_EMBEDDER, &chunk).await {
+            Ok(vector) => {
+                state.semantic_bus.write_chunk(&payload.target_pipe, chunk, vector);
+            }
+            Err(e) => return format!("KERNEL ERROR: Failed to embed knowledge. {}", e),
+        }
+    }
+
+    // ZERO-RAM ARCHITECTURE: kill the Nomic model to free memory
+    let _ = driver.unload_model(SYSTEM_EMBEDDER).await;
+    
+    println!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
+    "SUCCESS: Knowledge processed and stored in Semantic Bus.".to_string()
+}
+
+async fn sys_search_context(
+    State(state): State<Arc<KernelState>>,
+    Json(payload): Json<IpcSearchRequest>,
+) -> axum::response::Json<Vec<String>> {
+    
+    let manifest = match state.registry.get_app(&payload.source_app) {
+        Some(m) => m,
+        None => {
+            println!("-> [SECURITY ALERT] Ghost Agent '{}' tried to read memory!", payload.source_app);
+            return axum::response::Json(vec![format!("KERNEL ALERT: Unregistered Agent '{}'.", payload.source_app)]);
+        }
+    };
+
+    println!("-> [SEMANTIC BUS] Verified Agent '{}' searching pipe '{}' for: {}", manifest.app_id, payload.target_pipe, payload.query);
+
+    let driver = OllamaDriver::new(&state.ollama_url);
+    
+    // Translate the question into Math using the System Embedder
+    let query_vector = match driver.generate_embeddings(SYSTEM_EMBEDDER, &payload.query).await {
+        Ok(v) => v,
+        Err(_) => return axum::response::Json(vec!["KERNEL ERROR: Embedding failed.".to_string()]),
+    };
+
+    // Perform Pure-Rust Math Search (Zero GPU used here)
+    let top_results = state.semantic_bus.search_pipe(&payload.target_pipe, &query_vector, 3); // Get Top 3 matches
+
+    let _ = driver.unload_model(SYSTEM_EMBEDDER).await;
+
+    println!("-> [SEMANTIC BUS] Search complete. Handing English text back to Agent.");
+    
+    axum::response::Json(top_results)
+}
+
+async fn ipc_send(
+    State(state): State<Arc<KernelState>>,
+    Json(payload): Json<AgentMessage>,
+) -> String {
+    println!("-> [IPC BUS] Routing message from '{}' to '{}'", payload.from_app, payload.to_app);
+    
+    // ORE IPC FIREWALL: Is the sender registered?
+    let manifest = match state.registry.get_app(&payload.from_app) {
+        Some(m) => m,
+        None => return format!("KERNEL ERROR: Unregistered sender '{}'.", payload.from_app),
+    };
+
+    // ORE IPC FIREWALL: Is the sender allowed to talk to the target?
+    if !manifest.ipc.allowed_ipc_targets.contains(&payload.to_app) {
+        println!("-> [BLOCKED] '{}' is not authorized by its manifest to contact '{}'.", payload.from_app, payload.to_app);
+        return format!("KERNEL ALERT: IPC Target '{}' not in allowed_ipc_targets manifest.", payload.to_app);
+    }
+
+    // Route the message instantly in RAM
+    match state.message_bus.send_message(payload) {
+        Ok(_) => {
+            println!("-> [SUCCESS] Message delivered to local channel.");
+            "SUCCESS: Message delivered.".to_string()
+        },
+        Err(e) => {
+            println!("-> [WARN] {}", e);
+            format!("KERNEL ERROR: {}", e)
+        },
+    }
+}
+
+async fn ipc_listen(
+    State(state): State<Arc<KernelState>>,
+    Path(app_id): Path<String>,
+) -> axum::response::Json<Option<AgentMessage>> {
+    println!("-> [IPC BUS] App '{}' is polling its channel...", app_id);
+    
+    let mut receiver = state.message_bus.register_listener(&app_id);
+    
+    match receiver.try_recv() {
+        Ok(msg) => axum::response::Json(Some(msg)),
+        Err(_) => axum::response::Json(None),
+    }
+}
+
+async fn auth_middleware(
+    State(state): State<Arc<KernelState>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // 1. Extract the Authorization header
+    if let Some(auth_header) = headers.get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if auth_str == format!("Bearer {}", state.auth_token) {
+                return Ok(next.run(request).await); 
+            }
+        }
+    }
+    
+    println!("-> [SECURITY ALERT] Blocked unauthorized network connection attempt!");
+    Err(StatusCode::UNAUTHORIZED)
 }

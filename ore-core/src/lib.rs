@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 pub mod driver;
 pub mod firewall;
 pub mod registry;
+pub mod ipc;
 
 #[derive(Error, Debug)]
 pub enum OreError {

@@ -72,7 +72,7 @@ impl InjectionBlocker {
     pub fn check(prompt: &str) -> Result<(), FirewallError> {
         let lower = prompt.to_lowercase();
 
-        // Smarter heuristic checks
+        // smarter heuristic checks
         let is_jailbreak = lower.contains("ignore") && lower.contains("previous");
         let is_system_probe = lower.contains("system prompt") || lower.contains("root password");
         let is_override = lower.contains("bypass") || lower.contains("forget everything");

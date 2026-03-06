@@ -341,6 +341,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "crossbeam-utils"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+
+[[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "dialoguer"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -470,6 +490,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
 
 [[package]]
+name = "futures-io"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
+
+[[package]]
+name = "futures-macro"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "futures-sink"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -488,7 +525,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
+ "futures-io",
+ "futures-macro",
+ "futures-sink",
  "futures-task",
+ "memchr",
  "pin-project-lite",
  "slab",
 ]
@@ -570,6 +611,12 @@ dependencies = [
  "tokio-util",
  "tracing",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
@@ -1111,6 +1158,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "dashmap",
  "ore-common",
  "regex",
  "reqwest 0.13.2",
@@ -1146,6 +1194,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1420,6 +1469,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
+ "futures-util",
  "h2 0.4.13",
  "http 1.4.0",
  "http-body 1.0.1",
@@ -1441,12 +1491,14 @@ dependencies = [
  "sync_wrapper 1.0.2",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -2170,9 +2222,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.21.0"
+version = "1.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b672338555252d43fd2240c714dc444b8c6fb0a5c5335e65a07bba7742735ddb"
+checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
 dependencies = [
  "getrandom 0.4.1",
  "js-sys",
@@ -2308,6 +2360,19 @@ dependencies = [
  "indexmap",
  "wasm-encoder",
  "wasmparser",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

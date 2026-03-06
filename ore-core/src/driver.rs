@@ -44,6 +44,8 @@ pub trait InferenceDriver: Send + Sync {
     async fn pull_model(&self, model_name: &str) -> Result<(), DriverError>;
 
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError>;
+
+    async fn generate_embeddings(&self, model: &str, input: &str) -> Result<Vec<f32>, DriverError>;
 }
 
 // OLLAMA IMPLEMENTATION
@@ -89,6 +91,17 @@ struct OllamaTagModel {
     name: String,
     size: u64,
     modified_at: String,
+}
+
+#[derive(serde::Serialize)]
+struct OllamaEmbedRequest {
+    model: String,
+    input: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaEmbedResponse {
+    embeddings: Vec<Vec<f32>>,
 }
 
 #[async_trait]
@@ -268,5 +281,21 @@ impl InferenceDriver for OllamaDriver {
             .collect();
 
         Ok(models)
+    }
+
+    async fn generate_embeddings(&self, model: &str, input: &str) -> Result<Vec<f32>, DriverError> {
+        let url = format!("{}/api/embed", self.base_url);
+        let payload = OllamaEmbedRequest {
+            model: model.to_string(),
+            input: input.to_string(),
+        };
+
+        let res = self.client.post(&url).json(&payload).send().await
+            .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
+
+        let data: OllamaEmbedResponse = res.json().await
+            .map_err(|e| DriverError::ApiError(e.to_string()))?;
+
+        Ok(data.embeddings.into_iter().next().unwrap_or_default())
     }
 }
