@@ -39,6 +39,9 @@ It sits between your user-facing applications (OpenClaw, AutoGPT, custom termina
 | 📦 **Model Sharing** | Each app downloads its own 4GB weights | Single model instance, shared across apps |
 | 🕵️ **PII Protection** | Raw user data forwarded to model | Automatic regex-based redaction before inference |
 | 🛡️ **Injection Defense** | Prompts pass through unfiltered | Heuristic detection + structural boundary enforcement |
+| 🧠 **Shared Memory** | Agents duplicate context independently | Semantic Bus with cosine similarity vector search |
+| 🔑 **Authentication** | Open API, anyone can call it | Token-based auth middleware on every request |
+| ⏱️ **Rate Limiting** | Agents can spam inference indefinitely | Per-agent token rate limiting enforced by manifest |
 
 ---
 
@@ -77,13 +80,25 @@ A multi-layered security pipeline that processes every prompt before it reaches 
 **⚙️ GPU Scheduler** (`ore-server/src/main.rs`)
 Implements a `tokio::sync::Semaphore`-based lock for GPU access. Multiple applications can request inference concurrently, ORE serializes access, preventing OOM crashes entirely. Currently configured for single-concurrent-job execution.
 
+**⏱️ Rate Limiter** (`ore-core/src/ipc.rs`)
+A `DashMap`-backed per-agent token counter that enforces the `max_tokens_per_minute` quota declared in each app's manifest. The counter auto-resets every 60 seconds. Agents that exceed their quota are blocked before reaching the GPU.
+
 **🔌 Hardware Abstraction Layer** (`ore-core/src/driver.rs`)
 A trait-based driver system (`InferenceDriver`) that decouples application logic from the physical inference engine. The `OllamaDriver` implementation provides:
 - Health checks, model listing, and VRAM process monitoring
 - Inference generation with streaming control
 - Model lifecycle management (preload, unload, pull)
+- Embedding generation via `/api/embed` for the Semantic Bus
 
 Swap Ollama for vLLM or any other backend by implementing the `InferenceDriver` trait - zero app code changes required.
+
+**🧠 IPC & Semantic Memory** (`ore-core/src/ipc.rs`)
+A dual-layer inter-process communication system for agent collaboration:
+- **Message Bus** - Real-time agent-to-agent messaging using `tokio::sync::broadcast` channels. Agents register listeners and send typed `AgentMessage` payloads, with IPC targets enforced by the manifest.
+- **Semantic Bus** - An in-memory vector database powered by cosine similarity search. Agents write knowledge as text, which is automatically chunked (100-word blocks), embedded via `nomic-embed-text`, and stored as vectors. Other agents can query the bus with natural language and receive the top-K most relevant text chunks. The embedding model is auto-unloaded after each operation to maintain zero idle VRAM.
+
+**🔑 Token Authentication** (`ore-server/src/main.rs`)
+On boot, the kernel generates a UUID-based session token and writes it to `ore-kernel.token`. An Axum middleware layer intercepts every incoming request and validates the `Authorization: Bearer <token>` header. Unauthorized connections are rejected with `401 UNAUTHORIZED`. The CLI reads the token file automatically. 
 
 **📋 App Registry** (`ore-core/src/registry.rs`)
 An in-memory `HashMap`-backed registry that loads and validates all `.toml` manifest files from the `manifests/` directory on boot. Provides O(1) app lookup for the firewall and enforces per-app permission boundaries covering privacy, resources, file system, network, execution, and IPC.
@@ -104,7 +119,8 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║                  ORE KERNEL  (Rust)                  ║
 ║                                                      ║
 ║   ┌─────────────┐    ┌──────────────────────────┐    ║
-║   │ IPC Listener│───▶│ Manifest Permission Check│   ║
+║   │ Auth Guard  │───▶│ Manifest Permission Check│   ║
+║   │(Bearer JWT) │    │   + Rate Limiter          │   ║
 ║   └─────────────┘    └────────────┬─────────────┘    ║
 ║                                   │                  ║
 ║   ┌─────────────────┐             │                  ║
@@ -117,6 +133,12 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║   ┌────────▼──────────────────────────────────────┐  ║
 ║   │  Priority Scheduler  ──▶  GPU Semaphore Lock  │  ║
 ║   └───────────────────────────────────────────────┘  ║
+║                                                      ║
+║   ┌──────────────────────────────────────────────┐   ║
+║   │  IPC Layer                                   │   ║
+║   │  · Message Bus  (Agent ↔ Agent broadcast)    │   ║
+║   │  · Semantic Bus (Vector memory + cosine sim) │   ║
+║   └──────────────────────────────────────────────┘   ║
 ╚══════════════════════════╤═══════════════════════════╝
                            │
                            ▼
@@ -141,10 +163,11 @@ ORE is organized as a Rust workspace with four crates:
 ore-kernel/
 ├── ore-common/          # Shared types (InferenceRequest, InferenceResponse, ModelId)
 ├── ore-core/            # Kernel logic
-│   ├── driver.rs        #   ├── HAL trait + OllamaDriver implementation
+│   ├── driver.rs        #   ├── HAL trait + OllamaDriver (inference + embeddings)
 │   ├── firewall.rs      #   ├── Context firewall (PII, injection, boundary)
+│   ├── ipc.rs           #   ├── MessageBus, SemanticBus, RateLimiter
 │   └── registry.rs      #   └── App manifest registry (TOML loader + cache)
-├── ore-server/          # Axum HTTP daemon (kernel entry point)
+├── ore-server/          # Axum HTTP daemon (14 routes + auth middleware)
 ├── ore-cli/             # Interactive CLI tool (clap + dialoguer)
 ├── manifests/           # App permission manifests (.toml files)
 │   ├── openclaw.toml
@@ -162,13 +185,14 @@ ore-kernel/
 
 | Crate | Purpose |
 |---|---|
-| `axum` | HTTP server framework for the kernel daemon |
-| `tokio` | Async runtime with semaphore-based scheduling |
+| `axum` | HTTP server framework with middleware for auth |
+| `tokio` | Async runtime with semaphore scheduling + broadcast channels |
+| `dashmap` | Lock-free concurrent HashMap for IPC buses and rate limiter |
 | `clap` + `dialoguer` | CLI argument parsing + interactive manifest wizard |
 | `reqwest` | HTTP client for Ollama driver communication |
 | `regex` | PII pattern matching (emails, credit cards) |
 | `serde` + `toml` | Manifest serialization and deserialization |
-| `uuid` | Randomized boundary tags for injection prevention |
+| `uuid` | Session tokens, boundary tags, request IDs |
 | `colored` | Terminal output formatting in the CLI |
 | `thiserror` | Structured error types across the kernel |
 
@@ -200,6 +224,7 @@ cargo run -p ore-server
 
 # Expected output:
 # === ORE SYSTEM KERNEL BOOTING ===
+# -> [SECURITY] Master Token generated and secured to disk.
 # -> Sweeping /manifests for installed Apps...
 # -> [REGISTRY] Verified & Loaded App: openclaw
 # -> [REGISTRY] Verified & Loaded App: terminal_user
