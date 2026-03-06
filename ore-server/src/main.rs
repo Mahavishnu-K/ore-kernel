@@ -11,18 +11,17 @@ use ore_core::driver::{InferenceDriver, OllamaDriver};
 use ore_core::firewall::ContextFirewall;
 use ore_core::registry::AppRegistry;
 use ore_core::ipc::{SemanticBus, RateLimiter, MessageBus, AgentMessage};
+use ore_core::scheduler::GpuScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::fs;
 use uuid::Uuid;
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
 
 // kernel state shared across handlers
 struct KernelState {
     ollama_url: String,
-    model_name: String,
-    gpu_lock: Arc<Semaphore>,
+    scheduler: Arc<GpuScheduler>,
     registry: AppRegistry,
     semantic_bus: SemanticBus,
     message_bus: MessageBus,
@@ -45,8 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // configuration
     let shared_state = Arc::new(KernelState {
         ollama_url: "http://127.0.0.1:11434".to_string(),
-        model_name: "llama3.2:1b".to_string(),
-        gpu_lock: Arc::new(Semaphore::new(1)), // 1 concurrent GPU job
+        scheduler: Arc::new(GpuScheduler::new()),
         registry: app_registry,
         semantic_bus: SemanticBus::new(),
         message_bus: MessageBus::new(),
@@ -149,15 +147,20 @@ async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<String
         }
     };
 
-    println!("-> Waiting for GPU availability...");
+    println!("-> Waiting for GPU Scheduler...");
+
+    // If the agent lists allowed_models, pick the first one. Default to "llama3.2:1b"
+    let target_model = manifest.resources.allowed_models.first()
+        .map(|s| s.as_str())
+        .unwrap_or("llama3.2:1b");
 
     // the GPU scheduler
-    let _permit = state.gpu_lock.acquire().await.unwrap();
-    println!("-> GPU Lock Acquired! Routing to Ollama Driver...");
+    let lease = state.scheduler.request_gpu(target_model).await;
+    println!("-> GPU Lease Granted for '{}'. Routing to Driver...", lease.model);
 
     let client = reqwest::Client::new();
     let request_body = OllamaRequest {
-        model: state.model_name.clone(),
+        model: lease.model.clone(),
         prompt: secured_prompt,
         stream: false,
     };
@@ -217,14 +220,15 @@ async fn run_process(
         }
     };
 
-    println!("-> Waiting for GPU availability...");
+    println!("-> Waiting for GPU Scheduler...");
 
-    let _permit = state.gpu_lock.acquire().await.unwrap();
-    println!("-> GPU Lock Acquired! Executing on {}...", payload.model);
+    // request a GPU lease for the specified model
+    let lease = state.scheduler.request_gpu(&payload.model).await;
+    println!("-> GPU Lease Granted for '{}'. Executing...", lease.model);
 
     let client = reqwest::Client::new();
     let request_body = OllamaRequest {
-        model: payload.model.clone(),
+        model: lease.model.clone(),
         prompt: secured_prompt,
         stream: false,
     };

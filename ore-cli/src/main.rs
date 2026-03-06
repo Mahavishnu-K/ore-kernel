@@ -90,7 +90,6 @@ enum Commands {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let client = Client::new();
     let kernel_url = "http://127.0.0.1:3000";
 
     let token_path = "../ore-server/ore-kernel.token";
@@ -103,10 +102,10 @@ async fn main() {
         }
     };
 
-    let mut headers = reqwest::header::HeaderMap::new();
-    let mut auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", auth_token)).unwrap();
+    let mut headers = HeaderMap::new();
+    let mut auth_value = HeaderValue::from_str(&format!("Bearer {}", auth_token)).unwrap();
     auth_value.set_sensitive(true);
-    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+    headers.insert(AUTHORIZATION, auth_value);
 
     let client = Client::builder()
         .default_headers(headers)

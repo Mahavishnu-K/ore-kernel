@@ -6,6 +6,7 @@ pub mod driver;
 pub mod firewall;
 pub mod registry;
 pub mod ipc;
+pub mod scheduler;
 
 #[derive(Error, Debug)]
 pub enum OreError {
