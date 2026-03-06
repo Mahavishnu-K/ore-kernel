@@ -502,6 +502,11 @@ async fn sys_share_context(
         }
     };
 
+    if !manifest.ipc.allowed_ipc_targets.contains(&payload.target_pipe) {
+        println!("-> [BLOCKED] Agent '{}' tried to write to restricted pipe '{}'.", payload.source_app, payload.target_pipe);
+        return format!("KERNEL ALERT: Permission Denied. Add '{}' to allowed_ipc_targets in manifest.", payload.target_pipe);
+    }
+
     println!("-> [SEMANTIC BUS] Verified Agent '{}' is uploading data to pipe '{}'", manifest.app_id, payload.target_pipe);
     
     let driver = OllamaDriver::new(&state.ollama_url);
@@ -541,6 +546,11 @@ async fn sys_search_context(
             return axum::response::Json(vec![format!("KERNEL ALERT: Unregistered Agent '{}'.", payload.source_app)]);
         }
     };
+
+    if !manifest.ipc.allowed_ipc_targets.contains(&payload.target_pipe) {
+        println!("-> [BLOCKED] Agent '{}' tried to read restricted pipe '{}'.", payload.source_app, payload.target_pipe);
+        return axum::response::Json(vec![format!("KERNEL ALERT: Permission Denied. Pipe '{}' is locked.", payload.target_pipe)]);
+    }
 
     println!("-> [SEMANTIC BUS] Verified Agent '{}' searching pipe '{}' for: {}", manifest.app_id, payload.target_pipe, payload.query);
 
