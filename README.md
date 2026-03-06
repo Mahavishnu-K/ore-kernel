@@ -77,8 +77,8 @@ A multi-layered security pipeline that processes every prompt before it reaches 
 - **PII Redactor** - Regex-powered scanner that strips emails and credit card numbers from prompts before inference.
 - **Boundary Enforcer** - Wraps user input in randomized XML-like tags with UUID-based boundaries, preventing attackers from escaping the data context.
 
-**⚙️ GPU Scheduler** (`ore-server/src/main.rs`)
-Implements a `tokio::sync::Semaphore`-based lock for GPU access. Multiple applications can request inference concurrently, ORE serializes access, preventing OOM crashes entirely. Currently configured for single-concurrent-job execution.
+**⚙️ GPU Scheduler** (`ore-core/src/scheduler.rs`)
+A dedicated scheduling module built on `tokio::sync::Semaphore` with RAII-based `GpuLease` locks. The scheduler tracks VRAM state (`active_model`, `active_users`) and performs **hot-swap detection** - if the requested model is already loaded, it skips the reload and shares the existing instance. On a model mismatch, it performs a **context switch**, evicting the old model before loading the new one. When the `GpuLease` drops out of scope, the GPU lock is automatically released.
 
 **⏱️ Rate Limiter** (`ore-core/src/ipc.rs`)
 A `DashMap`-backed per-agent token counter that enforces the `max_tokens_per_minute` quota declared in each app's manifest. The counter auto-resets every 60 seconds. Agents that exceed their quota are blocked before reaching the GPU.
@@ -96,6 +96,7 @@ Swap Ollama for vLLM or any other backend by implementing the `InferenceDriver` 
 A dual-layer inter-process communication system for agent collaboration:
 - **Message Bus** - Real-time agent-to-agent messaging using `tokio::sync::broadcast` channels. Agents register listeners and send typed `AgentMessage` payloads, with IPC targets enforced by the manifest.
 - **Semantic Bus** - An in-memory vector database powered by cosine similarity search. Agents write knowledge as text, which is automatically chunked (100-word blocks), embedded via `nomic-embed-text`, and stored as vectors. Other agents can query the bus with natural language and receive the top-K most relevant text chunks. The embedding model is auto-unloaded after each operation to maintain zero idle VRAM.
+- **Pipe-Level Permissions** - Both read and write operations on the Semantic Bus are gated by the manifest's `allowed_ipc_targets`. An agent can only access pipes that are explicitly listed in its manifest, preventing unauthorized cross-agent memory access.
 
 **🔑 Token Authentication** (`ore-server/src/main.rs`)
 On boot, the kernel generates a UUID-based session token and writes it to `ore-kernel.token`. An Axum middleware layer intercepts every incoming request and validates the `Authorization: Bearer <token>` header. Unauthorized connections are rejected with `401 UNAUTHORIZED`. The CLI reads the token file automatically. 
@@ -166,6 +167,7 @@ ore-kernel/
 │   ├── driver.rs        #   ├── HAL trait + OllamaDriver (inference + embeddings)
 │   ├── firewall.rs      #   ├── Context firewall (PII, injection, boundary)
 │   ├── ipc.rs           #   ├── MessageBus, SemanticBus, RateLimiter
+│   ├── scheduler.rs     #   ├── GpuScheduler with RAII GpuLease + VRAM state
 │   └── registry.rs      #   └── App manifest registry (TOML loader + cache)
 ├── ore-server/          # Axum HTTP daemon (14 routes + auth middleware)
 ├── ore-cli/             # Interactive CLI tool (clap + dialoguer)
