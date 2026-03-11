@@ -15,8 +15,7 @@
 
 <br>
 
- *"Building AI apps today is like building software in the 1980s, before Operating Systems existed.*
- ***ORE is the POSIX standard for the AI era."***
+ *ORE is an attempt to build the POSIX standard for local AI - a stable kernel interface between applications and inference hardware, so developers stop rebuilding the same unsafe plumbing.*
 
 <br>
 
