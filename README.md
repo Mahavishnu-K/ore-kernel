@@ -415,7 +415,7 @@ Areas where contributions are especially welcome:
 - **Manifest enforcement** - Runtime file system, network, and execution sandboxing
 - **Documentation & examples** - Integration guides, tutorials, example manifests
 
-Join us on [**Discord**](https://discord.gg/ZdGYnwZe) - we hang out in `#dev-core`.
+Join us on [**Discord**](https://discord.gg/ZdGYnwZe) - we hang out in `#dev-core` 👾.
 
 ---
 
