@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚙️ ORE - Open Runtime Environment For LLMs
+# ORE - Open Runtime Environment For LLMs
 
 ### *The Operating System for Local Intelligence*
 
@@ -20,13 +20,13 @@
 
 <br>
 
-[**Get Started**](#-quick-start) · [**Architecture**](#️-architecture) · [**Project Structure**](#-project-structure) · [**CLI Reference**](#-cli-reference) · [**Security**](#-security-features) · [**Roadmap**](#️-roadmap) · [**Contributing**](#-contributing) · [**Discord**](https://discord.gg/ZdGYnwZe)
+[**Get Started**](#quick-start) · [**Architecture**](#architecture) · [**Project Structure**](#project-structure) · [**CLI Reference**](#cli-reference) · [**Security**](#security-features) · [**Roadmap**](#roadmap) · [**Contributing**](#contributing) · [**Discord**](https://discord.gg/ZdGYnwZe)
 
 </div>
 
 ---
 
-## 🧠 What is ORE?
+## What is ORE?
 
 **ORE (Open Runtime Environment)** is a **kernel-level process manager** for local Artificial Intelligence, written entirely in Rust.
 
@@ -34,18 +34,18 @@ It sits between your user-facing applications (OpenClaw, AutoGPT, custom termina
 
 | Capability | Without ORE | With ORE |
 |---|---|---|
-| 🔐 **Security** | Agents have full file system access | Context firewall + manifest permissions |
-| ⚡ **Scheduling** | Two models = GPU crash | Semaphore-based GPU lock with queue |
-| 📦 **Model Sharing** | Each app downloads its own 4GB weights | Single model instance, shared across apps |
-| 🕵️ **PII Protection** | Raw user data forwarded to model | Automatic regex-based redaction before inference |
-| 🛡️ **Injection Defense** | Prompts pass through unfiltered | Heuristic detection + structural boundary enforcement |
-| 🧠 **Shared Memory** | Agents duplicate context independently | Semantic Bus with cosine similarity vector search |
-| 🔑 **Authentication** | Open API, anyone can call it | Token-based auth middleware on every request |
-| ⏱️ **Rate Limiting** | Agents can spam inference indefinitely | Per-agent token rate limiting enforced by manifest |
+| **Security** | Agents have full file system access | Context firewall + manifest permissions |
+| **Scheduling** | Two models = GPU crash | Semaphore-based GPU lock with queue |
+| **Model Sharing** | Each app downloads its own 4GB weights | Single model instance, shared across apps |
+| **PII Protection** | Raw user data forwarded to model | Automatic regex-based redaction before inference |
+| **Injection Defense** | Prompts pass through unfiltered | Heuristic detection + structural boundary enforcement |
+| **Shared Memory** | Agents duplicate context independently | Semantic Bus with cosine similarity vector search |
+| **Authentication** | Open API, anyone can call it | Token-based auth middleware on every request |
+| **Rate Limiting** | Agents can spam inference indefinitely | Per-agent token rate limiting enforced by manifest |
 
 ---
 
-## ⚡ The Problem
+## The Problem
 
 Modern local AI stacks are **dangerously fragile**. Three failures define the landscape today:
 
@@ -60,7 +60,7 @@ Every AI application ships bundled model weights. Three apps = three copies of t
 
 ---
 
-## 🛡️ The ORE Solution
+## The ORE Solution
 
 ORE runs as a **kernel daemon** (`ore-server`), a persistent Axum-based HTTP server that virtualizes all access to intelligence.
 
@@ -71,19 +71,19 @@ They talk to ORE. ORE enforces the rules.
 
 ### Core Subsystems
 
-**🔥 Context Firewall** (`ore-core/src/firewall.rs`)
+**Context Firewall** (`ore-core/src/firewall.rs`)
 A multi-layered security pipeline that processes every prompt before it reaches the model:
 - **Injection Blocker** - Heuristic analysis detecting jailbreaks (`"ignore previous"`), system probes (`"system prompt"`, `"root password"`), and override attempts (`"bypass"`, `"forget everything"`).
 - **PII Redactor** - Regex-powered scanner that strips emails and credit card numbers from prompts before inference.
 - **Boundary Enforcer** - Wraps user input in randomized XML-like tags with UUID-based boundaries, preventing attackers from escaping the data context.
 
-**⚙️ GPU Scheduler** (`ore-core/src/scheduler.rs`)
+**GPU Scheduler** (`ore-core/src/scheduler.rs`)
 A dedicated scheduling module built on `tokio::sync::Semaphore` with RAII-based `GpuLease` locks. The scheduler tracks VRAM state (`active_model`, `active_users`) and performs **hot-swap detection** - if the requested model is already loaded, it skips the reload and shares the existing instance. On a model mismatch, it performs a **context switch**, evicting the old model before loading the new one. When the `GpuLease` drops out of scope, the GPU lock is automatically released.
 
-**⏱️ Rate Limiter** (`ore-core/src/ipc.rs`)
+**Rate Limiter** (`ore-core/src/ipc.rs`)
 A `DashMap`-backed per-agent token counter that enforces the `max_tokens_per_minute` quota declared in each app's manifest. The counter auto-resets every 60 seconds. Agents that exceed their quota are blocked before reaching the GPU.
 
-**🔌 Hardware Abstraction Layer** (`ore-core/src/driver.rs`)
+**Hardware Abstraction Layer** (`ore-core/src/driver.rs`)
 A trait-based driver system (`InferenceDriver`) that decouples application logic from the physical inference engine. The `OllamaDriver` implementation provides:
 - Health checks, model listing, and VRAM process monitoring
 - Inference generation with streaming control
@@ -92,21 +92,21 @@ A trait-based driver system (`InferenceDriver`) that decouples application logic
 
 Swap Ollama for vLLM or any other backend by implementing the `InferenceDriver` trait - zero app code changes required.
 
-**🧠 IPC & Semantic Memory** (`ore-core/src/ipc.rs`)
+**IPC & Semantic Memory** (`ore-core/src/ipc.rs`)
 A dual-layer inter-process communication system for agent collaboration:
 - **Message Bus** - Real-time agent-to-agent messaging using `tokio::sync::broadcast` channels. Agents register listeners and send typed `AgentMessage` payloads, with IPC targets enforced by the manifest.
 - **Semantic Bus** - An in-memory vector database powered by cosine similarity search. Agents write knowledge as text, which is automatically chunked (100-word blocks), embedded via `nomic-embed-text`, and stored as vectors. Other agents can query the bus with natural language and receive the top-K most relevant text chunks. The embedding model is auto-unloaded after each operation to maintain zero idle VRAM.
 - **Pipe-Level Permissions** - Both read and write operations on the Semantic Bus are gated by the manifest's `allowed_ipc_targets`. An agent can only access pipes that are explicitly listed in its manifest, preventing unauthorized cross-agent memory access.
 
-**🔑 Token Authentication** (`ore-server/src/main.rs`)
-On boot, the kernel generates a UUID-based session token and writes it to `ore-kernel.token`. An Axum middleware layer intercepts every incoming request and validates the `Authorization: Bearer <token>` header. Unauthorized connections are rejected with `401 UNAUTHORIZED`. The CLI reads the token file automatically. 
+**Token Authentication** (`ore-server/src/main.rs`)
+On boot, the kernel generates a UUID-based session token and writes it to `ore-kernel.token`. An Axum middleware layer intercepts every incoming request and validates the `Authorization: Bearer <token>` header. Unauthorized connections are rejected with `401 UNAUTHORIZED`. The CLI reads the token file automatically.
 
-**📋 App Registry** (`ore-core/src/registry.rs`)
+**App Registry** (`ore-core/src/registry.rs`)
 An in-memory `HashMap`-backed registry that loads and validates all `.toml` manifest files from the `manifests/` directory on boot. Provides O(1) app lookup for the firewall and enforces per-app permission boundaries covering privacy, resources, file system, network, execution, and IPC.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ╔═══════════════════════╗     ╔═══════════════════════╗
@@ -137,7 +137,7 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
 ║   │  IPC Layer                                   │   ║
-║   │  · Message Bus  (Agent ↔ Agent broadcast)    │   ║
+║   │  · Message Bus  (Agent <-> Agent broadcast)  │   ║
 ║   │  · Semantic Bus (Vector memory + cosine sim) │   ║
 ║   └──────────────────────────────────────────────┘   ║
 ╚══════════════════════════╤═══════════════════════════╝
@@ -156,7 +156,7 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ORE is organized as a Rust workspace with four crates:
 
@@ -200,7 +200,7 @@ ore-kernel/
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -253,7 +253,7 @@ ore manifest <app_id>   # Interactive wizard to generate a secure manifest
 
 ---
 
-## 🔧 CLI Reference
+## CLI Reference
 
 ### `ore manifest` - Interactive Manifest Forge
 
@@ -288,7 +288,7 @@ The `STATUS` column automatically flags agents as `SECURED`, `UNSAFE` (shell acc
 
 ---
 
-## 🔒 Security Features
+## Security Features
 
 ### AppManifest Permissions
 
@@ -373,13 +373,13 @@ allowed_ipc_targets = []
 
 ---
 
-## 🗺️ Roadmap
+## Roadmap
 
 ```
-v0.1  ████████████████████  ✅  Scheduler · PII Redaction · Manifest System
-v0.2  ░░░░░░░░░░░░░░░░░░░░  🔧  Unix Domain Sockets (ultra-low latency IPC)
-v0.3  ░░░░░░░░░░░░░░░░░░░░  📐  Semantic File System - shared vector memory
-v1.0  ░░░░░░░░░░░░░░░░░░░░  🌐  ORE Mesh - distributed inference over LAN
+v0.1  ████████████████████  [DONE]  Scheduler · PII Redaction · Manifest System
+v0.2  ░░░░░░░░░░░░░░░░░░░░  [WIP]   Unix Domain Sockets (ultra-low latency IPC)
+v0.3  ░░░░░░░░░░░░░░░░░░░░  [PLAN]  Semantic File System - shared vector memory
+v1.0  ░░░░░░░░░░░░░░░░░░░░  [PLAN]  ORE Mesh - distributed inference over LAN
 ```
 
 **v0.2 - Unix Domain Sockets**
@@ -393,7 +393,7 @@ Distribute inference load across devices on your local network. Offload heavy co
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 ORE is early-stage infrastructure. The best time to shape its design is now.
 
@@ -404,7 +404,7 @@ Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) for our code of conduct and PR proce
 git checkout -b feature/your-feature
 git commit -m 'feat: describe your change'
 git push origin feature/your-feature
-# → open a Pull Request
+# -> open a Pull Request
 ```
 
 Areas where contributions are especially welcome:
@@ -415,11 +415,11 @@ Areas where contributions are especially welcome:
 - **Manifest enforcement** - Runtime file system, network, and execution sandboxing
 - **Documentation & examples** - Integration guides, tutorials, example manifests
 
-Join us on [**Discord**](https://discord.gg/ZdGYnwZe) 👾 - we hang out in `#dev-core`.
+Join us on [**Discord**](https://discord.gg/ZdGYnwZe) - we hang out in `#dev-core`.
 
 ---
 
-## 📄 License
+## License
 
 Released under the **MIT License** - see [`LICENSE-MIT`](./LICENSE-MIT) for full text.
 
