@@ -1,10 +1,8 @@
-use tokio::sync::{Mutex, Semaphore, SemaphorePermit};
+use std::sync::Arc;
+use tokio::sync::{Mutex, Semaphore, OwnedSemaphorePermit};
 
 pub struct GpuScheduler {
-    /// The physical lock. Only 1 process can do heavy compute at a time.
-    execution_lock: Semaphore,
-    
-    /// We use a Mutex because multiple threads need to read/update this state.
+    execution_lock: Arc<Semaphore>,
     state: Mutex<GpuState>,
 }
 
@@ -17,7 +15,7 @@ struct GpuState {
 impl GpuScheduler {
     pub fn new() -> Self {
         Self {
-            execution_lock: Semaphore::new(1),
+            execution_lock: Arc::new(Semaphore::new(1)),
             state: Mutex::new(GpuState {
                 active_model: None,
                 active_users: 0,
@@ -25,18 +23,14 @@ impl GpuScheduler {
         }
     }
 
-    pub async fn request_gpu(&self, requested_model: &str) -> GpuLease<'_> {
+    pub async fn request_gpu(&self, requested_model: &str) -> GpuLease {
         
-        let permit = self.execution_lock.acquire().await.unwrap();
+        let permit = Arc::clone(&self.execution_lock).acquire_owned().await.unwrap();
         
         // 2. Check the Memory Map (What's in VRAM?)
         let mut state = self.state.lock().await;
         
-        let is_hot_swap = if let Some(current) = &state.active_model {
-            current == requested_model
-        } else {
-            false
-        };
+        let is_hot_swap = state.active_model.as_ref() == Some(&requested_model.to_string());
 
         if is_hot_swap {
             println!("-> [SCHEDULER] Shared Memory Hit! '{}' is already hot.", requested_model);
@@ -68,7 +62,7 @@ impl GpuScheduler {
 }
 
 // When this struct drops (variable goes out of scope), the GPU is unlocked.
-pub struct GpuLease<'a> {
-    _permit: SemaphorePermit<'a>,
+pub struct GpuLease {
+    _permit: OwnedSemaphorePermit,
     pub model: String,
 }

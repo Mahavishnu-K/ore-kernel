@@ -43,6 +43,9 @@ pub struct Resources {
     pub allowed_models: Vec<String>,
     pub max_tokens_per_minute: u32,
     pub gpu_priority: String,
+
+    #[serde(default)] 
+    pub stateful_paging: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -68,7 +71,11 @@ pub struct Execution {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Ipc {
-    pub allowed_ipc_targets: Vec<String>,
+    #[serde(default)]
+    pub allowed_agent_targets: Vec<String>,
+
+    #[serde(default)]
+    pub allowed_semantic_pipes: Vec<String>,
 }
 
 // the app registry (In-Memory Cache)

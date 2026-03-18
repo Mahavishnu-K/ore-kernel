@@ -5,6 +5,112 @@ use reqwest::{Client, header::{HeaderMap, HeaderValue, AUTHORIZATION}};
 use std::fs;
 use std::path::Path;
 use std::process::exit;
+use serde::Deserialize;
+use indicatif::{ProgressBar, ProgressStyle};
+use futures_util::StreamExt;
+use std::cmp::min;
+use std::io::Write;
+use hf_hub::api::tokio::Api;
+use hf_hub::{Repo, RepoType};
+
+// configuration parsers
+#[derive(Deserialize)]
+struct OreConfig {
+    system: SystemConfig,
+}
+
+#[derive(Deserialize)]
+struct SystemConfig {
+    engine: String,
+}
+
+fn get_system_engine() -> String {
+    let config_path = "../ore.toml";
+    match fs::read_to_string(config_path) {
+        Ok(contents) => {
+            match toml::from_str::<OreConfig>(&contents) {
+                Ok(config) => config.system.engine,
+                Err(_) => {
+                    println!("{} FATAL: ore.toml is corrupted.", "[-]".red().bold());
+                    println!("       Please run 'ore init' to regenerate it.");
+                    exit(1);
+                }
+            }
+        }
+        Err(_) => {
+            println!("{} FATAL: ORE System is not initialized.", "[-]".red().bold());
+            println!("       Please run 'ore init' first.");
+            exit(1);
+        }
+    }
+}
+
+fn get_model_map(alias: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match alias {
+        "qwen2.5:0.5b" => Some((
+            "Qwen/Qwen2.5-0.5B-Instruct-GGUF", 
+            "qwen2.5-0.5b-instruct-q4_k_m.gguf", 
+            "Qwen/Qwen2.5-0.5B-Instruct", 
+        )),
+        "llama3.2:1b" => Some((
+            "bartowski/Llama-3.2-1B-Instruct-GGUF", 
+            "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            "unsloth/Llama-3.2-1B-Instruct",
+        )),
+        _ => None,
+    }
+}
+
+/// Streams a file from a URL directly to the disk with a professional progress bar
+async fn download_with_progress(url: &str, dest: &Path, token: &Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let mut req = client.get(url);
+    
+    if let Some(t) = token.as_ref() {
+        req = req.bearer_auth(t);
+    }
+
+    let res = req.send().await?;
+    if !res.status().is_success() {
+        return Err(format!("HTTP Error: {}", res.status()).into());
+    }
+
+    let total_size = res.content_length().unwrap_or(0);
+
+    let pb = ProgressBar::new(total_size);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            // Template: [00:05] [==========>---] 1.2GB/2.5GB (25 MB/s, ETA: 00:02)
+            .template("{spinner:.green}[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes:>7}/{total_bytes:7} ({bytes_per_sec}, ETA: {eta})")
+            .unwrap()
+            .progress_chars("=>-")
+    );
+
+    let mut file = fs::File::create(dest)?;
+    let mut downloaded: u64 = 0;
+    
+    // Stream the data directly to the NVMe/SSD (Zero RAM bloat)
+    let mut stream = res.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk)?;
+        let new = min(downloaded + (chunk.len() as u64), total_size);
+        downloaded = new;
+        pb.set_position(new);
+    }
+
+    pb.finish_and_clear(); 
+    Ok(())
+}
+
+/// Attempts to securely fetch the user's Hugging Face token if it exists
+fn get_hf_token() -> Option<String> {
+    std::env::var("HF_TOKEN").ok().or_else(|| {
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+        let token_path = Path::new(&home).join(".cache").join("huggingface").join("token");
+        fs::read_to_string(token_path).ok().map(|s| s.trim().to_string())
+    })
+}
 
 /// ORE: The Operating System for Local Intelligence
 #[derive(Parser)]
@@ -33,6 +139,8 @@ struct DriverModel {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize ORE system configurations
+    Init,
     /// Check if the ORE Kernel is running and healthy
     Status,
     /// View real-time Kernel metrics and telemetry
@@ -80,6 +188,11 @@ enum Commands {
         /// The ID of the agent (e.g., auto_coder)
         app_id: String,
     },
+    /// Wipes an Agent's frozen memory from the SSD
+    Clear {
+        /// The ID of the agent (e.g., openclaw)
+        app_id: String,
+    },
     /// Emergency kill-switch for runaway AI agents
     Kill {
         /// The App ID to terminate
@@ -113,6 +226,67 @@ async fn main() {
         .expect("Failed to build HTTP client");
 
     match &cli.command {
+        Commands::Init => {
+            use dialoguer::theme::SimpleTheme;
+            use dialoguer::{Select, Input};
+            use std::fs;
+
+            println!("\n==================================================");
+            println!(" ORE KERNEL :: SYSTEM INITIALIZATION");
+            println!("==================================================\n");
+
+            let engines = &[
+                "Ollama (Background daemon, easiest setup)",
+                "Native (Bare-metal Rust execution, maximum control)"
+            ];
+
+            let engine_idx = Select::with_theme(&SimpleTheme)
+                .with_prompt("Select your primary AI Execution Engine")
+                .default(0)
+                .items(engines)
+                .interact()
+                .unwrap();
+
+            let mut toml_output = String::new();
+            toml_output.push_str("[system]\n");
+
+            if engine_idx == 0 {
+                // OLLAMA SETUP
+                toml_output.push_str("engine = \"ollama\"\n\n");
+                toml_output.push_str("[ollama]\n");
+                
+                let url: String = Input::with_theme(&SimpleTheme)
+                    .with_prompt("Enter Ollama API URL")
+                    .default("http://127.0.0.1:11434".into())
+                    .interact_text().unwrap();
+                    
+                toml_output.push_str(&format!("url = \"{}\"\n", url));
+            } else {
+                // NATIVE SETUP
+                toml_output.push_str("engine = \"native\"\n\n");
+                toml_output.push_str("[native]\n");
+                
+                let model: String = Input::with_theme(&SimpleTheme)
+                    .with_prompt("Enter path to default .gguf model")
+                    .default("qwen2.5-0.5b-instruct-q4_k_m.gguf".into())
+                    .interact_text().unwrap();
+                    
+                let tokenizer: String = Input::with_theme(&SimpleTheme)
+                    .with_prompt("Enter path to tokenizer.json")
+                    .default("tokenizers/qwen2.5.json".into())
+                    .interact_text().unwrap();
+
+                toml_output.push_str(&format!("default_model = \"{}\"\n", model));
+                toml_output.push_str(&format!("default_tokenizer = \"{}\"\n", tokenizer));
+            }
+
+            // Save to the root directory
+            fs::write("../ore.toml", toml_output).expect("Failed to write config file");
+            
+            println!("\n[OK] ORE System configured successfully!");
+            println!("Configuration saved to: ore.toml");
+            println!("Please restart the 'ore-server' to apply changes.\n");
+        }
         Commands::Status => {
             println!("{} Pinging ORE Kernel...", "[*]".bright_blue());
 
@@ -210,35 +384,93 @@ async fn main() {
             }
         }
         Commands::Pull { model_name } => {
-            println!(
-                "{} Instructing Kernel to download and install: {}",
-                "[*]".bright_blue(),
-                model_name.yellow().bold()
-            );
-            println!("    (This may take a few minutes depending on your internet speed...)");
-
-            // Because downloading takes time, we wait for the server's response
-            match client
-                .get(format!("{}/pull/{}", kernel_url, model_name))
-                .send()
-                .await
-            {
-                Ok(response) => {
-                    let text = response.text().await.unwrap_or_default();
-                    if text.starts_with("SUCCESS") {
-                        println!("{} {}", "[+]".green(), text.bold());
-                    } else {
-                        println!("{} {}", "[-]".red(), text);
+            let engine = get_system_engine();
+            if engine == "ollama" {
+                println!(
+                    "{} Instructing Kernel to download and install: {}",
+                    "[*]".bright_blue(),
+                    model_name.yellow().bold()
+                );
+                println!("    (This may take a few minutes depending on your internet speed...)");
+    
+                // Because downloading takes time, we wait for the server's response
+                match client
+                    .get(format!("{}/pull/{}", kernel_url, model_name))
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        let text = response.text().await.unwrap_or_default();
+                        if text.starts_with("SUCCESS") {
+                            println!("{} {}", "[+]".green(), text.bold());
+                        } else {
+                            println!("{} {}", "[-]".red(), text);
+                        }
                     }
+                    Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
+                } 
+            } else if engine == "native" {
+                println!("{} System configured for Native. Initializing ORE Package Manager for '{}'...", "[*]".bright_blue(), model_name.blue().bold());
+
+                let (gguf_repo, gguf_file, base_repo) = match get_model_map(&model_name) {
+                    Some(map) => map,
+                    None => {
+                        println!("{} Model '{}' not found in ORE verified Native registry.", "[-]".red(), model_name);
+                        exit(1);
+                    }
+                };
+
+                let api = Api::new().expect("Failed to initialize Hugging Face API client");
+                let hf_token = get_hf_token();
+
+                let safe_folder_name = model_name.replace(":", "-");
+
+                let ore_models_dir = Path::new("../models").join(&safe_folder_name);
+                if !ore_models_dir.exists() {
+                    fs::create_dir_all(&ore_models_dir).unwrap();
                 }
-                Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
+
+                println!("{} Pulling Neural Weights from {}...", "[~]".yellow(), gguf_repo);
+                let repo_weights = api.repo(Repo::with_revision(gguf_repo.to_string(), RepoType::Model, "main".to_string()));
+                let weights_url = repo_weights.url(gguf_file); 
+                let final_gguf_dest = ore_models_dir.join("model.gguf");
+                
+                if let Err(e) = download_with_progress(&weights_url, &final_gguf_dest, &hf_token).await {
+                    println!("{} FATAL: Failed to download weights: {}", "[-]".red(), e);
+                    exit(1);
+                }
+                println!("{} Weights secured.", "[+]".green());
+
+                println!("{} Pulling Dictionary (Tokenizer) from {}...", "[~]".yellow(), base_repo);
+                let repo_tokenizer = api.repo(Repo::with_revision(base_repo.to_string(), RepoType::Model, "main".to_string()));
+                let tokenizer_url = repo_tokenizer.url("tokenizer.json");
+                let final_tok_dest = ore_models_dir.join("tokenizer.json");
+
+                let tokenizer_path_display: String;
+
+                // --- THE HACKER'S FALLBACK ---
+                if let Err(e) = download_with_progress(&tokenizer_url, &final_tok_dest, &hf_token).await {
+                    println!("{} [WARN] Official tokenizer is gated or unavailable ({}).", "[!]".yellow(), e);
+                    println!("{} ORE will extract the tokenizer from the GGUF file on first load.", "[i]".bright_blue());
+                    tokenizer_path_display = "Extracted from GGUF".to_string();
+                } else {
+                    // It worked!
+                    println!("{} Dictionary secured.", "[+]".green());
+                    tokenizer_path_display = final_tok_dest.display().to_string();
+                }
+
+                println!("\n[OK] '{}' HAS BEEN SUCCESSFULLY INSTALLED NATIVELY.", model_name.to_uppercase());
+                println!("Weights Path   :: {}", final_gguf_dest.display());
+                println!("Tokenizer Path :: {}\n", tokenizer_path_display);
+            }else {
+                println!("{} Unknown engine '{}' in ore.toml.", "[-]".red(), engine);
             }
         }
         Commands::Run { model, prompt } => {
             println!(
                 "{} Routing task to {}...",
                 "[*]".bright_blue(),
-                model.yellow().bold()
+                model.blue().bold()
             );
 
             let payload = RunPayload {
@@ -253,12 +485,26 @@ async fn main() {
                 .await
             {
                 Ok(response) => {
-                    let text = response.text().await.unwrap_or_default();
-
-                    if text.starts_with("ORE KERNEL ALERT") {
-                        println!("\n{} {}", "[!]".red().bold(), text.red().bold());
+                    if response.status().is_success() {
+                        
+                        use std::io::Write;
+                        println!(); 
+                        
+                        let mut stream = response.bytes_stream();
+                        while let Some(chunk) = stream.next().await {
+                            if let Ok(bytes) = chunk {
+                                let text = String::from_utf8_lossy(&bytes);
+                                if text.starts_with("ORE KERNEL ALERT") {
+                                    print!("{}", text.red().bold());
+                                } else {
+                                    print!("{}", text.blue());
+                                }
+                                std::io::stdout().flush().unwrap();
+                            }
+                        }
+                        println!("\n");
                     } else {
-                        println!("\n{}", text.green());
+                        println!("{} Kernel Error: {}", "[-]".red(), response.status());
                     }
                 }
                 Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
@@ -268,7 +514,7 @@ async fn main() {
             println!(
                 "{} Instructing Kernel to allocate VRAM for: {}",
                 "[*]".bright_blue(),
-                model_name.yellow().bold()
+                model_name.blue().bold()
             );
 
             match client
@@ -443,11 +689,17 @@ async fn main() {
                     .items(priorities)
                     .interact()
                     .unwrap();
+                let paging = Confirm::with_theme(&SimpleTheme)
+                    .with_prompt("Enable Stateful Paging (KV-Cache SSD Swap for long tasks)?")
+                    .default(false)
+                    .interact().unwrap();
+
 
                 toml_output.push_str("[resources]\n");
                 toml_output.push_str(&format!("allowed_models = {}\n", selected_models_formatted));
                 toml_output.push_str(&format!("max_tokens_per_minute = {}\n", tokens));
                 toml_output.push_str(&format!("gpu_priority = \"{}\"\n\n", priorities[p_idx]));
+                toml_output.push_str(&format!("stateful_paging = {}\n\n", paging));
             }
 
             // --- 3. FILE SYSTEM ---
@@ -536,16 +788,27 @@ async fn main() {
             // --- 6. IPC ---
             if selections.contains(&5) {
                 println!("\n>>> CONFIGURING: IPC");
-                let targets: String = Input::with_theme(&SimpleTheme)
-                    .with_prompt("Allowed Agent-to-Agent targets (comma-separated)")
+
+                let agents: String = Input::with_theme(&SimpleTheme)
+                    .with_prompt("Tier 1: Allowed Agent-to-Agent text targets (comma-separated, e.g., writer_agent)")
+                    .default("".into())
+                    .interact_text()
+                    .unwrap();
+
+                let pipes: String = Input::with_theme(&SimpleTheme)
+                    .with_prompt("Tier 2: Allowed Semantic Memory pipes (comma-separated, e.g., rust_docs)")
                     .default("".into())
                     .interact_text()
                     .unwrap();
 
                 toml_output.push_str("[ipc]\n");
                 toml_output.push_str(&format!(
-                    "allowed_ipc_targets = {}\n\n",
-                    format_list(targets)
+                    "allowed_agent_targets = {}\n",
+                    format_list(agents)
+                ));
+                toml_output.push_str(&format!(
+                    "allowed_semantic_pipes = {}\n\n",
+                    format_list(pipes)
                 ));
             }
 
@@ -564,6 +827,14 @@ async fn main() {
             println!("==================================================\n");
 
             println!("Preview:\n{}", toml_output);
+        }
+        Commands::Clear { app_id } => {
+            println!("{} Instructing Kernel to wipe memory for: {}", "[*]".bright_blue(), app_id.blue().bold());
+            
+            match client.get(format!("{}/clear/{}", kernel_url, app_id)).send().await {
+                Ok(response) => println!("\n{}", response.text().await.unwrap_or_default().green()),
+                Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
+            }
         }
     }
 }

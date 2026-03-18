@@ -1,26 +1,41 @@
 use axum::{
     extract::{Request, Json, Path, State},
     middleware::{self, Next},
-    response::Response,
+    response::{Response, IntoResponse},
     http::{StatusCode, HeaderMap},
     routing::get,
     routing::post,
     Router,
 };
-use ore_core::driver::{InferenceDriver, OllamaDriver};
-use ore_core::firewall::ContextFirewall;
-use ore_core::registry::AppRegistry;
-use ore_core::ipc::{SemanticBus, RateLimiter, MessageBus, AgentMessage};
-use ore_core::scheduler::GpuScheduler;
-use serde::{Deserialize, Serialize};
+use axum::body::Body;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::StreamExt;
+use tokio::net::TcpListener;
+use serde::{Deserialize};
 use std::sync::Arc;
 use std::fs;
 use uuid::Uuid;
-use tokio::net::TcpListener;
+use ore_core::driver::{InferenceDriver, OllamaDriver};
+use ore_core::native::NativeDriver;
+use ore_core::firewall::ContextFirewall;
+use ore_core::registry::AppRegistry;
+use ore_core::ipc::{SemanticBus, RateLimiter, MessageBus, AgentMessage};
+use ore_core::swap::{Pager};
+use ore_core::scheduler::GpuScheduler;
+
+#[derive(Deserialize)]
+struct OreConfig {
+    system: SystemConfig,
+}
+
+#[derive(Deserialize)]
+struct SystemConfig {
+    engine: String,
+}
 
 // kernel state shared across handlers
 struct KernelState {
-    ollama_url: String,
+    driver: Arc<dyn InferenceDriver>,
     scheduler: Arc<GpuScheduler>,
     registry: AppRegistry,
     semantic_bus: SemanticBus,
@@ -40,10 +55,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("-> Sweeping /manifests for installed Apps...");
     let app_registry =
         AppRegistry::boot_load("../manifests").expect("FATAL: Failed to initialize App Registry");
+    
+    let config_str = fs::read_to_string("../ore.toml").expect("FATAL: ore.toml missing. Run 'ore init'");
+    let config: OreConfig = toml::from_str(&config_str).unwrap();
+
+    let driver: Arc<dyn InferenceDriver> = if config.system.engine == "native" {
+        println!("-> [BOOT] Engaging Native Candle Engine...");
+        Arc::new(NativeDriver::new())
+    } else {
+        println!("-> [BOOT] Engaging Ollama API Driver...");
+        Arc::new(OllamaDriver::new("http://127.0.0.1:11434"))
+    };
 
     // configuration
     let shared_state = Arc::new(KernelState {
-        ollama_url: "http://127.0.0.1:11434".to_string(),
+        driver,
         scheduler: Arc::new(GpuScheduler::new()),
         registry: app_registry,
         semantic_bus: SemanticBus::new(),
@@ -63,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/pull/:model", get(pull_model))
         .route("/load/:model", get(load_model))
         .route("/run", post(run_process))
+        .route("/clear/:app_id", get(clear_memory))
         .route("/ipc/share", post(sys_share_context))
         .route("/ipc/search", post(sys_search_context))
         .route("/ipc/send", post(ipc_send))          
@@ -81,23 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn health_check() -> &'static str {
-    "ORE Kernel is ALIVE. Connected to Ollama Backend."
-}
-
-// ollama requests/responses structs
-#[derive(Serialize)]
-struct OllamaRequest {
-    model: String,
-    prompt: String,
-    stream: bool,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct OllamaResponse {
-    response: String,
-    done: bool,
+async fn health_check(State(state): State<Arc<KernelState>>) -> String {
+    format!("ORE Kernel is ALIVE. Powered by: {}", state.driver.engine_name())
 }
 
 #[derive(serde::Deserialize)]
@@ -124,8 +136,7 @@ pub struct IpcSearchRequest {
 async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<String>) -> String {
     let clean_prompt = prompt.replace("_", " ");
 
-    println!("\n========================================");
-    println!("-> Incoming App Request: {}", clean_prompt);
+    println!("\n-> Incoming App Request: {}", clean_prompt);
 
     let app_id = "openclaw"; // In the future, this comes from an API Key/Token
     let manifest = match state.registry.get_app(app_id) {
@@ -147,6 +158,11 @@ async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<String
         }
     };
 
+    let mut current_context = None;
+    if manifest.resources.stateful_paging {
+        current_context = Some(Pager::page_in_history(app_id));
+    }
+
     println!("-> Waiting for GPU Scheduler...");
 
     // If the agent lists allowed_models, pick the first one. Default to "llama3.2:1b"
@@ -158,37 +174,39 @@ async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<String
     let lease = state.scheduler.request_gpu(target_model).await;
     println!("-> GPU Lease Granted for '{}'. Routing to Driver...", lease.model);
 
-    let client = reqwest::Client::new();
-    let request_body = OllamaRequest {
-        model: lease.model.clone(),
-        prompt: secured_prompt,
-        stream: false,
-    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    let res = client
-        .post(format!("{}/api/generate", state.ollama_url))
-        .json(&request_body)
-        .send()
-        .await;
+    let driver = Arc::clone(&state.driver);
+    let model_name = lease.model.clone();
+    let prompt_clone = secured_prompt.clone();
+    let context_clone = current_context.clone();
 
-    match res {
-        Ok(response) => match response.json::<OllamaResponse>().await {
-            Ok(json) => {
-                println!("-> Response received from Driver.");
-                println!("========================================");
-                return json.response;
-            }
-            Err(_) => return "Kernel Error: Failed to parse AI response.".to_string(),
-        },
-        Err(_) => return "Kernel Error: Ollama Driver is offline. Is Ollama running?".to_string(),
+    tokio::spawn(async move {
+        let _ = driver.generate_text(&model_name, &prompt_clone, context_clone, tx).await;
+        
+        println!("-> Agent Execution complete. Releasing GPU Lock.");
+        drop(lease);
+    });
+
+    let mut full_response = String::new();
+    while let Some(word) = rx.recv().await {
+        full_response.push_str(&word);
     }
+
+    if manifest.resources.stateful_paging {
+        let mut new_history = current_context.unwrap_or_default();
+        new_history.push(ore_core::swap::ContextMessage { role: "user".to_string(), content: secured_prompt });
+        new_history.push(ore_core::swap::ContextMessage { role: "assistant".to_string(), content: full_response.clone() });
+        Pager::page_out_history(app_id, &new_history);
+    }
+
+    full_response
 }
 
 async fn run_process(
     State(state): State<Arc<KernelState>>,
     Json(payload): Json<RunRequest>,
-) -> String {
-    println!("\n========================================");
+) -> Response {
     println!(
         "-> [EXEC] Model: {} | Prompt: {}",
         payload.model, payload.prompt
@@ -197,16 +215,16 @@ async fn run_process(
     let app_id = "terminal_user";
     let manifest = match state.registry.get_app(app_id) {
         Some(m) => m,
-        None => return format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id),
+        None => return format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id).into_response(),
     };
 
     let limit = manifest.resources.max_tokens_per_minute;
 
     // Assuming ~500 tokens per request
     // future update: calculate tokens based on prompt length or use a more dynamic approach
-    if !state.rate_limiter.check_and_add(app_id, limit, 500) {
+    if !state.rate_limiter.check_and_add(app_id, limit, 1000) {
         println!("-> [BLOCKED] Agent '{}' exceeded GPU rate limit.", app_id);
-        return format!("ORE KERNEL ALERT: Rate Limit Exceeded. Quota is {} tokens/min.", limit);
+        return format!("ORE KERNEL ALERT: Rate Limit Exceeded. Quota is {} tokens/min.", limit).into_response();
     }
 
     let secured_prompt = match ContextFirewall::secure_request(manifest, &payload.prompt) {
@@ -216,7 +234,7 @@ async fn run_process(
         }
         Err(e) => {
             println!("-> [BLOCKED] {}", e);
-            return format!("ORE KERNEL ALERT: {}", e);
+            return format!("ORE KERNEL ALERT: {}", e).into_response();
         }
     };
 
@@ -224,58 +242,40 @@ async fn run_process(
 
     // request a GPU lease for the specified model
     let lease = state.scheduler.request_gpu(&payload.model).await;
-    println!("-> GPU Lease Granted for '{}'. Executing...", lease.model);
+    println!("-> GPU Lease Granted. Executing natively via {}...", state.driver.engine_name());
 
-    let client = reqwest::Client::new();
-    let request_body = OllamaRequest {
-        model: lease.model.clone(),
-        prompt: secured_prompt,
-        stream: false,
-    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    // 4. Send to Driver
-    let res = client
-        .post(format!("{}/api/generate", state.ollama_url))
-        .json(&request_body)
-        .send()
-        .await;
+    let driver = Arc::clone(&state.driver);
+    let model_name = lease.model.clone();
+    let prompt = secured_prompt.clone();
 
-    match res {
-        Ok(response) => match response.json::<OllamaResponse>().await {
-            Ok(json) => {
-                println!("-> Execution complete. Releasing GPU Lock.");
-                println!("========================================");
-                json.response
-            }
-            Err(_) => "Kernel Error: Failed to parse AI response.".to_string(),
-        },
-        Err(_) => "Kernel Error: Driver is offline.".to_string(),
-    }
+    tokio::spawn(async move {
+        let _ = driver.generate_text(&model_name, &prompt, None, tx).await;
+        
+        println!("-> Execution complete. Releasing GPU Lock.");
+        
+        drop(lease); 
+    });
+
+    let stream = UnboundedReceiverStream::new(rx)
+        .map(|chunk| Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(chunk)));
+
+    Body::from_stream(stream).into_response()
 }
 
-async fn process_status() -> String {
-    let driver = OllamaDriver::new("http://127.0.0.1:11434");
-
-    match driver.get_running_models().await {
+async fn process_status(State(state): State<Arc<KernelState>>) -> String {
+    match state.driver.get_running_models().await {
         Ok(models) => {
-            let mut output = format!(
-                "{:<25} | {:<12} | {:<12}\n",
-                "MODEL", "TOTAL RAM", "GPU VRAM"
-            );
+            let mut output = format!("{:<25} | {:<12} | {:<12}\n", "MODEL", "TOTAL RAM", "GPU VRAM");
             output.push_str("----------------------------------------------------------\n");
 
             if models.is_empty() {
                 output.push_str("No models currently loaded in memory.\n");
             } else {
                 for m in models {
-                    // Convert bytes to Megabytes
-                    let total_mb = m.size_bytes / 1024 / 1024;
-                    let vram_mb = m.size_vram_bytes / 1024 / 1024;
-
-                    output.push_str(&format!(
-                        "{:<25} | {:<9} MB | {:<9} MB\n",
-                        m.model_name, total_mb, vram_mb
-                    ));
+                    output.push_str(&format!("{:<25} | {:<9} MB | {:<9} MB\n", 
+                        m.model_name, m.size_bytes / 1024 / 1024, m.size_vram_bytes / 1024 / 1024));
                 }
             }
             output
@@ -284,24 +284,17 @@ async fn process_status() -> String {
     }
 }
 
-async fn list_models() -> String {
-    let driver = OllamaDriver::new("http://127.0.0.1:11434");
-
-    match driver.list_local_models().await {
+async fn list_models(State(state): State<Arc<KernelState>>) -> String {
+    match state.driver.list_local_models().await {
         Ok(models) => {
-            // Linux 'docker images' style formatting
             let mut output = format!("{:<25} | {:<10} | {}\n", "REPOSITORY", "SIZE", "UPDATED");
             output.push_str("------------------------------------------------------\n");
-
             if models.is_empty() {
                 output.push_str("No models installed. Use 'ore install <model>'.\n");
             } else {
                 for m in models {
-                    let gb = m.size_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
-                    output.push_str(&format!(
-                        "{:<25} | {:.2} GB   | {}\n",
-                        m.name, gb, m.modified_at
-                    ));
+                    output.push_str(&format!("{:<25} | {:.2} GB   | {}\n", 
+                        m.name, m.size_bytes as f64 / 1024.0 / 1024.0 / 1024.0, m.modified_at));
                 }
             }
             output
@@ -310,75 +303,27 @@ async fn list_models() -> String {
     }
 }
 
-async fn expel_model(Path(model_name): Path<String>) -> String {
-    println!(
-        "-> [KERNEL COMMAND] Received SIGKILL for model '{}'.",
-        model_name
-    );
-
-    let driver = OllamaDriver::new("http://127.0.0.1:11434");
-
-    match driver.unload_model(&model_name).await {
-        Ok(_) => {
-            println!("-> [SUCCESS] VRAM flushed. Model '{}' evicted.", model_name);
-            format!(
-                "SUCCESS: Model '{}' has been forcefully evicted from GPU VRAM.",
-                model_name
-            )
-        }
-        Err(e) => {
-            println!("-> [ERROR] Failed to flush VRAM: {}", e);
-            format!("KERNEL ERROR: Could not evict model. {}", e)
-        }
+async fn expel_model(State(state): State<Arc<KernelState>>, Path(model_name): Path<String>) -> String {
+    match state.driver.unload_model(&model_name).await {
+        Ok(_) => format!(
+                    "SUCCESS: Model '{}' has been forcefully evicted from GPU VRAM.",
+                    model_name
+                ),
+        Err(e) => format!("KERNEL ERROR: {}", e),
     }
 }
 
-async fn pull_model(Path(model_name): Path<String>) -> String {
-    println!(
-        "-> [PACKAGE MANAGER] Instructing driver to install model '{}'...",
-        model_name
-    );
-
-    let driver = OllamaDriver::new("http://127.0.0.1:11434");
-
-    match driver.pull_model(&model_name).await {
-        Ok(_) => {
-            println!(
-                "-> [SUCCESS] Model '{}' successfully installed to local hardware.",
-                model_name
-            );
-            format!(
-                "SUCCESS: Model '{}' installed and ready for inference.",
-                model_name
-            )
-        }
-        Err(e) => {
-            println!("-> [ERROR] Installation failed: {}", e);
-            format!("KERNEL ERROR: Could not install model. {}", e)
-        }
+async fn pull_model(State(state): State<Arc<KernelState>>, Path(model_name): Path<String>) -> String {
+    match state.driver.pull_model(&model_name).await {
+        Ok(_) => format!("SUCCESS: Model '{}' installed.", model_name),
+        Err(e) => format!("KERNEL ERROR: {}", e),
     }
 }
 
-async fn load_model(Path(model_name): Path<String>) -> String {
-    println!(
-        "-> [KERNEL COMMAND] Allocating VRAM and pre-loading '{}'...",
-        model_name
-    );
-
-    let driver = OllamaDriver::new("http://127.0.0.1:11434");
-
-    match driver.preload_model(&model_name).await {
-        Ok(_) => {
-            println!("-> [SUCCESS] Model '{}' locked into VRAM.", model_name);
-            format!(
-                "SUCCESS: Model '{}' is now pre-loaded and ready for zero-latency inference.",
-                model_name
-            )
-        }
-        Err(e) => {
-            println!("-> [ERROR] Failed to allocate VRAM: {}", e);
-            format!("KERNEL ERROR: Could not load model. {}", e)
-        }
+async fn load_model(State(state): State<Arc<KernelState>>, Path(model_name): Path<String>) -> String {
+    match state.driver.preload_model(&model_name).await {
+        Ok(_) => format!("SUCCESS: Model '{}' loaded.", model_name),
+        Err(e) => format!("KERNEL ERROR: {}", e),
     }
 }
 
@@ -506,14 +451,12 @@ async fn sys_share_context(
         }
     };
 
-    if !manifest.ipc.allowed_ipc_targets.contains(&payload.target_pipe) {
+    if !manifest.ipc.allowed_semantic_pipes.contains(&payload.target_pipe) {
         println!("-> [BLOCKED] Agent '{}' tried to write to restricted pipe '{}'.", payload.source_app, payload.target_pipe);
-        return format!("KERNEL ALERT: Permission Denied. Add '{}' to allowed_ipc_targets in manifest.", payload.target_pipe);
+        return format!("KERNEL ALERT: Permission Denied. Add '{}' to allowed_semantic_pipes in manifest.", payload.target_pipe);
     }
 
     println!("-> [SEMANTIC BUS] Verified Agent '{}' is uploading data to pipe '{}'", manifest.app_id, payload.target_pipe);
-    
-    let driver = OllamaDriver::new(&state.ollama_url);
     
     // Chunking Algorithm (Splits large text into 100-word blocks)
     let words: Vec<&str> = payload.knowledge_text.split_whitespace().collect();
@@ -523,7 +466,7 @@ async fn sys_share_context(
 
     // Convert text to Math Vectors
     for chunk in chunks {
-        match driver.generate_embeddings(SYSTEM_EMBEDDER, &chunk).await {
+        match state.driver.generate_embeddings(SYSTEM_EMBEDDER, &chunk).await {
             Ok(vector) => {
                 state.semantic_bus.write_chunk(&payload.target_pipe, chunk, vector);
             }
@@ -532,7 +475,7 @@ async fn sys_share_context(
     }
 
     // ZERO-RAM ARCHITECTURE: kill the Nomic model to free memory
-    let _ = driver.unload_model(SYSTEM_EMBEDDER).await;
+    let _ = state.driver.unload_model(SYSTEM_EMBEDDER).await;
     
     println!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
     "SUCCESS: Knowledge processed and stored in Semantic Bus.".to_string()
@@ -551,17 +494,15 @@ async fn sys_search_context(
         }
     };
 
-    if !manifest.ipc.allowed_ipc_targets.contains(&payload.target_pipe) {
+    if !manifest.ipc.allowed_semantic_pipes.contains(&payload.target_pipe) {
         println!("-> [BLOCKED] Agent '{}' tried to read restricted pipe '{}'.", payload.source_app, payload.target_pipe);
-        return axum::response::Json(vec![format!("KERNEL ALERT: Permission Denied. Pipe '{}' is locked.", payload.target_pipe)]);
+        return axum::response::Json(vec![format!("KERNEL ALERT: Permission Denied. Add '{}' to allowed_semantic_pipes in manifest.", payload.target_pipe)]);
     }
 
     println!("-> [SEMANTIC BUS] Verified Agent '{}' searching pipe '{}' for: {}", manifest.app_id, payload.target_pipe, payload.query);
-
-    let driver = OllamaDriver::new(&state.ollama_url);
     
     // Translate the question into Math using the System Embedder
-    let query_vector = match driver.generate_embeddings(SYSTEM_EMBEDDER, &payload.query).await {
+    let query_vector = match state.driver.generate_embeddings(SYSTEM_EMBEDDER, &payload.query).await {
         Ok(v) => v,
         Err(_) => return axum::response::Json(vec!["KERNEL ERROR: Embedding failed.".to_string()]),
     };
@@ -569,7 +510,7 @@ async fn sys_search_context(
     // Perform Pure-Rust Math Search (Zero GPU used here)
     let top_results = state.semantic_bus.search_pipe(&payload.target_pipe, &query_vector, 3); // Get Top 3 matches
 
-    let _ = driver.unload_model(SYSTEM_EMBEDDER).await;
+    let _ = state.driver.unload_model(SYSTEM_EMBEDDER).await;
 
     println!("-> [SEMANTIC BUS] Search complete. Handing English text back to Agent.");
     
@@ -582,16 +523,14 @@ async fn ipc_send(
 ) -> String {
     println!("-> [IPC BUS] Routing message from '{}' to '{}'", payload.from_app, payload.to_app);
     
-    // ORE IPC FIREWALL: Is the sender registered?
+    // ore ipc firewall
     let manifest = match state.registry.get_app(&payload.from_app) {
         Some(m) => m,
         None => return format!("KERNEL ERROR: Unregistered sender '{}'.", payload.from_app),
     };
-
-    // ORE IPC FIREWALL: Is the sender allowed to talk to the target?
-    if !manifest.ipc.allowed_ipc_targets.contains(&payload.to_app) {
+    if !manifest.ipc.allowed_agent_targets.contains(&payload.to_app) {
         println!("-> [BLOCKED] '{}' is not authorized by its manifest to contact '{}'.", payload.from_app, payload.to_app);
-        return format!("KERNEL ALERT: IPC Target '{}' not in allowed_ipc_targets manifest.", payload.to_app);
+        return format!("KERNEL ALERT: IPC Target '{}' not in allowed_agent_targets manifest.", payload.to_app);
     }
 
     // Route the message instantly in RAM
@@ -611,6 +550,16 @@ async fn ipc_listen(
     State(state): State<Arc<KernelState>>,
     Path(app_id): Path<String>,
 ) -> axum::response::Json<Option<AgentMessage>> {
+
+    let _manifest = match state.registry.get_app(&app_id) {
+        Some(m) => m,
+        None => {
+            println!("-> [SECURITY ALERT] Ghost Agent '{}' tried to wiretap a channel!", app_id);
+            
+            return axum::response::Json(None); 
+        }
+    };
+
     println!("-> [IPC BUS] App '{}' is polling its channel...", app_id);
     
     let mut receiver = state.message_bus.register_listener(&app_id);
@@ -619,6 +568,12 @@ async fn ipc_listen(
         Ok(msg) => axum::response::Json(Some(msg)),
         Err(_) => axum::response::Json(None),
     }
+}
+
+async fn clear_memory(Path(app_id): Path<String>) -> String {
+    println!("-> [KERNEL COMMAND] Wiping SSD Memory for Agent '{}'", app_id);
+    Pager::clear_page(&app_id);
+    format!("SUCCESS: Memory for Agent '{}' has been wiped clean.", app_id)
 }
 
 async fn auth_middleware(

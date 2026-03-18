@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use thiserror::Error;
+use crate::swap::ContextMessage;
+use tokio::sync::mpsc::UnboundedSender; 
 
 #[derive(Error, Debug)]
 pub enum DriverError {
@@ -9,6 +11,8 @@ pub enum DriverError {
     ConnectionFailed(String),
     #[error("API Error: {0}")]
     ApiError(String),
+    #[error("Execution Failed: {0}")]
+    ExecutionFailed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -31,11 +35,11 @@ pub struct VramProcess {
 // Any backend (Ollama, LM Studio, vLLM) MUST implement these functions.
 #[async_trait]
 pub trait InferenceDriver: Send + Sync {
+    fn engine_name(&self) -> &'static str;
+
     async fn is_online(&self) -> bool;
 
     async fn get_running_models(&self) -> Result<Vec<VramProcess>, DriverError>;
-
-    async fn generate(&self, prompt: &str, model: &str) -> Result<String, DriverError>;
 
     async fn unload_model(&self, model: &str) -> Result<(), DriverError>;
 
@@ -45,7 +49,11 @@ pub trait InferenceDriver: Send + Sync {
 
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError>;
 
+    async fn generate_text(&self, model: &str, prompt: &str, history: Option<Vec<ContextMessage>>, tx: UnboundedSender<String>) -> Result<(), DriverError>;
+
+    //Semantic Embedding Generation (For IPC Bus)
     async fn generate_embeddings(&self, model: &str, input: &str) -> Result<Vec<f32>, DriverError>;
+
 }
 
 // OLLAMA IMPLEMENTATION
@@ -76,9 +84,16 @@ struct OllamaModelProcess {
     size_vram: u64,
 }
 
+#[derive(serde::Serialize)]
+struct OllamaRequest { 
+    model: String, 
+    messages: Vec<ContextMessage>, 
+    stream: bool
+}
+
 #[derive(Deserialize)]
-struct OllamaGenerateResponse {
-    response: String,
+struct OllamaResponse { 
+    message: ContextMessage 
 }
 
 #[derive(Deserialize)]
@@ -106,6 +121,8 @@ struct OllamaEmbedResponse {
 
 #[async_trait]
 impl InferenceDriver for OllamaDriver {
+    fn engine_name(&self) -> &'static str { "Ollama Engine" }
+
     async fn is_online(&self) -> bool {
         self.client.get(&self.base_url).send().await.is_ok()
     }
@@ -146,29 +163,32 @@ impl InferenceDriver for OllamaDriver {
         Ok(processes)
     }
 
-    async fn generate(&self, prompt: &str, model: &str) -> Result<String, DriverError> {
-        let url = format!("{}/api/generate", self.base_url);
-        let payload = serde_json::json!({
-            "model": model,
-            "prompt": prompt,
-            "stream": false
+    async fn generate_text(&self, model: &str, prompt: &str, history: Option<Vec<ContextMessage>>, tx: UnboundedSender<String>) -> Result<(), DriverError> {
+        let url = format!("{}/api/chat", self.base_url);
+        
+        let mut messages = history.unwrap_or_default();
+        
+        messages.push(ContextMessage { 
+            role: "user".to_string(), 
+            content: prompt.to_string() 
         });
 
-        let res = self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
+        let payload = OllamaRequest {
+            model: model.to_string(),
+            messages,
+            stream: false
+        };
+
+        let res = self.client.post(&url).json(&payload).send().await
             .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
 
-        let data: OllamaGenerateResponse = res
-            .json()
-            .await
+        let data: OllamaResponse = res.json().await
             .map_err(|e| DriverError::ApiError(e.to_string()))?;
 
-        Ok(data.response)
+        let _ = tx.send(data.message.content); 
+        Ok(()) 
     }
+
 
     async fn unload_model(&self, model_name: &str) -> Result<(), DriverError> {
         let url = format!("{}/api/generate", self.base_url);

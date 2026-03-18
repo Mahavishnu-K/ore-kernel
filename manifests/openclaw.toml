@@ -6,9 +6,10 @@ version = "1.0.0"
 enforce_pii_redaction = true
 
 [resources]
-allowed_models = ["llama3.2:1b"]
+allowed_models = ["qwen2.5:0.5b"]
 max_tokens_per_minute = 10000
 gpu_priority = "normal"
+stateful_paging = true
 
 [network]
 network_enabled = true
