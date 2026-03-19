@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)]()
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey?style=for-the-badge&logo=linux&logoColor=white)]()
 [![Status](https://img.shields.io/badge/status-alpha-red?style=for-the-badge)]()
-[![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ZdGYnwZe)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/channels/1477053099494342755/1477053558879686737)
 
 <br>
 
