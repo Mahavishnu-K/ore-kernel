@@ -10,3 +10,8 @@ network_enabled = true
 allowed_domains = ["github.com", "wikipedia.org"]
 allow_localhost_access = false
 
+[resources]
+allowed_models = ["deepseekR1:8b"]
+max_tokens_per_minute = 10000
+gpu_priority = "normal"
+
