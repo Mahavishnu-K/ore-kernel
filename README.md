@@ -19,7 +19,7 @@
 
 <br>
 
-[**Get Started**](#quick-start) · [**Architecture**](#architecture) · [**Project Structure**](#project-structure) · [**CLI Reference**](#cli-reference) · [**Security**](#security-features) · [**Roadmap**](#roadmap) · [**Contributing**](#contributing) · [**Discord**](https://discord.gg/ZdGYnwZe)
+[**Get Started**](#quick-start) · [**Architecture**](#architecture) · [**Project Structure**](#project-structure) · [**CLI Reference**](#cli-reference) · [**Security**](#security-features) · [**Roadmap**](#roadmap) · [**Contributing**](#contributing) · [**Discord**](https://discord.com/channels/1477053099494342755/1477053558879686737)
 
 </div>
 
@@ -564,7 +564,7 @@ Areas where contributions are especially welcome:
 - **Manifest enforcement** - Runtime file system, network, and execution sandboxing
 - **Documentation & examples** - Integration guides, tutorials, example manifests
 
-Join us on [**Discord**](https://discord.gg/ZdGYnwZe) - we hang out in `#dev-core` 👾.
+Join us on [**Discord**](https://discord.com/channels/1477053099494342755/1477053558879686737) - we hang out in `#dev-core` 👾.
 
 ---
 
