@@ -6,16 +6,16 @@ use anyhow::{Error as E, Result};
 use tokenizers::Tokenizer;
 
 // Supports multiple architectures
-pub enum OreBrain {
+pub enum OreEngine {
     Qwen(QwenModel),
     Llama(LlamaModel),
 }
 
-impl OreBrain {
+impl OreEngine {
     pub fn forward(&mut self, input: &Tensor, start_pos: usize) -> Result<Tensor> {
         match self {
-            OreBrain::Qwen(m) => m.forward(input, start_pos).map_err(E::msg),
-            OreBrain::Llama(m) => m.forward(input, start_pos).map_err(E::msg),
+            OreEngine::Qwen(m) => m.forward(input, start_pos).map_err(E::msg),
+            OreEngine::Llama(m) => m.forward(input, start_pos).map_err(E::msg),
         }
     }
 }
@@ -28,7 +28,7 @@ pub struct ModelConfig {
 }
 
 pub struct ActiveEngine {
-    pub model: OreBrain,
+    pub model: OreEngine,
     pub tokenizer: Tokenizer,
     pub logits_processor: LogitsProcessor,
     pub model_name: String,

@@ -107,7 +107,7 @@ A dedicated scheduling module built on `tokio::sync::Semaphore` with RAII-based 
 **Native Candle Engine** (`ore-core/src/native/`)
 A bare-metal inference engine powered by Hugging Face's [Candle](https://github.com/huggingface/candle) framework:
 - **GGUF Model Loading** - Reads quantized `.gguf` weight files directly from disk with architecture auto-detection.
-- **Multi-Architecture Support** - Routes inference through architecture-specific model loaders (`Llama`, `Qwen2`) via the `OreBrain` enum.
+- **Multi-Architecture Support** - Routes inference through architecture-specific model loaders (`Llama`, `Qwen2`) via the `OreEngine` enum.
 - **3-Tier Tokenizer Resolution** - Searches for a local model-specific tokenizer → falls back to the global `tokenizers/` directory → extracts directly from GGUF metadata as a last resort (JIT-cached to disk for future loads).
 - **Hardware Auto-Detection** - Probes for CUDA, Metal, and CPU at boot and selects the optimal compute device.
 - **Streaming Token Generation** - Generates tokens one-at-a-time via `tokio::sync::mpsc`, enabling real-time streaming to the CLI.
@@ -219,7 +219,7 @@ ore-system/
 │   ├── registry.rs      #   ├── App manifest registry (TOML loader + cache)
 │   └── native/          #   └── Native Candle Inference Engine
 │       ├── mod.rs       #       ├── NativeDriver (GGUF loading + hardware detection)
-│       ├── engine.rs    #       ├── OreBrain enum (Llama/Qwen) + ActiveEngine
+│       ├── engine.rs    #       ├── OreEngine enum (Llama/Qwen) + ActiveEngine
 │       ├── gguf_tokenizer.rs #  ├── GGUF metadata tokenizer extractor
 │       └── models/      #       └── Architecture-specific model loaders
 │           ├── llama.rs #           ├── Llama family loader

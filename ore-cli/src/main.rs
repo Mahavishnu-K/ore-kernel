@@ -52,10 +52,20 @@ fn get_model_map(alias: &str) -> Option<(&'static str, &'static str, &'static st
             "qwen2.5-0.5b-instruct-q4_k_m.gguf", 
             "Qwen/Qwen2.5-0.5B-Instruct", 
         )),
+        "qwen2.5:0.5b-base" => Some(( 
+            "Qwen/Qwen2.5-0.5B-GGUF", 
+            "qwen2.5-0.5b-q4_k_m.gguf", 
+            "Qwen/Qwen2.5-0.5B", 
+        )),
         "llama3.2:1b" => Some((
             "bartowski/Llama-3.2-1B-Instruct-GGUF", 
             "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
             "unsloth/Llama-3.2-1B-Instruct",
+        )),
+        "llama3.2:1b-base" => Some((
+            "bartowski/Llama-3.2-1B-GGUF", 
+            "Llama-3.2-1B-Q4_K_M.gguf",
+            "unsloth/Llama-3.2-1B",
         )),
         _ => None,
     }

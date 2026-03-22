@@ -57,13 +57,13 @@ impl NativeDriver {
 
         let global_tokenizer_name = if model_name.to_lowercase().contains("qwen2.5") {
             "qwen2.5"
-        } else if model_name.to_lowercase().contains("llama4") {
+        } else if model_name.to_lowercase().contains("llama4") || model_name.to_lowercase().contains("llama-4") {
             "llama4"
-        } else if model_name.to_lowercase().contains("llama3.3") {
+        } else if model_name.to_lowercase().contains("llama3.3") || model_name.to_lowercase().contains("llama-3.3") {
             "llama3.3"
-        } else if model_name.to_lowercase().contains("llama3.2") || model_name.to_lowercase().contains("llama3") {
-            "llama3.2" // Shared Llama 3.x vocabulary
-        } else if model_name.to_lowercase().contains("llama2") {
+        } else if model_name.to_lowercase().contains("llama3.2") || model_name.to_lowercase().contains("llama3") || model_name.to_lowercase().contains("llama-3.2") || model_name.to_lowercase().contains("llama-3") {
+            "llama3.2" 
+        } else if model_name.to_lowercase().contains("llama2") || model_name.to_lowercase().contains("llama-2") {
             "llama2"
         } else if model_name.to_lowercase().contains("codellama") {
             "codellama"
@@ -102,8 +102,8 @@ impl NativeDriver {
 
         // architecture router
         let (model, config) = match arch_name.as_str() {
-            "llama" => models::llama::load(model_content, &mut file, device, &tokenizer)?,
-            "qwen2" => models::qwen::load(model_content, &mut file, device, &tokenizer)?,
+            "llama" => models::llama::load(model_name, model_content, &mut file, device, &tokenizer)?,
+            "qwen2" => models::qwen::load(model_name, model_content, &mut file, device, &tokenizer)?,
             _ => return Err(E::msg(format!("Architecture not supported yet: {}", arch_name))),
         };
 
