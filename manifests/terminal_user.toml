@@ -16,4 +16,5 @@ allowed_domains = ["github.com", "wikipedia.org"]
 allow_localhost_access = false
 
 [ipc]
-allowed_ipc_targets = []
+allowed_agent_targets = ["writer_agent"]
+allowed_semantic_pipes = ["rust_docs"]

@@ -130,6 +130,7 @@ pub struct IpcSearchRequest {
     pub source_app: String,
     pub target_pipe: String,
     pub query: String, 
+    pub filter_app: Option<String>,
 }
 
 // inference engine (The Proxy & Firewall)
@@ -215,16 +216,20 @@ async fn run_process(
     let app_id = "terminal_user";
     let manifest = match state.registry.get_app(app_id) {
         Some(m) => m,
-        None => return format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id).into_response(),
+        None => return (
+            StatusCode::UNAUTHORIZED, 
+            format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id)
+        ).into_response(),
     };
 
-    let limit = manifest.resources.max_tokens_per_minute;
-
-    // Assuming ~500 tokens per request
     // future update: calculate tokens based on prompt length or use a more dynamic approach
+    let limit = manifest.resources.max_tokens_per_minute;
     if !state.rate_limiter.check_and_add(app_id, limit, 1000) {
         println!("-> [BLOCKED] Agent '{}' exceeded GPU rate limit.", app_id);
-        return format!("ORE KERNEL ALERT: Rate Limit Exceeded. Quota is {} tokens/min.", limit).into_response();
+        return (
+            StatusCode::TOO_MANY_REQUESTS, 
+            format!("ORE KERNEL ALERT: Rate Limit Exceeded ({} t/min).", limit)
+        ).into_response();
     }
 
     let secured_prompt = match ContextFirewall::secure_request(manifest, &payload.prompt) {
@@ -234,7 +239,10 @@ async fn run_process(
         }
         Err(e) => {
             println!("-> [BLOCKED] {}", e);
-            return format!("ORE KERNEL ALERT: {}", e).into_response();
+            return (
+                StatusCode::FORBIDDEN, 
+                format!("ORE KERNEL ALERT: {}", e)
+            ).into_response();
         }
     };
 
@@ -459,25 +467,37 @@ async fn sys_share_context(
     println!("-> [SEMANTIC BUS] Verified Agent '{}' is uploading data to pipe '{}'", manifest.app_id, payload.target_pipe);
     
     // Chunking Algorithm (Splits large text into 100-word blocks)
-    let words: Vec<&str> = payload.knowledge_text.split_whitespace().collect();
-    let chunks: Vec<String> = words.chunks(100).map(|c| c.join(" ")).collect();
+    let chunks = SemanticBus::create_sliding_windows(&payload.knowledge_text, 100, 20);
+    println!("-> [SEMANTIC BUS] Text split into {} overlapping windows.", chunks.len());
     
     println!("-> [SEMANTIC BUS] Text chunked into {} blocks. Waking up CPU Embedder...", chunks.len());
 
+    let mut wake_embedder = false;
+
     // Convert text to Math Vectors
     for chunk in chunks {
+        if let Some(cached_vector) = state.semantic_bus.get_cached_embedding(&chunk) {
+            println!("-> [SEMANTIC BUS] Cache Hit! Skipping math for this chunk.");
+            state.semantic_bus.write_chunk(&payload.target_pipe, chunk, cached_vector, &manifest.app_id);
+            continue;
+        }
+        wake_embedder = true;
         match state.driver.generate_embeddings(SYSTEM_EMBEDDER, &chunk).await {
             Ok(vector) => {
-                state.semantic_bus.write_chunk(&payload.target_pipe, chunk, vector);
+                state.semantic_bus.write_chunk(&payload.target_pipe, chunk, vector, &manifest.app_id);
             }
             Err(e) => return format!("KERNEL ERROR: Failed to embed knowledge. {}", e),
         }
     }
 
     // ZERO-RAM ARCHITECTURE: kill the Nomic model to free memory
-    let _ = state.driver.unload_model(SYSTEM_EMBEDDER).await;
-    
-    println!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
+    if wake_embedder {
+        let _ = state.driver.unload_model(SYSTEM_EMBEDDER).await;
+        println!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
+    } else {
+        println!("-> [SEMANTIC BUS] Knowledge embedded entirely from Cache. Zero compute used.");
+    }
+
     "SUCCESS: Knowledge processed and stored in Semantic Bus.".to_string()
 }
 
@@ -508,7 +528,8 @@ async fn sys_search_context(
     };
 
     // Perform Pure-Rust Math Search (Zero GPU used here)
-    let top_results = state.semantic_bus.search_pipe(&payload.target_pipe, &query_vector, 3); // Get Top 3 matches
+    let filter_ref = payload.filter_app.as_deref();
+    let top_results = state.semantic_bus.search_pipe(&payload.target_pipe, &query_vector, 3, filter_ref); 
 
     let _ = state.driver.unload_model(SYSTEM_EMBEDDER).await;
 
