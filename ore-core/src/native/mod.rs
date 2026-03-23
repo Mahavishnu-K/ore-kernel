@@ -10,9 +10,12 @@ use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use engine::ActiveEngine;
+use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
+use time::OffsetDateTime;
+use time::macros::format_description;
 use tokenizers::Tokenizer;
 use tokio::sync::mpsc::UnboundedSender;
 use gguf_tokenizer::TokenizerFromGguf;
@@ -201,8 +204,56 @@ impl InferenceDriver for NativeDriver {
         result.map_err(DriverError::ExecutionFailed)
     }
 
-    // will be implemented for dynamic model management
+    // just for the sake of trait implementation, taken care by CLI
     async fn pull_model(&self, _model: &str) -> Result<(), DriverError> { Ok(()) }
-    async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError> { Ok(vec![]) }
+
+    async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError> {
+        let mut models = Vec::new();
+        let models_dir = Path::new("../models");
+
+        if !models_dir.exists() {
+            return Ok(models);
+        }
+
+        if let Ok(entries) = fs::read_dir(models_dir) {
+            for entry in entries.flatten() {
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.is_dir() {
+                        let folder_name = entry.file_name().to_string_lossy().to_string();
+                        let gguf_path = entry.path().join("model.gguf");
+                        
+                        let mut size_bytes = 0;
+                        let mut modified_at = "UNKNOWN".to_string();
+
+                        // TRUE HARDWARE METADATA READ
+                        if let Ok(gguf_meta) = fs::metadata(&gguf_path) {
+                            size_bytes = gguf_meta.len(); 
+                            
+                            if let Ok(sys_time) = gguf_meta.modified() {
+                                let dt: OffsetDateTime = sys_time.into();
+                                
+                                let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+                                let local_dt = dt.to_offset(local_offset);
+
+                                // Compile-time macro format! (Zero runtime parsing cost)
+                                let format = format_description!("[day]-[month]-[year] [hour]:[minute]:[second]");
+                                modified_at = local_dt.format(&format).unwrap_or_else(|_| "UNKNOWN".to_string());
+                            }
+                        }
+
+                        let display_name = folder_name.replace("-", ":");
+
+                        models.push(LocalModel {
+                            name: display_name,
+                            size_bytes,
+                            modified_at, // No more fake math!
+                        });
+                    }
+                }
+            }
+        }
+        Ok(models)
+    }
+    
     async fn generate_embeddings(&self, _m: &str, _i: &str) -> Result<Vec<f32>, DriverError> { Ok(vec![]) }
 }
