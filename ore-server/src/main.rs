@@ -41,12 +41,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(OllamaDriver::new("http://127.0.0.1:11434"))
     };
 
+    let semantic_bus = SemanticBus::new(config.memory.cache_ttl_hours, config.memory.pipe_ttl_hours);
+
+    let shared_semantic_bus = Arc::new(semantic_bus);
+
     // configuration
     let shared_state = Arc::new(KernelState {
         driver,
         scheduler: Arc::new(GpuScheduler::new()),
         registry: app_registry,
-        semantic_bus: SemanticBus::new(),
+        semantic_bus: Arc::clone(&shared_semantic_bus),
         message_bus: MessageBus::new(),
         rate_limiter: RateLimiter::new(),
         auth_token: session_token,
@@ -69,8 +73,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/ipc/send", post(handlers::ipc::ipc_send))          
         .route("/ipc/listen/:app_id", get(handlers::ipc::ipc_listen))
         .layer(axum_middleware::from_fn_with_state(shared_state.clone(), auth_middleware))
-        .with_state(shared_state);
+        .with_state(shared_state.clone());
     
+    let gc_bus = shared_state.semantic_bus.clone();
+    tokio::spawn(async move {
+        loop {
+            // Wake up every 1 hour (3600 seconds)
+            tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+            println!("-> [SYSTEM] Running routine memory Garbage Collection...");
+            gc_bus.run_garbage_collection();
+        }
+    });
+
     let addr = "127.0.0.1:3000";
     println!("=== ORE KERNEL IS ONLINE ===");
     println!("Listening on http://{}", addr);

@@ -2006,6 +2006,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "candle-core",
+ "candle-nn",
  "candle-transformers",
  "dashmap",
  "ore-common",

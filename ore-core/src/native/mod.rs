@@ -204,9 +204,6 @@ impl InferenceDriver for NativeDriver {
         result.map_err(DriverError::ExecutionFailed)
     }
 
-    // just for the sake of trait implementation, taken care by CLI
-    async fn pull_model(&self, _model: &str) -> Result<(), DriverError> { Ok(()) }
-
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError> {
         let mut models = Vec::new();
         let models_dir = Path::new("../models");
@@ -225,7 +222,6 @@ impl InferenceDriver for NativeDriver {
                         let mut size_bytes = 0;
                         let mut modified_at = "UNKNOWN".to_string();
 
-                        // TRUE HARDWARE METADATA READ
                         if let Ok(gguf_meta) = fs::metadata(&gguf_path) {
                             size_bytes = gguf_meta.len(); 
                             
@@ -246,7 +242,7 @@ impl InferenceDriver for NativeDriver {
                         models.push(LocalModel {
                             name: display_name,
                             size_bytes,
-                            modified_at, // No more fake math!
+                            modified_at, 
                         });
                     }
                 }
@@ -255,5 +251,32 @@ impl InferenceDriver for NativeDriver {
         Ok(models)
     }
     
-    async fn generate_embeddings(&self, _m: &str, _i: &str) -> Result<Vec<f32>, DriverError> { Ok(vec![]) }
+    async fn generate_embeddings(&self, model_name: &str, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, DriverError> {
+
+        let safe_model = model_name.replace(":", "-");
+        let device = self.device.clone();
+
+        // Spawn a blocking thread
+        let result = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>, String> {
+        
+            let model_dir = format!("../models/{}", safe_model);
+            
+            let embedder = models::bert::SystemEmbedder::load(&model_dir, &device)
+                .map_err(|e| format!("Failed to load embedder: {}", e))?;
+
+            let vectors = embedder.embed_batch(inputs)
+                .map_err(|e| format!("Math execution failed: {}", e))?;
+
+            // The moment this thread finishes, `embedder` goes out of scope.
+            // Rust's memory safety automatically drops the model and flushes the RAM to 0MB.
+
+            Ok(vectors)
+            
+        }).await.map_err(|e| DriverError::ExecutionFailed(e.to_string()))?;
+
+        result.map_err(DriverError::ExecutionFailed)
+    }
+
+    // just for the sake of trait implementation, taken care by CLI
+    async fn pull_model(&self, _model: &str) -> Result<(), DriverError> { Ok(()) }
 }

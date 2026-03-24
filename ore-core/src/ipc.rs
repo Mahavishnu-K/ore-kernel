@@ -55,18 +55,19 @@ pub struct MemoryChunk {
 }
 
 pub struct SemanticBus {
-    // pipe_name -> list of memory chunks
     memory_pipes: DashMap<String, Vec<MemoryChunk>>,
-
-    // cache maps hash(text) -> vector. Prevents wasting CPU on identical text
-    embedding_cache: DashMap<u64, Vec<f32>>,
+    embedding_cache: DashMap<u64, (Vec<f32>, u64)>,
+    cache_ttl_secs: u64,
+    pipe_ttl_secs: u64,
 }
 
 impl SemanticBus {
-    pub fn new() -> Self {
+    pub fn new(cache_ttl_hours: u64, pipe_ttl_hours: u64) -> Self {
         Self {
             memory_pipes: DashMap::new(),
             embedding_cache: DashMap::new(),
+            cache_ttl_secs: cache_ttl_hours * 3600,
+            pipe_ttl_secs: pipe_ttl_hours * 3600,
         }
     }
 
@@ -78,14 +79,14 @@ impl SemanticBus {
 
     pub fn get_cached_embedding(&self, text: &str) -> Option<Vec<f32>> {
         let hash = Self::hash_text(text);
-        self.embedding_cache.get(&hash).map(|v| v.clone())
+        self.embedding_cache.get(&hash).map(|v| v.0.clone())
     }
 
     pub fn write_chunk(&self, pipe_name: &str, text: String, vector: Vec<f32>,  source_app: &str) {
         let hash = Self::hash_text(&text);
-        self.embedding_cache.insert(hash, vector.clone());
-
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        
+        self.embedding_cache.insert(hash, (vector.clone(), timestamp));
 
         let mut pipe = self.memory_pipes.entry(pipe_name.to_string()).or_insert_with(Vec::new);
         pipe.push(MemoryChunk { 
@@ -146,6 +147,54 @@ impl SemanticBus {
         }
         chunks
     }
+
+    /// Garbage Collector wipes cached math and unused temporary pipes
+    pub fn run_garbage_collection(&self) {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        if self.cache_ttl_secs > 0 {
+            let initial_cache_size = self.embedding_cache.len();
+            
+            self.embedding_cache.retain(|_, (_, timestamp)| {
+                current_time.saturating_sub(*timestamp) < self.cache_ttl_secs
+            });
+            
+            let cleaned_cache = initial_cache_size - self.embedding_cache.len();
+            if cleaned_cache > 0 {
+                println!("-> [KERNEL GC] Swept {} stale embedding calculations from RAM.", cleaned_cache);
+            }
+        }
+
+        if self.pipe_ttl_secs > 0 {
+            let mut pipes_cleaned = 0;
+            let mut chunks_swept = 0;
+
+            for mut pipe_ref in self.memory_pipes.iter_mut() {
+                let pipe_contents = pipe_ref.value_mut();
+                let initial_chunks = pipe_contents.len();
+
+                pipe_contents.retain(|chunk| {
+                    current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
+                });
+
+                let removed = initial_chunks - pipe_contents.len();
+                if removed > 0 {
+                    chunks_swept += removed;
+                    pipes_cleaned += 1;
+                }
+            }
+
+            self.memory_pipes.retain(|_, chunks| !chunks.is_empty());
+
+            if chunks_swept > 0 {
+                println!("-> [KERNEL GC] Swept {} stale memory chunks across {} Semantic Pipes.", chunks_swept, pipes_cleaned);
+            }
+        }
+    }
+
 }
 
 pub struct RateLimiter {

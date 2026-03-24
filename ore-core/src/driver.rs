@@ -52,7 +52,7 @@ pub trait InferenceDriver: Send + Sync {
     async fn generate_text(&self, model: &str, prompt: &str, history: Option<Vec<ContextMessage>>, tx: UnboundedSender<String>) -> Result<(), DriverError>;
 
     //Semantic Embedding Generation (For IPC Bus)
-    async fn generate_embeddings(&self, model: &str, input: &str) -> Result<Vec<f32>, DriverError>;
+    async fn generate_embeddings(&self, model: &str, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, DriverError>;
 
 }
 
@@ -111,7 +111,7 @@ struct OllamaTagModel {
 #[derive(serde::Serialize)]
 struct OllamaEmbedRequest {
     model: String,
-    input: String,
+    input: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -303,19 +303,27 @@ impl InferenceDriver for OllamaDriver {
         Ok(models)
     }
 
-    async fn generate_embeddings(&self, model: &str, input: &str) -> Result<Vec<f32>, DriverError> {
+    async fn generate_embeddings(&self, model: &str, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, DriverError> {
         let url = format!("{}/api/embed", self.base_url);
+        
         let payload = OllamaEmbedRequest {
             model: model.to_string(),
-            input: input.to_string(),
+            input: inputs,
         };
 
-        let res = self.client.post(&url).json(&payload).send().await
+        let res = self.client.post(&url)
+            .json(&payload)
+            .send()
+            .await
             .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Err(DriverError::ApiError(format!("Ollama error: {}", res.status())));
+        }
 
         let data: OllamaEmbedResponse = res.json().await
             .map_err(|e| DriverError::ApiError(e.to_string()))?;
 
-        Ok(data.embeddings.into_iter().next().unwrap_or_default())
+        Ok(data.embeddings)
     }
 }
