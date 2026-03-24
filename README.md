@@ -45,6 +45,8 @@ It sits between your user-facing applications (OpenClaw, AutoGPT, custom termina
 | **Rate Limiting** | Agents can spam inference indefinitely | Per-agent token rate limiting enforced by manifest |
 | **Native Inference** | Requires external runtime (Ollama, etc.) | Built-in GGUF execution via Candle — zero dependencies |
 | **Context Persistence** | Agent memory lost on restart | SSD Pager freezes/restores chat history automatically |
+| **Native Embeddings** | Requires external embedding service | Built-in BERT embedder (Safetensors) — zero external dependencies |
+| **Memory Management** | Stale agent data accumulates forever | TTL-based garbage collection with configurable sweep intervals |
 
 ---
 
@@ -89,8 +91,11 @@ Switch engines with a single config change:
 engine = "native"   # or "ollama"
 
 [native]
-default_model = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
-default_tokenizer = "tokenizers/qwen2.5.json"
+default_model = "llama3.2:1b"
+
+[memory]
+cache_ttl_hours = 24   # Embedding cache lifetime (0 = infinite)
+pipe_ttl_hours = 32    # Semantic pipe data lifetime (0 = infinite)
 ```
 
 ### Core Subsystems
@@ -98,7 +103,7 @@ default_tokenizer = "tokenizers/qwen2.5.json"
 **Context Firewall** (`ore-core/src/firewall.rs`)
 A multi-layered security pipeline that processes every prompt before it reaches the model:
 - **Injection Blocker** - Heuristic analysis detecting jailbreaks (`"ignore previous"`), system probes (`"system prompt"`, `"root password"`), and override attempts (`"bypass"`, `"forget everything"`).
-- **PII Redactor** - Regex-powered scanner that strips emails and credit card numbers from prompts before inference.
+- **PII Redactor** - Regex-powered scanner that strips emails and credit card numbers from prompts before inference. Uses `OnceLock`-cached compiled patterns for zero recompilation overhead.
 - **Boundary Enforcer** - Wraps user input in randomized XML-like tags with UUID-based boundaries, preventing attackers from escaping the data context.
 
 **GPU Scheduler** (`ore-core/src/scheduler.rs`)
@@ -111,6 +116,7 @@ A bare-metal inference engine powered by Hugging Face's [Candle](https://github.
 - **3-Tier Tokenizer Resolution** - Searches for a local model-specific tokenizer → falls back to the global `tokenizers/` directory → extracts directly from GGUF metadata as a last resort (JIT-cached to disk for future loads).
 - **Hardware Auto-Detection** - Probes for CUDA, Metal, and CPU at boot and selects the optimal compute device.
 - **Streaming Token Generation** - Generates tokens one-at-a-time via `tokio::sync::mpsc`, enabling real-time streaming to the CLI.
+- **Native BERT Embedder** - A built-in `SystemEmbedder` (`ore-core/src/native/models/bert.rs`) that loads BERT-architecture models from Safetensors for embedding generation. Implements masked mean pooling and L2 normalization entirely in Rust. The embedder is memory-safe by design — when the embedding thread completes, Rust's ownership model automatically drops the model and frees all RAM to 0MB idle.
 
 **SSD Pager** (`ore-core/src/swap.rs`)
 An OS-style page file system for agent conversation history:
@@ -122,21 +128,26 @@ An OS-style page file system for agent conversation history:
 **Rate Limiter** (`ore-core/src/ipc.rs`)
 A `DashMap`-backed per-agent token counter that enforces the `max_tokens_per_minute` quota declared in each app's manifest. The counter auto-resets every 60 seconds. Agents that exceed their quota are blocked before reaching the GPU.
 
-**Hardware Abstraction Layer** (`ore-core/src/driver.rs`)
-A trait-based driver system (`InferenceDriver`) that decouples application logic from the physical inference engine. Two implementations ship today:
-- **`OllamaDriver`** - HTTP proxy to Ollama with health checks, model listing, VRAM process monitoring, inference generation, model lifecycle management, and embedding generation via `/api/embed`.
-- **`NativeDriver`** - Pure-Rust Candle-based inference with GGUF model loading, streaming generation, and hardware auto-detection.
+**Hardware Abstraction Layer** (`ore-core/src/driver.rs` + `ore-core/src/external/`)
+A trait-based driver system (`InferenceDriver`) that decouples application logic from the physical inference engine. The HAL trait defines 9 core operations (`engine_name`, `is_online`, `get_running_models`, `generate_text`, `generate_embeddings`, `unload_model`, `preload_model`, `pull_model`, `list_local_models`). Two implementations ship today:
+- **`OllamaDriver`** (`ore-core/src/external/ollama.rs`) - HTTP proxy to Ollama with health checks, model listing, VRAM process monitoring, inference generation, model lifecycle management, and embedding generation via `/api/embed`.
+- **`NativeDriver`** (`ore-core/src/native/mod.rs`) - Pure-Rust Candle-based inference with GGUF model loading, streaming generation, hardware auto-detection, and native BERT embeddings via Safetensors.
 
 Swap engines or add new backends (vLLM, LM Studio, llamafile) by implementing the `InferenceDriver` trait — zero app code changes required.
 
 **IPC & Semantic Memory** (`ore-core/src/ipc.rs`)
 A dual-layer inter-process communication system for agent collaboration:
 - **Message Bus** - Real-time agent-to-agent messaging using `tokio::sync::broadcast` channels. Agents register listeners and send typed `AgentMessage` payloads, with IPC targets enforced by the manifest.
-- **Semantic Bus** - An in-memory vector database powered by cosine similarity search. Agents write knowledge as text, which is automatically chunked (100-word blocks), embedded via `nomic-embed-text`, and stored as vectors. Other agents can query the bus with natural language and receive the top-K most relevant text chunks. The embedding model is auto-unloaded after each operation to maintain zero idle VRAM.
+- **Semantic Bus** - An in-memory vector database powered by cosine similarity search with intelligent optimizations:
+  - **Embedding Cache** - A hash-based `DashMap` cache that deduplicates embedding computations. Repeated text chunks are served from cache instead of re-invoking the embedder, eliminating redundant CPU/GPU work.
+  - **Sliding Window Chunking** - Configurable word-based chunking with overlap (`chunk_size` and `chunk_overlap` parameters) that maintains context coherence across boundaries.
+  - **Time-Decay Scoring** - Search results factor in recency: older memories lose 1% relevance per hour (clamped at 50% minimum), naturally surfacing fresh knowledge.
+  - **Source Filtering** - Queries accept an optional `filter_app` parameter to scope search results to a specific agent's contributions.
+  - **TTL-Based Garbage Collection** - The kernel runs an hourly sweep that evicts stale embedding cache entries and expired pipe data based on configurable TTLs (`cache_ttl_hours`, `pipe_ttl_hours` in `ore.toml`). Empty pipes are automatically pruned.
 - **Pipe-Level Permissions** - Both read and write operations on the Semantic Bus are gated by the manifest's `allowed_semantic_pipes`. An agent can only access pipes that are explicitly listed in its manifest, preventing unauthorized cross-agent memory access.
 
-**Token Authentication** (`ore-server/src/main.rs`)
-On boot, the kernel generates a UUID-based session token and writes it to `ore-kernel.token`. An Axum middleware layer intercepts every incoming request and validates the `Authorization: Bearer <token>` header. Unauthorized connections are rejected with `401 UNAUTHORIZED`. The CLI reads the token file automatically.
+**Token Authentication** (`ore-server/src/middleware.rs`)
+On boot, the kernel generates a UUID-based session token and writes it to `ore-kernel.token`. A dedicated Axum middleware layer (`auth_middleware`) intercepts every incoming request and validates the `Authorization: Bearer <token>` header. Unauthorized connections are rejected with `401 UNAUTHORIZED`. The CLI reads the token file automatically.
 
 **App Registry** (`ore-core/src/registry.rs`)
 An in-memory `HashMap`-backed registry that loads and validates all `.toml` manifest files from the `manifests/` directory on boot. Provides O(1) app lookup for the firewall and enforces per-app permission boundaries covering privacy, resources (including `stateful_paging`), file system, network, execution, and IPC (both `allowed_agent_targets` and `allowed_semantic_pipes`).
@@ -182,6 +193,8 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║   │  IPC Layer                                   │   ║
 ║   │  · Message Bus  (Agent <-> Agent broadcast)  │   ║
 ║   │  · Semantic Bus (Vector memory + cosine sim) │   ║
+║   │  · Embedding Cache (Hash-based dedup)        │   ║
+║   │  · Memory GC  (Hourly TTL-based sweep)       │   ║
 ║   └──────────────────────────────────────────────┘   ║
 ╚══════════════════════════╤═══════════════════════════╝
                            │
@@ -192,7 +205,14 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║     │ Native Candle │    │  Ollama API Proxy │       ║
 ║     │(GGUF · CPU/GPU│    │  (HTTP · Streaming│       ║
 ║     │ CUDA · Metal) │    │   · Embeddings)   │       ║
-║     └───────────────┘    └───────────────────┘       ║
+║     └───────┬───────┘    └───────────────────┘       ║
+║             │                                        ║
+║     ┌───────▼───────┐                                ║
+║     │  BERT Embedder│                                ║
+║     │ (Safetensors) │                                ║
+║     │ (Zero-RAM     │                                ║
+║     │  Idle Design) │                                ║
+║     └───────────────┘                                ║
 ╚══════════════════════════╤═══════════════════════════╝
                            │
                            ▼
@@ -209,37 +229,49 @@ ORE is organized as a Rust workspace with four crates:
 
 ```
 ore-system/
-├── ore-common/          # Shared types (InferenceRequest, InferenceResponse, ModelId)
-├── ore-core/            # Kernel logic
-│   ├── driver.rs        #   ├── HAL trait + OllamaDriver (inference + embeddings)
-│   ├── firewall.rs      #   ├── Context firewall (PII, injection, boundary)
-│   ├── ipc.rs           #   ├── MessageBus, SemanticBus, RateLimiter
-│   ├── scheduler.rs     #   ├── GpuScheduler with RAII GpuLease + VRAM state
-│   ├── swap.rs          #   ├── SSD Pager (context freezing & restoration)
-│   ├── registry.rs      #   ├── App manifest registry (TOML loader + cache)
-│   └── native/          #   └── Native Candle Inference Engine
-│       ├── mod.rs       #       ├── NativeDriver (GGUF loading + hardware detection)
-│       ├── engine.rs    #       ├── OreEngine enum (Llama/Qwen) + ActiveEngine
-│       ├── gguf_tokenizer.rs #  ├── GGUF metadata tokenizer extractor
-│       └── models/      #       └── Architecture-specific model loaders
-│           ├── llama.rs #           ├── Llama family loader
-│           └── qwen.rs  #           └── Qwen2 family loader
-├── ore-server/          # Axum HTTP daemon (16 routes + auth middleware)
-├── ore-cli/             # Interactive CLI tool (clap + dialoguer + HuggingFace Hub)
-├── manifests/           # App permission manifests (.toml files)
+├── ore-common/              # Shared types (InferenceRequest, InferenceResponse, ModelId)
+├── ore-core/                # Kernel logic
+│   ├── driver.rs            #   ├── HAL trait (InferenceDriver) + shared types
+│   ├── firewall.rs          #   ├── Context firewall (PII, injection, boundary)
+│   ├── ipc.rs               #   ├── MessageBus, SemanticBus (w/ cache + GC), RateLimiter
+│   ├── scheduler.rs         #   ├── GpuScheduler with RAII GpuLease + VRAM state
+│   ├── swap.rs              #   ├── SSD Pager (context freezing & restoration)
+│   ├── registry.rs          #   ├── App manifest registry (TOML loader + cache)
+│   ├── external/            #   ├── External inference drivers
+│   │   └── ollama.rs        #   │   └── OllamaDriver (HTTP proxy to Ollama daemon)
+│   └── native/              #   └── Native Candle Inference Engine
+│       ├── mod.rs           #       ├── NativeDriver (GGUF loading + hardware detection)
+│       ├── engine.rs        #       ├── OreEngine enum (Llama/Qwen) + ActiveEngine
+│       ├── gguf_tokenizer.rs#       ├── GGUF metadata tokenizer extractor
+│       └── models/          #       └── Architecture-specific model loaders
+│           ├── llama.rs     #           ├── Llama family loader
+│           ├── qwen.rs      #           ├── Qwen2 family loader
+│           └── bert.rs      #           └── BERT embedder (Safetensors, mean pooling, L2 norm)
+├── ore-server/              # Axum HTTP daemon (modular handler architecture)
+│   ├── main.rs              #   ├── Boot sequence, router setup, GC scheduler
+│   ├── state.rs             #   ├── KernelState + OreConfig (shared app state)
+│   ├── middleware.rs        #   ├── Bearer token auth middleware
+│   ├── payloads.rs          #   ├── Request payloads (RunRequest, IpcShareRequest, etc.)
+│   └── handlers/            #   └── Route handlers (system, inference, ipc)
+│       ├── system.rs        #       ├── Health, ps, ls, agents, manifests, pull, load, expel
+│       ├── inference.rs     #       ├── ask_ai (secured + paged), run_process (streamed)
+│       └── ipc.rs           #       └── Semantic bus share/search, agent messaging
+├── ore-cli/                 # Interactive CLI tool (clap + dialoguer + HuggingFace Hub)
+├── manifests/               # App permission manifests (.toml files)
 │   ├── openclaw.toml
 │   ├── terminal_user.toml
+│   ├── writer_agent.toml
 │   ├── web_scrapper.toml
 │   ├── cyber_spider.toml
 │   ├── cyber_agent.toml
 │   ├── web_tool.toml
 │   └── web_toolkit.toml
-├── models/              # Downloaded GGUF model weights (per-model directories)
-├── tokenizers/          # Global tokenizer JSONs (Llama 2/3.2/3.3/4, Qwen 2.5, CodeLlama)
-├── swap/                # SSD page files for agent context persistence
-├── ore.toml             # System configuration (engine selection + defaults)
-├── rust-toolchain.toml  # Pinned Rust version (1.93.0)
-├── Cargo.toml           # Workspace configuration + release profile
+├── models/                  # Downloaded model weights (per-model directories)
+├── tokenizers/              # Global tokenizer JSONs (Llama 2/3.2/3.3/4, CodeLlama)
+├── swap/                    # SSD page files for agent context persistence
+├── ore.toml                 # System configuration (engine + memory GC settings)
+├── rust-toolchain.toml      # Pinned Rust version (1.93.0)
+├── Cargo.toml               # Workspace configuration + release profile
 ├── CONTRIBUTING.md
 └── LICENSE-MIT
 ```
@@ -249,10 +281,10 @@ ore-system/
 | Crate | Purpose |
 |---|---|
 | `axum` | HTTP server framework with middleware for auth |
-| `tokio` | Async runtime with semaphore scheduling + broadcast channels |
-| `candle-core` + `candle-transformers` | Native GGUF model inference (Llama, Qwen architectures) |
+| `tokio` + `tokio-stream` | Async runtime with semaphore scheduling, broadcast channels, and response streaming |
+| `candle-core` + `candle-transformers` + `candle-nn` | Native GGUF model inference (Llama, Qwen) + BERT embeddings (Safetensors) |
 | `tokenizers` | HuggingFace tokenizer library with `onig` regex support |
-| `dashmap` | Lock-free concurrent HashMap for IPC buses and rate limiter |
+| `dashmap` | Lock-free concurrent HashMap for IPC buses, rate limiter, and embedding cache |
 | `clap` + `dialoguer` | CLI argument parsing + interactive manifest & init wizards |
 | `reqwest` | HTTP client for Ollama driver + HuggingFace model downloads |
 | `hf-hub` | HuggingFace Hub API client for native model pulls |
@@ -262,6 +294,7 @@ ore-system/
 | `uuid` | Session tokens, boundary tags, request IDs |
 | `colored` | Terminal output formatting in the CLI |
 | `thiserror` + `anyhow` | Structured error types across the kernel |
+| `time` | Filesystem timestamp formatting with local timezone offset |
 
 ---
 
@@ -297,6 +330,11 @@ ore init
 # > Select your primary AI Execution Engine
 #   Ollama (Background daemon, easiest setup)
 #   Native (Bare-metal Rust execution, maximum control)
+#
+# >>> CONFIGURING: RAM GARBAGE COLLECTION (GC)
+#     (How long should the OS keep idle Agent data in RAM?)
+# Mathematical Cache TTL in hours [0 = Infinite]: 24
+# Semantic Pipe TTL in hours [0 = Infinite]: 32
 ```
 
 ### Boot the Kernel Daemon
@@ -311,6 +349,7 @@ cargo run -p ore-server
 # -> Sweeping /manifests for installed Apps...
 # -> [REGISTRY] Verified & Loaded App: openclaw
 # -> [REGISTRY] Verified & Loaded App: terminal_user
+# -> [REGISTRY] Verified & Loaded App: writer_agent
 # -> [BOOT] Engaging Native Candle Engine...
 # === ORE KERNEL IS ONLINE ===
 # Listening on http://127.0.0.1:3000
@@ -323,9 +362,12 @@ cargo run -p ore-server
 ### Download Models (Native Engine)
 
 ```bash
-# Pull a model via the ORE package manager (streams from HuggingFace)
+# Pull a GGUF model via the ORE package manager (streams from HuggingFace)
 ore pull qwen2.5:0.5b
 ore pull llama3.2:1b
+
+# Pull the system embedder (BERT Safetensors for Semantic Bus)
+ore pull system-embedder
 
 # Output includes:
 # [~] Pulling Neural Weights from Qwen/Qwen2.5-0.5B-Instruct-GGUF...
@@ -339,7 +381,7 @@ ore pull llama3.2:1b
 ### Control via CLI
 
 ```bash
-ore init                 # Interactive setup wizard (engine selection + config)
+ore init                 # Interactive setup wizard (engine, memory GC config)
 ore status               # Check if the kernel is online
 ore top                  # View kernel telemetry (driver, scheduler, firewall)
 ore ps                   # Show models currently loaded in GPU VRAM
@@ -361,7 +403,7 @@ ore manifest <app_id>    # Interactive wizard to generate a secure manifest
 
 ### `ore init` - System Initialization Wizard
 
-Configures the core `ore.toml` system file. Lets you choose between **Ollama** (daemon-based) and **Native** (bare-metal Rust) inference engines, and set engine-specific defaults like model paths and API URLs.
+Configures the core `ore.toml` system file. Lets you choose between **Ollama** (daemon-based) and **Native** (bare-metal Rust) inference engines, set engine-specific defaults like model paths and API URLs, and configure **Memory Garbage Collection** parameters (embedding cache TTL and semantic pipe TTL).
 
 ### `ore manifest` - Interactive Manifest Forge
 
@@ -382,6 +424,17 @@ The CLI includes a step-by-step interactive wizard that generates secure `.toml`
 
 The wizard auto-detects installed models from Ollama and lets you select allowed models, set rate limits, enable stateful paging (SSD context swap), configure file system boundaries, network egress rules, execution sandboxing, and agent-to-agent IPC permissions (both message targets and semantic memory pipes).
 
+### `ore pull` - Native Model Package Manager
+
+Supports two model architectures:
+
+| Type | Format | Example Models |
+|---|---|---|
+| **GGUF** | Quantized weights + tokenizer | `qwen2.5:0.5b`, `llama3.2:1b`, and base variants |
+| **Safetensors** | Full-precision weights + config + tokenizer | `system-embedder` (all-MiniLM-L6-v2), `nomic-embed-text` |
+
+All downloads stream directly to disk with zero RAM bloat and [HuggingFace](https://huggingface.co/models) token support for gated models.
+
 ### `ore ls --agents` - Agent Security Dashboard
 
 ```
@@ -389,6 +442,7 @@ AGENT ID             | VERSION    | ALLOWED MODELS       | PRIORITY   | STATUS
 ----------------------------------------------------------------------------------
 openclaw             | 1.0.0      | llama3.2:1b          | NORMAL     | SECURED
 terminal_user        | 1.0.0      | llama3.2:1b          | NORMAL     | SECURED
+writer_agent         | 1.0.0      | llama3.2:1b          | NORMAL     | SECURED
 cyber_spider         | 1.0.0      | qwen2.5:0.5b, lla... | NORMAL     | UNSAFE
 ```
 
@@ -401,6 +455,7 @@ MANIFEST FILE        | NETWORK    | FILE I/O      | EXECUTION       | PII SCRUBB
 ------------------------------------------------------------------------------------
 openclaw.toml        | ENABLED    | Read-Only     | WASM Sandbox    | ACTIVE
 terminal_user.toml   | BLOCKED    | Air-gapped    | Disabled        | ACTIVE
+writer_agent.toml    | BLOCKED    | Air-gapped    | Disabled        | ACTIVE
 cyber_spider.toml    | ENABLED    | Read-Only     | SHELL (RISK)    | OFF (RISK)
 ```
 
@@ -495,13 +550,13 @@ allowed_semantic_pipes = ["rust_docs"]       # Tier 2: Semantic memory access
 
 ## API Routes
 
-The kernel exposes 16 authenticated HTTP routes via Axum:
+The kernel exposes 15 authenticated HTTP routes via Axum, organized into three handler modules:
+
+### System Routes (`handlers/system.rs`)
 
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/health` | Kernel health check (returns engine name) |
-| `GET` | `/ask/:prompt` | Secured inference with firewall + paging |
-| `POST` | `/run` | Streamed inference with rate limiting |
 | `GET` | `/ps` | List models currently in VRAM |
 | `GET` | `/ls` | List all locally installed models |
 | `GET` | `/agents` | Agent security dashboard |
@@ -510,8 +565,20 @@ The kernel exposes 16 authenticated HTTP routes via Axum:
 | `GET` | `/load/:model` | Pre-load a model into VRAM |
 | `GET` | `/expel/:model` | Force-evict a model from VRAM |
 | `GET` | `/clear/:app_id` | Wipe agent's SSD swap memory |
-| `POST` | `/ipc/share` | Write knowledge to a Semantic Bus pipe |
-| `POST` | `/ipc/search` | Search a Semantic Bus pipe (top-K cosine) |
+
+### Inference Routes (`handlers/inference.rs`)
+
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/ask/:prompt` | Secured inference with firewall + SSD paging |
+| `POST` | `/run` | Streamed inference with rate limiting |
+
+### IPC Routes (`handlers/ipc.rs`)
+
+| Method | Route | Description |
+|---|---|---|
+| `POST` | `/ipc/share` | Write knowledge to a Semantic Bus pipe (with chunking + caching) |
+| `POST` | `/ipc/search` | Search a Semantic Bus pipe (top-K cosine with time decay) |
 | `POST` | `/ipc/send` | Send an agent-to-agent message |
 | `GET` | `/ipc/listen/:app_id` | Poll for incoming agent messages |
 
@@ -524,16 +591,15 @@ All routes are protected by Bearer token authentication middleware.
 ```
 v0.1  ████████████████████  [DONE]  Scheduler · PII Redaction · Manifest System
 v0.2  ████████████████████  [DONE]  Native Candle Engine · SSD Pager · HF Model Pulls
-v0.3  ░░░░░░░░░░░░░░░░░░░░  [PLAN]  Semantic File System - shared vector memory
+v0.3  ████████████████████  [DONE]  Memory GC · Native Embedder · Server Modularization
+v0.4  ░░░░░░░░░░░░░░░░░░░░  [PLAN]  Semantic File System - shared vector memory
 v1.0  ░░░░░░░░░░░░░░░░░░░░  [PLAN]  ORE Mesh - distributed inference over LAN
 ```
 
-**v0.2 - Native Engine & SSD Paging** ✅
-Pure-Rust inference via Candle with GGUF quantized models. SSD-backed context paging for persistent agent memory. Built-in HuggingFace model downloader with streaming progress.
+**v0.3 - Memory Management & Native Embeddings** ✅
+TTL-based garbage collection for embedding cache and semantic pipes. Native BERT embedder (`SystemEmbedder`) via Safetensors with masked mean pooling and L2 normalization — zero external dependencies for embeddings. Server restructured into modular handler architecture. Embedding cache with hash-based deduplication. Time-decay search scoring. Configurable sliding window chunking. `ore init` now configures memory GC TTLs.
 
-
-
-**v0.3 - Semantic File System (SFS)**
+**v0.4 - Semantic File System (SFS)**
 A shared, persistent vector memory space accessible by all registered apps. Agents can read and write embeddings without duplicating context.
 
 **v1.0 - ORE Mesh**
@@ -558,7 +624,7 @@ git push origin feature/your-feature
 Areas where contributions are especially welcome:
 
 - **Security** - Additional injection detection heuristics, PII patterns (phone numbers, SSNs, API keys)
-- **Drivers** - New `InferenceDriver` implementations (vLLM, LM Studio, llamafile)
+- **Drivers** - New `InferenceDriver` implementations (vLLM, LM Studio, llamafile) in `ore-core/src/external/`
 - **Native Architectures** - Add model loaders for Mistral, Phi, Gemma to `ore-core/src/native/models/`
 - **Scheduler** - Priority-based scheduling policies, multi-GPU support
 - **Manifest enforcement** - Runtime file system, network, and execution sandboxing
