@@ -1,7 +1,7 @@
+use crate::swap::ContextMessage;
 use async_trait::async_trait;
 use thiserror::Error;
-use crate::swap::ContextMessage;
-use tokio::sync::mpsc::UnboundedSender; 
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Error, Debug)]
 pub enum DriverError {
@@ -47,8 +47,17 @@ pub trait InferenceDriver: Send + Sync {
 
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError>;
 
-    async fn generate_text(&self, model: &str, prompt: &str, history: Option<Vec<ContextMessage>>, tx: UnboundedSender<String>) -> Result<(), DriverError>;
+    async fn generate_text(
+        &self,
+        model: &str,
+        prompt: &str,
+        history: Option<Vec<ContextMessage>>,
+        tx: UnboundedSender<String>,
+    ) -> Result<(), DriverError>;
 
-    async fn generate_embeddings(&self, model: &str, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, DriverError>;
-
+    async fn generate_embeddings(
+        &self,
+        model: &str,
+        inputs: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, DriverError>;
 }

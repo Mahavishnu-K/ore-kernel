@@ -1,23 +1,27 @@
-pub mod state;
-pub mod payloads;
-pub mod middleware;
 pub mod handlers;
+pub mod middleware;
+pub mod payloads;
+pub mod state;
 
-use axum::{middleware as axum_middleware, routing::{get, post}, Router};
-use std::sync::Arc;
+use axum::{
+    middleware as axum_middleware,
+    routing::{get, post},
+    Router,
+};
 use std::fs;
-use uuid::Uuid;
+use std::sync::Arc;
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 use ore_core::driver::InferenceDriver;
-use ore_core::native::NativeDriver;
 use ore_core::external::ollama::OllamaDriver;
+use ore_core::ipc::{MessageBus, RateLimiter, SemanticBus};
+use ore_core::native::NativeDriver;
 use ore_core::registry::AppRegistry;
-use ore_core::ipc::{SemanticBus, RateLimiter, MessageBus};
 use ore_core::scheduler::GpuScheduler;
 
-use crate::state::{KernelState, OreConfig};
 use crate::middleware::auth_middleware;
+use crate::state::{KernelState, OreConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,8 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("-> Sweeping /manifests for installed Apps...");
     let app_registry =
         AppRegistry::boot_load("../manifests").expect("FATAL: Failed to initialize App Registry");
-    
-    let config_str = fs::read_to_string("../ore.toml").expect("FATAL: ore.toml missing. Run 'ore init'");
+
+    let config_str =
+        fs::read_to_string("../ore.toml").expect("FATAL: ore.toml missing. Run 'ore init'");
     let config: OreConfig = toml::from_str(&config_str).unwrap();
 
     let driver: Arc<dyn InferenceDriver> = if config.system.engine == "native" {
@@ -42,7 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(OllamaDriver::new("http://127.0.0.1:11434"))
     };
 
-    let semantic_bus = SemanticBus::new(config.memory.cache_ttl_hours, config.memory.pipe_ttl_hours);
+    let semantic_bus =
+        SemanticBus::new(config.memory.cache_ttl_hours, config.memory.pipe_ttl_hours);
 
     let shared_semantic_bus = Arc::new(semantic_bus);
 
@@ -71,11 +77,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/run", post(handlers::inference::run_process))
         .route("/ipc/share", post(handlers::ipc::sys_share_context))
         .route("/ipc/search", post(handlers::ipc::sys_search_context))
-        .route("/ipc/send", post(handlers::ipc::ipc_send))          
+        .route("/ipc/send", post(handlers::ipc::ipc_send))
         .route("/ipc/listen/:app_id", get(handlers::ipc::ipc_listen))
-        .layer(axum_middleware::from_fn_with_state(shared_state.clone(), auth_middleware))
+        .layer(axum_middleware::from_fn_with_state(
+            shared_state.clone(),
+            auth_middleware,
+        ))
         .with_state(shared_state.clone());
-    
+
     let gc_bus = shared_state.semantic_bus.clone();
     tokio::spawn(async move {
         loop {

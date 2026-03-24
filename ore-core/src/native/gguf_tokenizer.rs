@@ -1,18 +1,18 @@
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{Context, Error, Result, bail};
 use candle_core::quantized::gguf_file;
 use tokenizers::{
-    decoders::{byte_level::ByteLevel as ByteLevelDecoder, DecoderWrapper},
-    models::bpe::{Vocab, BPE},
-    normalizers::{unicode::NFC, NormalizerWrapper},
+    AddedToken, Tokenizer,
+    decoders::{DecoderWrapper, byte_level::ByteLevel as ByteLevelDecoder},
+    models::bpe::{BPE, Vocab},
+    normalizers::{NormalizerWrapper, unicode::NFC},
     pre_tokenizers::{
+        PreTokenizerWrapper,
         byte_level::ByteLevel as ByteLevelPre,
         sequence::Sequence,
         split::{Split, SplitPattern},
-        PreTokenizerWrapper,
     },
-    processors::{byte_level::ByteLevel as ByteLevelProcessor, PostProcessorWrapper},
+    processors::{PostProcessorWrapper, byte_level::ByteLevel as ByteLevelProcessor},
     tokenizer::SplitDelimiterBehavior,
-    AddedToken, Tokenizer,
 };
 
 pub trait TokenizerFromGguf: Sized {
@@ -20,7 +20,9 @@ pub trait TokenizerFromGguf: Sized {
 }
 
 fn metadata_value<'a>(ct: &'a gguf_file::Content, key: &str) -> Result<&'a gguf_file::Value> {
-    ct.metadata.get(key).with_context(|| format!("missing GGUF metadata key `{key}`"))
+    ct.metadata
+        .get(key)
+        .with_context(|| format!("missing GGUF metadata key `{key}`"))
 }
 
 fn gguf_value_to_u32(v: &gguf_file::Value) -> Result<u32> {
@@ -39,7 +41,9 @@ fn gguf_value_to_u32(v: &gguf_file::Value) -> Result<u32> {
 }
 
 fn value_to_string_array(v: &gguf_file::Value, name: &str) -> Result<Vec<String>> {
-    let arr = v.to_vec().with_context(|| format!("`{name}` is not an array"))?;
+    let arr = v
+        .to_vec()
+        .with_context(|| format!("`{name}` is not an array"))?;
     arr.iter()
         .map(|v| {
             v.to_string()
@@ -69,16 +73,28 @@ struct Pipeline {
 
 impl Pipeline {
     fn apply(self, tokenizer: &mut Tokenizer) {
-        if let Some(norm) = self.normalizer { tokenizer.with_normalizer(Some(norm)); }
-        if let Some(pt) = self.pretokenizer { tokenizer.with_pre_tokenizer(Some(pt)); }
-        if let Some(dec) = self.decoder { tokenizer.with_decoder(Some(dec)); }
-        if let Some(pp) = self.post_processor { tokenizer.with_post_processor(Some(pp)); }
+        if let Some(norm) = self.normalizer {
+            tokenizer.with_normalizer(Some(norm));
+        }
+        if let Some(pt) = self.pretokenizer {
+            tokenizer.with_pre_tokenizer(Some(pt));
+        }
+        if let Some(dec) = self.decoder {
+            tokenizer.with_decoder(Some(dec));
+        }
+        if let Some(pp) = self.post_processor {
+            tokenizer.with_post_processor(Some(pp));
+        }
     }
 }
 
 fn pre_tokenizer_sequence(regex: &str, byte_level: ByteLevelPre) -> Result<PreTokenizerWrapper> {
-    let split = Split::new(SplitPattern::Regex(regex.to_string()), SplitDelimiterBehavior::Isolated, false)
-        .map_err(Error::msg)?;
+    let split = Split::new(
+        SplitPattern::Regex(regex.to_string()),
+        SplitDelimiterBehavior::Isolated,
+        false,
+    )
+    .map_err(Error::msg)?;
     Ok(Sequence::new(vec![split.into(), byte_level.into()]).into())
 }
 
@@ -89,13 +105,19 @@ fn pipeline_from_pre(pre: &str) -> Result<Pipeline> {
     Ok(match pre {
         "qwen2" => Pipeline {
             normalizer: Some(NFC.into()),
-            pretokenizer: Some(pre_tokenizer_sequence(REGEX_QWEN2, ByteLevelPre::new(false, false, false))?),
+            pretokenizer: Some(pre_tokenizer_sequence(
+                REGEX_QWEN2,
+                ByteLevelPre::new(false, false, false),
+            )?),
             decoder: Some(ByteLevelDecoder::new(false, false, false).into()),
             post_processor: Some(ByteLevelProcessor::new(false, false, false).into()),
         },
         "smaug-bpe" | "lfm2" | "llama3" => Pipeline {
             normalizer: None,
-            pretokenizer: Some(pre_tokenizer_sequence(REGEX_LLAMA3, ByteLevelPre::new(false, true, false))?),
+            pretokenizer: Some(pre_tokenizer_sequence(
+                REGEX_LLAMA3,
+                ByteLevelPre::new(false, true, false),
+            )?),
             decoder: Some(ByteLevelDecoder::new(true, true, true).into()),
             post_processor: Some(ByteLevelProcessor::new(true, false, true).into()),
         },
@@ -111,28 +133,34 @@ fn pipeline_from_pre(pre: &str) -> Result<Pipeline> {
 impl TokenizerFromGguf for Tokenizer {
     fn from_gguf(ct: &gguf_file::Content) -> Result<Self> {
         // We bypass the "gpt2" check here because some newer models omit it but still use BPE.
-        let tokens = value_to_string_array(metadata_value(ct, "tokenizer.ggml.tokens")?, "tokenizer.ggml.tokens")?;
-        let vocab: Vocab = tokens.iter().enumerate().map(|(i, t)| (t.clone(), i as u32)).collect();
+        let tokens = value_to_string_array(
+            metadata_value(ct, "tokenizer.ggml.tokens")?,
+            "tokenizer.ggml.tokens",
+        )?;
+        let vocab: Vocab = tokens
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.clone(), i as u32))
+            .collect();
         let merges = merges_from_value(metadata_value(ct, "tokenizer.ggml.merges")?)?;
 
         let mut builder = BPE::builder().vocab_and_merges(vocab, merges);
 
-        if let Ok(val) = metadata_value(ct, "tokenizer.ggml.unk_token_id") {
-            if let Ok(token_id) = gguf_value_to_u32(val) {
-                if let Some(token) = tokens.get(token_id as usize) {
-                    builder = builder.unk_token(token.clone());
-                }
-            }
+        if let Ok(val) = metadata_value(ct, "tokenizer.ggml.unk_token_id")
+            && let Ok(token_id) = gguf_value_to_u32(val)
+            && let Some(token) = tokens.get(token_id as usize)
+        {
+            builder = builder.unk_token(token.clone());
         }
 
         let bpe = builder.build().map_err(Error::msg)?;
         let mut tokenizer = Tokenizer::new(bpe);
 
         let pre = metadata_value(ct, "tokenizer.ggml.pre")
-                .and_then(|v| v.to_string().map_err(Error::msg))
-                .map(|s| s.to_string())
-                .unwrap_or_else(|_| "gpt2".to_string());
-        
+            .and_then(|v| v.to_string().map_err(Error::msg))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|_| "gpt2".to_string());
+
         let pipeline = pipeline_from_pre(pre.as_str())?;
         pipeline.apply(&mut tokenizer);
 
@@ -142,14 +170,14 @@ impl TokenizerFromGguf for Tokenizer {
             for (idx, v) in arr.iter().enumerate() {
                 if let Ok(ty) = gguf_value_to_u32(v) {
                     let is_special = matches!(ty, 2..=5);
-                    if is_special {
-                        if let Some(tok) = tokens.get(idx) {
-                            specials.push(AddedToken::from(tok.clone(), true));
-                        }
+                    if is_special && let Some(tok) = tokens.get(idx) {
+                        specials.push(AddedToken::from(tok.clone(), true));
                     }
                 }
             }
-            if !specials.is_empty() { tokenizer.add_special_tokens(&specials); }
+            if !specials.is_empty() {
+                tokenizer.add_special_tokens(&specials);
+            }
         }
 
         Ok(tokenizer)

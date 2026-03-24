@@ -1,24 +1,34 @@
-use axum::extract::{Path, State};
-use std::sync::Arc;
 use crate::state::KernelState;
+use axum::extract::{Path, State};
 use ore_core::swap::Pager;
+use std::sync::Arc;
 
 pub async fn health_check(State(state): State<Arc<KernelState>>) -> String {
-    format!("ORE Kernel is ALIVE. Powered by: {}", state.driver.engine_name())
+    format!(
+        "ORE Kernel is ALIVE. Powered by: {}",
+        state.driver.engine_name()
+    )
 }
 
 pub async fn process_status(State(state): State<Arc<KernelState>>) -> String {
     match state.driver.get_running_models().await {
         Ok(models) => {
-            let mut output = format!("{:<25} | {:<12} | {:<12}\n", "MODEL", "TOTAL RAM", "GPU VRAM");
+            let mut output = format!(
+                "{:<25} | {:<12} | {:<12}\n",
+                "MODEL", "TOTAL RAM", "GPU VRAM"
+            );
             output.push_str("----------------------------------------------------------\n");
 
             if models.is_empty() {
                 output.push_str("No models currently loaded in memory.\n");
             } else {
                 for m in models {
-                    output.push_str(&format!("{:<25} | {:<9} MB | {:<9} MB\n", 
-                        m.model_name, m.size_bytes / 1024 / 1024, m.size_vram_bytes / 1024 / 1024));
+                    output.push_str(&format!(
+                        "{:<25} | {:<9} MB | {:<9} MB\n",
+                        m.model_name,
+                        m.size_bytes / 1024 / 1024,
+                        m.size_vram_bytes / 1024 / 1024
+                    ));
                 }
             }
             output
@@ -36,8 +46,12 @@ pub async fn list_models(State(state): State<Arc<KernelState>>) -> String {
                 output.push_str("No models installed. Use 'ore install <model>'.\n");
             } else {
                 for m in models {
-                    output.push_str(&format!("{:<25} | {:.2} GB   | {}\n", 
-                        m.name, m.size_bytes as f64 / 1024.0 / 1024.0 / 1024.0, m.modified_at));
+                    output.push_str(&format!(
+                        "{:<25} | {:.2} GB   | {}\n",
+                        m.name,
+                        m.size_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                        m.modified_at
+                    ));
                 }
             }
             output
@@ -46,24 +60,33 @@ pub async fn list_models(State(state): State<Arc<KernelState>>) -> String {
     }
 }
 
-pub async fn expel_model(State(state): State<Arc<KernelState>>, Path(model_name): Path<String>) -> String {
+pub async fn expel_model(
+    State(state): State<Arc<KernelState>>,
+    Path(model_name): Path<String>,
+) -> String {
     match state.driver.unload_model(&model_name).await {
         Ok(_) => format!(
-                    "SUCCESS: Model '{}' has been forcefully evicted from GPU VRAM.",
-                    model_name
-                ),
+            "SUCCESS: Model '{}' has been forcefully evicted from GPU VRAM.",
+            model_name
+        ),
         Err(e) => format!("KERNEL ERROR: {}", e),
     }
 }
 
-pub async fn pull_model(State(state): State<Arc<KernelState>>, Path(model_name): Path<String>) -> String {
+pub async fn pull_model(
+    State(state): State<Arc<KernelState>>,
+    Path(model_name): Path<String>,
+) -> String {
     match state.driver.pull_model(&model_name).await {
         Ok(_) => format!("SUCCESS: Model '{}' installed.", model_name),
         Err(e) => format!("KERNEL ERROR: {}", e),
     }
 }
 
-pub async fn load_model(State(state): State<Arc<KernelState>>, Path(model_name): Path<String>) -> String {
+pub async fn load_model(
+    State(state): State<Arc<KernelState>>,
+    Path(model_name): Path<String>,
+) -> String {
     match state.driver.preload_model(&model_name).await {
         Ok(_) => format!("SUCCESS: Model '{}' loaded.", model_name),
         Err(e) => format!("KERNEL ERROR: {}", e),
@@ -180,7 +203,13 @@ pub async fn list_manifests(State(state): State<Arc<KernelState>>) -> String {
 }
 
 pub async fn clear_memory(Path(app_id): Path<String>) -> String {
-    println!("-> [KERNEL COMMAND] Wiping SSD Memory for Agent '{}'", app_id);
+    println!(
+        "-> [KERNEL COMMAND] Wiping SSD Memory for Agent '{}'",
+        app_id
+    );
     Pager::clear_page(&app_id);
-    format!("SUCCESS: Memory for Agent '{}' has been wiped clean.", app_id)
+    format!(
+        "SUCCESS: Memory for Agent '{}' has been wiped clean.",
+        app_id
+    )
 }

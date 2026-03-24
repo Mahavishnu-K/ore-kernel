@@ -1,8 +1,8 @@
+use anyhow::{Error as E, Result};
 use candle_core::Tensor;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::quantized_llama::ModelWeights as LlamaModel;
 use candle_transformers::models::quantized_qwen2::ModelWeights as QwenModel;
-use anyhow::{Error as E, Result};
 use tokenizers::Tokenizer;
 
 // Supports multiple architectures

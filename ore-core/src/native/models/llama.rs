@@ -16,10 +16,16 @@ pub fn load(
     let m = LlamaModel::from_gguf(model_content, file, device)?;
 
     let mut stop_tokens = vec![128001, 128009];
-    if let Some(id) = tokenizer.token_to_id("<|eot_id|>") { stop_tokens.push(id); }
-    if let Some(id) = tokenizer.token_to_id("<|end_of_text|>") { stop_tokens.push(id); }
-    if let Some(id) = tokenizer.token_to_id("</s>") { stop_tokens.push(id); }
-    
+    if let Some(id) = tokenizer.token_to_id("<|eot_id|>") {
+        stop_tokens.push(id);
+    }
+    if let Some(id) = tokenizer.token_to_id("<|end_of_text|>") {
+        stop_tokens.push(id);
+    }
+    if let Some(id) = tokenizer.token_to_id("</s>") {
+        stop_tokens.push(id);
+    }
+
     let name_lower = model_name.to_lowercase();
     let is_llama_2 = name_lower.contains("llama2") || name_lower.contains("llama-2");
 
@@ -29,12 +35,18 @@ pub fn load(
     } else if is_llama_2 {
         // llama 2 formatter
         |prompt| {
-            format!("<s>[INST] <<SYS>>\nYou are a helpful AI.\n<</SYS>>\n\n{} [/INST]", prompt)
+            format!(
+                "<s>[INST] <<SYS>>\nYou are a helpful AI.\n<</SYS>>\n\n{} [/INST]",
+                prompt
+            )
         }
     } else {
         // Llama 3, 3.1, 3.2, 3.3, and 4
         |prompt| {
-            format!("<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful AI.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n", prompt)
+            format!(
+                "<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful AI.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+                prompt
+            )
         }
     };
 

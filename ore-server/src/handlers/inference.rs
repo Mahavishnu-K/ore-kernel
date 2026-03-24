@@ -1,12 +1,16 @@
-use axum::{extract::{Json, Path, State}, response::{Response, IntoResponse}, http::StatusCode};
+use crate::payloads::RunRequest;
+use crate::state::KernelState;
 use axum::body::Body;
+use axum::{
+    extract::{Json, Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use ore_core::firewall::ContextFirewall;
+use ore_core::swap::Pager;
 use std::sync::Arc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
-use crate::state::KernelState;
-use crate::payloads::RunRequest;
-use ore_core::firewall::ContextFirewall;
-use ore_core::swap::Pager;
 
 // inference engine (The Proxy & Firewall)
 pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<String>) -> String {
@@ -42,13 +46,19 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
     println!("-> Waiting for GPU Scheduler...");
 
     // If the agent lists allowed_models, pick the first one. Default to "llama3.2:1b"
-    let target_model = manifest.resources.allowed_models.first()
+    let target_model = manifest
+        .resources
+        .allowed_models
+        .first()
         .map(|s| s.as_str())
         .unwrap_or("llama3.2:1b");
 
     // the GPU scheduler
     let lease = state.scheduler.request_gpu(target_model).await;
-    println!("-> GPU Lease Granted for '{}'. Routing to Driver...", lease.model);
+    println!(
+        "-> GPU Lease Granted for '{}'. Routing to Driver...",
+        lease.model
+    );
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -58,8 +68,10 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
     let context_clone = current_context.clone();
 
     tokio::spawn(async move {
-        let _ = driver.generate_text(&model_name, &prompt_clone, context_clone, tx).await;
-        
+        let _ = driver
+            .generate_text(&model_name, &prompt_clone, context_clone, tx)
+            .await;
+
         println!("-> Agent Execution complete. Releasing GPU Lock.");
         drop(lease);
     });
@@ -71,8 +83,14 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
 
     if manifest.resources.stateful_paging {
         let mut new_history = current_context.unwrap_or_default();
-        new_history.push(ore_core::swap::ContextMessage { role: "user".to_string(), content: secured_prompt });
-        new_history.push(ore_core::swap::ContextMessage { role: "assistant".to_string(), content: full_response.clone() });
+        new_history.push(ore_core::swap::ContextMessage {
+            role: "user".to_string(),
+            content: secured_prompt,
+        });
+        new_history.push(ore_core::swap::ContextMessage {
+            role: "assistant".to_string(),
+            content: full_response.clone(),
+        });
         Pager::page_out_history(app_id, &new_history);
     }
 
@@ -91,10 +109,13 @@ pub async fn run_process(
     let app_id = "terminal_user";
     let manifest = match state.registry.get_app(app_id) {
         Some(m) => m,
-        None => return (
-            StatusCode::UNAUTHORIZED, 
-            format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id)
-        ).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id),
+            )
+                .into_response()
+        }
     };
 
     // future update: calculate tokens based on prompt length or use a more dynamic approach
@@ -102,9 +123,10 @@ pub async fn run_process(
     if !state.rate_limiter.check_and_add(app_id, limit, 1000) {
         println!("-> [BLOCKED] Agent '{}' exceeded GPU rate limit.", app_id);
         return (
-            StatusCode::TOO_MANY_REQUESTS, 
-            format!("ORE KERNEL ALERT: Rate Limit Exceeded ({} t/min).", limit)
-        ).into_response();
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("ORE KERNEL ALERT: Rate Limit Exceeded ({} t/min).", limit),
+        )
+            .into_response();
     }
 
     let secured_prompt = match ContextFirewall::secure_request(manifest, &payload.prompt) {
@@ -114,10 +136,7 @@ pub async fn run_process(
         }
         Err(e) => {
             println!("-> [BLOCKED] {}", e);
-            return (
-                StatusCode::FORBIDDEN, 
-                format!("ORE KERNEL ALERT: {}", e)
-            ).into_response();
+            return (StatusCode::FORBIDDEN, format!("ORE KERNEL ALERT: {}", e)).into_response();
         }
     };
 
@@ -125,7 +144,10 @@ pub async fn run_process(
 
     // request a GPU lease for the specified model
     let lease = state.scheduler.request_gpu(&payload.model).await;
-    println!("-> GPU Lease Granted. Executing natively via {}...", state.driver.engine_name());
+    println!(
+        "-> GPU Lease Granted. Executing natively via {}...",
+        state.driver.engine_name()
+    );
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -135,10 +157,10 @@ pub async fn run_process(
 
     tokio::spawn(async move {
         let _ = driver.generate_text(&model_name, &prompt, None, tx).await;
-        
+
         println!("-> Execution complete. Releasing GPU Lock.");
-        
-        drop(lease); 
+
+        drop(lease);
     });
 
     let stream = UnboundedReceiverStream::new(rx)

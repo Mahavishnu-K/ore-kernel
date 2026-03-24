@@ -4,7 +4,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
 use std::fs;
 use std::path::Path;
-use tokenizers::{Tokenizer, PaddingParams, TruncationParams};
+use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
 
 pub struct SystemEmbedder {
     model: BertModel,
@@ -29,9 +29,18 @@ impl SystemEmbedder {
         println!("-> [BERT] Loading System Embedder Dictionary...");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(E::msg)?;
 
-        let pp = PaddingParams { strategy: tokenizers::PaddingStrategy::BatchLongest, ..Default::default() };
-        let tp = TruncationParams { max_length: 8192, ..Default::default() };
-        tokenizer.with_padding(Some(pp)).with_truncation(Some(tp)).map_err(E::msg)?;
+        let pp = PaddingParams {
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
+            ..Default::default()
+        };
+        let tp = TruncationParams {
+            max_length: 8192,
+            ..Default::default()
+        };
+        tokenizer
+            .with_padding(Some(pp))
+            .with_truncation(Some(tp))
+            .map_err(E::msg)?;
 
         println!("-> [BERT] Loading Configuration...");
         let config_str = fs::read_to_string(&config_path)?;
@@ -82,7 +91,7 @@ impl SystemEmbedder {
 
             // Sum the mask: [1, seq_len, 1] -> [1, 1]
             let sum_mask = mask_f32.sum(1)?.clamp(1e-9, f64::MAX)?;
-            
+
             let mean_pooled = sum_embeddings.broadcast_div(&sum_mask)?;
 
             // 3. L2 NORMALIZATION

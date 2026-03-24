@@ -18,7 +18,7 @@ pub struct SystemConfig {
 
 #[derive(Deserialize, Clone)]
 pub struct MemoryConfig {
-    pub cache_ttl_hours: u64, 
+    pub cache_ttl_hours: u64,
     pub pipe_ttl_hours: u64,
 }
 

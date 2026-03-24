@@ -16,8 +16,12 @@ pub fn load(
     let m = QwenModel::from_gguf(model_content, file, device)?;
 
     let mut stop_tokens = vec![151645, 151643];
-    if let Some(id) = tokenizer.token_to_id("<|im_end|>") { stop_tokens.push(id); }
-    if let Some(id) = tokenizer.token_to_id("<|endoftext|>") { stop_tokens.push(id); }
+    if let Some(id) = tokenizer.token_to_id("<|im_end|>") {
+        stop_tokens.push(id);
+    }
+    if let Some(id) = tokenizer.token_to_id("<|endoftext|>") {
+        stop_tokens.push(id);
+    }
 
     let name_lower = model_name.to_lowercase();
 

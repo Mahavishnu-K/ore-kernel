@@ -8,7 +8,7 @@ pub struct RunRequest {
 pub struct IpcShareRequest {
     pub source_app: String,
     pub target_pipe: String,
-    pub knowledge_text: String, 
+    pub knowledge_text: String,
     pub chunk_size: Option<usize>,
     pub chunk_overlap: Option<usize>,
 }
@@ -17,7 +17,7 @@ pub struct IpcShareRequest {
 pub struct IpcSearchRequest {
     pub source_app: String,
     pub target_pipe: String,
-    pub query: String, 
+    pub query: String,
     pub filter_app: Option<String>,
     pub top_k: Option<usize>,
 }

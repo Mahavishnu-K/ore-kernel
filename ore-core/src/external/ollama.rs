@@ -1,9 +1,9 @@
+use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
+use crate::swap::ContextMessage;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use crate::swap::ContextMessage;
-use tokio::sync::mpsc::UnboundedSender; 
-use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
+use tokio::sync::mpsc::UnboundedSender;
 
 pub struct OllamaDriver {
     pub base_url: String,
@@ -33,15 +33,15 @@ struct OllamaModelProcess {
 }
 
 #[derive(serde::Serialize)]
-struct OllamaRequest { 
-    model: String, 
-    messages: Vec<ContextMessage>, 
-    stream: bool
+struct OllamaRequest {
+    model: String,
+    messages: Vec<ContextMessage>,
+    stream: bool,
 }
 
 #[derive(Deserialize)]
-struct OllamaResponse { 
-    message: ContextMessage 
+struct OllamaResponse {
+    message: ContextMessage,
 }
 
 #[derive(Deserialize)]
@@ -69,7 +69,9 @@ struct OllamaEmbedResponse {
 
 #[async_trait]
 impl InferenceDriver for OllamaDriver {
-    fn engine_name(&self) -> &'static str { "Ollama Engine" }
+    fn engine_name(&self) -> &'static str {
+        "Ollama Engine"
+    }
 
     async fn is_online(&self) -> bool {
         self.client.get(&self.base_url).send().await.is_ok()
@@ -111,32 +113,44 @@ impl InferenceDriver for OllamaDriver {
         Ok(processes)
     }
 
-    async fn generate_text(&self, model: &str, prompt: &str, history: Option<Vec<ContextMessage>>, tx: UnboundedSender<String>) -> Result<(), DriverError> {
+    async fn generate_text(
+        &self,
+        model: &str,
+        prompt: &str,
+        history: Option<Vec<ContextMessage>>,
+        tx: UnboundedSender<String>,
+    ) -> Result<(), DriverError> {
         let url = format!("{}/api/chat", self.base_url);
-        
+
         let mut messages = history.unwrap_or_default();
-        
-        messages.push(ContextMessage { 
-            role: "user".to_string(), 
-            content: prompt.to_string() 
+
+        messages.push(ContextMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
         });
 
         let payload = OllamaRequest {
             model: model.to_string(),
             messages,
-            stream: false
+            stream: false,
         };
 
-        let res = self.client.post(&url).json(&payload).send().await
+        let res = self
+            .client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
             .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
 
-        let data: OllamaResponse = res.json().await
+        let data: OllamaResponse = res
+            .json()
+            .await
             .map_err(|e| DriverError::ApiError(e.to_string()))?;
 
-        let _ = tx.send(data.message.content); 
-        Ok(()) 
+        let _ = tx.send(data.message.content);
+        Ok(())
     }
-
 
     async fn unload_model(&self, model_name: &str) -> Result<(), DriverError> {
         let url = format!("{}/api/generate", self.base_url);
@@ -251,25 +265,36 @@ impl InferenceDriver for OllamaDriver {
         Ok(models)
     }
 
-    async fn generate_embeddings(&self, model: &str, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, DriverError> {
+    async fn generate_embeddings(
+        &self,
+        model: &str,
+        inputs: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, DriverError> {
         let url = format!("{}/api/embed", self.base_url);
-        
+
         let payload = OllamaEmbedRequest {
             model: model.to_string(),
             input: inputs,
         };
 
-        let res = self.client.post(&url)
+        let res = self
+            .client
+            .post(&url)
             .json(&payload)
             .send()
             .await
             .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
 
         if !res.status().is_success() {
-            return Err(DriverError::ApiError(format!("Ollama error: {}", res.status())));
+            return Err(DriverError::ApiError(format!(
+                "Ollama error: {}",
+                res.status()
+            )));
         }
 
-        let data: OllamaEmbedResponse = res.json().await
+        let data: OllamaEmbedResponse = res
+            .json()
+            .await
             .map_err(|e| DriverError::ApiError(e.to_string()))?;
 
         Ok(data.embeddings)

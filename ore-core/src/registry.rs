@@ -44,7 +44,7 @@ pub struct Resources {
     pub max_tokens_per_minute: u32,
     pub gpu_priority: String,
 
-    #[serde(default)] 
+    #[serde(default)]
     pub stateful_paging: bool,
 }
 

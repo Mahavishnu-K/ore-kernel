@@ -1,17 +1,20 @@
 use clap::{Parser, Subcommand};
 use colored::*;
 use dialoguer::{Confirm, Input, MultiSelect, Select};
-use reqwest::{Client, header::{HeaderMap, HeaderValue, AUTHORIZATION}};
-use std::fs;
-use std::path::Path;
-use std::process::exit;
-use serde::Deserialize;
-use indicatif::{ProgressBar, ProgressStyle};
 use futures_util::StreamExt;
-use std::cmp::min;
-use std::io::Write;
 use hf_hub::api::tokio::Api;
 use hf_hub::{Repo, RepoType};
+use indicatif::{ProgressBar, ProgressStyle};
+use reqwest::{
+    Client,
+    header::{AUTHORIZATION, HeaderMap, HeaderValue},
+};
+use serde::Deserialize;
+use std::cmp::min;
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+use std::process::exit;
 
 // configuration parsers
 #[derive(Deserialize)]
@@ -27,18 +30,19 @@ struct SystemConfig {
 fn get_system_engine() -> String {
     let config_path = "../ore.toml";
     match fs::read_to_string(config_path) {
-        Ok(contents) => {
-            match toml::from_str::<OreConfig>(&contents) {
-                Ok(config) => config.system.engine,
-                Err(_) => {
-                    println!("{} FATAL: ore.toml is corrupted.", "[-]".red().bold());
-                    println!("       Please run 'ore init' to regenerate it.");
-                    exit(1);
-                }
+        Ok(contents) => match toml::from_str::<OreConfig>(&contents) {
+            Ok(config) => config.system.engine,
+            Err(_) => {
+                println!("{} FATAL: ore.toml is corrupted.", "[-]".red().bold());
+                println!("       Please run 'ore init' to regenerate it.");
+                exit(1);
             }
-        }
+        },
         Err(_) => {
-            println!("{} FATAL: ORE System is not initialized.", "[-]".red().bold());
+            println!(
+                "{} FATAL: ORE System is not initialized.",
+                "[-]".red().bold()
+            );
             println!("       Please run 'ore init' first.");
             exit(1);
         }
@@ -60,42 +64,46 @@ enum ModelAsset {
 fn get_model_map(alias: &str) -> Option<ModelAsset> {
     match alias {
         "qwen2.5:0.5b" => Some(ModelAsset::Gguf {
-            gguf_repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF", 
-            gguf_file: "qwen2.5-0.5b-instruct-q4_k_m.gguf", 
-            base_repo: "Qwen/Qwen2.5-0.5B-Instruct", 
+            gguf_repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+            gguf_file: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            base_repo: "Qwen/Qwen2.5-0.5B-Instruct",
         }),
         "qwen2.5:0.5b-base" => Some(ModelAsset::Gguf {
-            gguf_repo: "Qwen/Qwen2.5-0.5B-GGUF", 
-            gguf_file: "qwen2.5-0.5b-q4_k_m.gguf", 
-            base_repo: "Qwen/Qwen2.5-0.5B", 
+            gguf_repo: "Qwen/Qwen2.5-0.5B-GGUF",
+            gguf_file: "qwen2.5-0.5b-q4_k_m.gguf",
+            base_repo: "Qwen/Qwen2.5-0.5B",
         }),
         "llama3.2:1b" => Some(ModelAsset::Gguf {
-            gguf_repo: "bartowski/Llama-3.2-1B-Instruct-GGUF", 
+            gguf_repo: "bartowski/Llama-3.2-1B-Instruct-GGUF",
             gguf_file: "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
             base_repo: "unsloth/Llama-3.2-1B-Instruct",
         }),
         "llama3.2:1b-base" => Some(ModelAsset::Gguf {
-            gguf_repo: "bartowski/Llama-3.2-1B-GGUF", 
+            gguf_repo: "bartowski/Llama-3.2-1B-GGUF",
             gguf_file: "Llama-3.2-1B-Q4_K_M.gguf",
             base_repo: "unsloth/Llama-3.2-1B",
         }),
-        
+
         // --- SYSTEM EMBEDDERS (SAFETENSORS) ---
         "nomic-embed-text" => Some(ModelAsset::Safetensors {
-            repo: "nomic-ai/nomic-embed-text-v1.5", 
+            repo: "nomic-ai/nomic-embed-text-v1.5",
         }),
         "system-embedder" => Some(ModelAsset::Safetensors {
-            repo: "sentence-transformers/all-MiniLM-L6-v2", 
+            repo: "sentence-transformers/all-MiniLM-L6-v2",
         }),
         _ => None,
     }
 }
 
 /// Streams a file from a URL directly to the disk with a professional progress bar
-async fn download_with_progress(url: &str, dest: &Path, token: &Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+async fn download_with_progress(
+    url: &str,
+    dest: &Path,
+    token: &Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let mut req = client.get(url);
-    
+
     if let Some(t) = token.as_ref() {
         req = req.bearer_auth(t);
     }
@@ -117,7 +125,7 @@ async fn download_with_progress(url: &str, dest: &Path, token: &Option<String>) 
 
     let mut file = fs::File::create(dest)?;
     let mut downloaded: u64 = 0;
-    
+
     // Stream the data directly to the NVMe/SSD (Zero RAM bloat)
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -128,16 +136,23 @@ async fn download_with_progress(url: &str, dest: &Path, token: &Option<String>) 
         pb.set_position(new);
     }
 
-    pb.finish_and_clear(); 
+    pb.finish_and_clear();
     Ok(())
 }
 
 /// Attempts to securely fetch the user's Hugging Face token if it exists
 fn get_hf_token() -> Option<String> {
     std::env::var("HF_TOKEN").ok().or_else(|| {
-        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
-        let token_path = Path::new(&home).join(".cache").join("huggingface").join("token");
-        fs::read_to_string(token_path).ok().map(|s| s.trim().to_string())
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
+        let token_path = Path::new(&home)
+            .join(".cache")
+            .join("huggingface")
+            .join("token");
+        fs::read_to_string(token_path)
+            .ok()
+            .map(|s| s.trim().to_string())
     })
 }
 
@@ -238,7 +253,10 @@ async fn main() {
     let auth_token = match fs::read_to_string(token_path) {
         Ok(t) => t,
         Err(_) => {
-            println!("{} FATAL: Could not read Kernel Security Token.", "[-]".red().bold());
+            println!(
+                "{} FATAL: Could not read Kernel Security Token.",
+                "[-]".red().bold()
+            );
             println!("    Is the ORE Kernel running? Did you start `ore-server`?");
             exit(1);
         }
@@ -257,14 +275,14 @@ async fn main() {
     match &cli.command {
         Commands::Init => {
             use dialoguer::theme::SimpleTheme;
-            use dialoguer::{Select, Input};
+            use dialoguer::{Input, Select};
             use std::fs;
 
             println!("\n\n ORE KERNEL :: SYSTEM INITIALIZATION\n\n");
 
             let engines = &[
                 "Ollama (Background daemon, easiest setup)",
-                "Native (Bare-metal Rust execution, maximum control)"
+                "Native (Bare-metal Rust execution, maximum control)",
             ];
 
             let engine_idx = Select::with_theme(&SimpleTheme)
@@ -281,22 +299,24 @@ async fn main() {
                 // OLLAMA SETUP
                 toml_output.push_str("engine = \"ollama\"\n\n");
                 toml_output.push_str("[ollama]\n");
-                
+
                 let url: String = Input::with_theme(&SimpleTheme)
                     .with_prompt("Enter Ollama API URL")
                     .default("http://127.0.0.1:11434".into())
-                    .interact_text().unwrap();
-                    
+                    .interact_text()
+                    .unwrap();
+
                 toml_output.push_str(&format!("url = \"{}\"\n", url));
             } else {
                 // NATIVE SETUP
                 toml_output.push_str("engine = \"native\"\n\n");
                 toml_output.push_str("[native]\n");
-                
+
                 let model: String = Input::with_theme(&SimpleTheme)
                     .with_prompt("Enter default model alias (e.g., qwen2.5:0.5b)")
                     .default("qwen2.5:0.5b".into())
-                    .interact_text().unwrap();
+                    .interact_text()
+                    .unwrap();
 
                 toml_output.push_str(&format!("default_model = \"{}\"\n\n", model));
             }
@@ -307,12 +327,14 @@ async fn main() {
             let cache_ttl: u64 = Input::with_theme(&SimpleTheme)
                 .with_prompt("Mathematical Cache TTL in hours [0 = Infinite]:")
                 .default(24)
-                .interact_text().unwrap();
+                .interact_text()
+                .unwrap();
 
             let pipe_ttl: u64 = Input::with_theme(&SimpleTheme)
                 .with_prompt("Semantic Pipe TTL in hours [0 = Infinite]:")
                 .default(32)
-                .interact_text().unwrap();
+                .interact_text()
+                .unwrap();
 
             toml_output.push_str("[memory]\n");
             toml_output.push_str(&format!("cache_ttl_hours = {}\n", cache_ttl));
@@ -320,7 +342,7 @@ async fn main() {
 
             // Save to the root directory
             fs::write("../ore.toml", toml_output).expect("Failed to write config file");
-            
+
             println!("\n{} ORE System configured successfully!", "[OK]".green());
             println!("Configuration saved to: {}", "ore.toml".blue());
             println!("Please restart the 'ore-server' to apply changes.\n");
@@ -357,12 +379,12 @@ async fn main() {
             println!("{} Fetching Kernel Telemetry...", "[*]".bright_blue());
             // this will hit a /metrics endpoint on the server
             println!("\n{}", "=== ORE KERNEL TELEMETRY ===".bold());
-            println!("{:<20} | {}", "Subsystem", "Status");
-            println!("{:<20} | {}", "-------------------", "------");
+            println!("{:<20} | Status", "Subsystem");
+            println!("{:<20} | ------", "-------------------");
             println!("{:<20} | {}", "Driver (Ollama)", "ACTIVE".green());
             println!("{:<20} | {}", "Scheduler (VRAM)", "IDLE".yellow());
             println!("{:<20} | {}", "Context Firewall", "ENFORCING".green());
-            println!("{:<20} | {}", "Connected Apps", "0");
+            println!("{:<20} | 0", "Connected Apps");
         }
         Commands::Ps => match client.get(format!("{}/ps", kernel_url)).send().await {
             Ok(response) => {
@@ -391,7 +413,7 @@ async fn main() {
                 }
             }
 
-            if *models || (!*models && !*agents && !*manifests) {
+            if *models || (!*agents && !*manifests) {
                 match client.get(format!("{}/ls", kernel_url)).send().await {
                     Ok(response) => println!("\n{}", response.text().await.unwrap_or_default()),
                     Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
@@ -430,7 +452,7 @@ async fn main() {
                     model_name.yellow().bold()
                 );
                 println!("    (This may take a few minutes depending on your internet speed...)");
-    
+
                 // Because downloading takes time, we wait for the server's response
                 match client
                     .get(format!("{}/pull/{}", kernel_url, model_name))
@@ -446,14 +468,22 @@ async fn main() {
                         }
                     }
                     Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
-                } 
+                }
             } else if engine == "native" {
-                println!("{} System configured for Native. Initializing ORE Package Manager for '{}'...", "[*]".bright_blue(), model_name.blue().bold());
+                println!(
+                    "{} System configured for Native. Initializing ORE Package Manager for '{}'...",
+                    "[*]".bright_blue(),
+                    model_name.blue().bold()
+                );
 
-                let asset_spec = match get_model_map(&model_name) {
+                let asset_spec = match get_model_map(model_name) {
                     Some(map) => map,
                     None => {
-                        println!("{} Model '{}' not found in ORE verified Native registry.", "[-]".red(), model_name);
+                        println!(
+                            "{} Model '{}' not found in ORE verified Native registry.",
+                            "[-]".red(),
+                            model_name
+                        );
                         exit(1);
                     }
                 };
@@ -469,50 +499,98 @@ async fn main() {
                 }
 
                 match asset_spec {
-                    ModelAsset::Gguf { gguf_repo, gguf_file, base_repo } => {
+                    ModelAsset::Gguf {
+                        gguf_repo,
+                        gguf_file,
+                        base_repo,
+                    } => {
                         println!("{} Architecture: quantized GGUF", "[i]".cyan());
-                        println!("{} Pulling Neural Weights from {}...", "[~]".yellow(), gguf_repo);
+                        println!(
+                            "{} Pulling Neural Weights from {}...",
+                            "[~]".yellow(),
+                            gguf_repo
+                        );
 
-                        let repo_weights = api.repo(Repo::with_revision(gguf_repo.to_string(), RepoType::Model, "main".to_string()));
-                        let weights_url = repo_weights.url(gguf_file); 
+                        let repo_weights = api.repo(Repo::with_revision(
+                            gguf_repo.to_string(),
+                            RepoType::Model,
+                            "main".to_string(),
+                        ));
+                        let weights_url = repo_weights.url(gguf_file);
                         let final_gguf_dest = ore_models_dir.join("model.gguf");
 
-                        if let Err(e) = download_with_progress(&weights_url, &final_gguf_dest, &hf_token).await {
+                        if let Err(e) =
+                            download_with_progress(&weights_url, &final_gguf_dest, &hf_token).await
+                        {
                             println!("{} FATAL: Failed to download weights: {}", "[-]".red(), e);
                             exit(1);
                         }
                         println!("{} Weights secured.", "[+]".green());
 
-                        println!("{} Pulling Dictionary (Tokenizer) from {}...", "[~]".yellow(), base_repo);
-                        let repo_tokenizer = api.repo(Repo::with_revision(base_repo.to_string(), RepoType::Model, "main".to_string()));
+                        println!(
+                            "{} Pulling Dictionary (Tokenizer) from {}...",
+                            "[~]".yellow(),
+                            base_repo
+                        );
+                        let repo_tokenizer = api.repo(Repo::with_revision(
+                            base_repo.to_string(),
+                            RepoType::Model,
+                            "main".to_string(),
+                        ));
                         let tokenizer_url = repo_tokenizer.url("tokenizer.json");
                         let final_tok_dest = ore_models_dir.join("tokenizer.json");
 
                         let tokenizer_path_display: String;
 
-                        if let Err(e) = download_with_progress(&tokenizer_url, &final_tok_dest, &hf_token).await {
-                            println!("{} [WARN] Official tokenizer is gated or unavailable ({}).", "[!]".yellow(), e);
-                            println!("{} ORE will extract the tokenizer from the GGUF file on first load.", "[i]".bright_blue());
+                        if let Err(e) =
+                            download_with_progress(&tokenizer_url, &final_tok_dest, &hf_token).await
+                        {
+                            println!(
+                                "{} [WARN] Official tokenizer is gated or unavailable ({}).",
+                                "[!]".yellow(),
+                                e
+                            );
+                            println!(
+                                "{} ORE will extract the tokenizer from the GGUF file on first load.",
+                                "[i]".bright_blue()
+                            );
                             tokenizer_path_display = "Extracted from GGUF".to_string();
                         } else {
                             println!("{} Dictionary secured.", "[+]".green());
                             tokenizer_path_display = final_tok_dest.display().to_string();
                         }
 
-                        println!("\n{} '{}' INSTALLED NATIVELY.", "[OK]".green(), model_name.to_uppercase());
+                        println!(
+                            "\n{} '{}' INSTALLED NATIVELY.",
+                            "[OK]".green(),
+                            model_name.to_uppercase()
+                        );
                         println!("Weights Path   :: {}", final_gguf_dest.display());
                         println!("Tokenizer Path :: {}\n", tokenizer_path_display);
                     }
 
                     ModelAsset::Safetensors { repo } => {
-                        println!("{} Architecture: Safetensors (Cloud Standard)", "[i]".cyan());
-                        let hf_repo = api.repo(Repo::with_revision(repo.to_string(), RepoType::Model, "main".to_string()));
+                        println!(
+                            "{} Architecture: Safetensors (Cloud Standard)",
+                            "[i]".cyan()
+                        );
+                        let hf_repo = api.repo(Repo::with_revision(
+                            repo.to_string(),
+                            RepoType::Model,
+                            "main".to_string(),
+                        ));
 
                         println!("{} Pulling Safetensors from {}...", "[~]".yellow(), repo);
                         let st_url = hf_repo.url("model.safetensors");
                         let st_dest = ore_models_dir.join("model.safetensors");
-                        if let Err(e) = download_with_progress(&st_url, &st_dest, &hf_token.clone()).await {
-                            println!("{} FATAL: Failed to download safetensors: {}", "[-]".red(), e);
+                        if let Err(e) =
+                            download_with_progress(&st_url, &st_dest, &hf_token.clone()).await
+                        {
+                            println!(
+                                "{} FATAL: Failed to download safetensors: {}",
+                                "[-]".red(),
+                                e
+                            );
                             exit(1);
                         }
 
@@ -520,16 +598,24 @@ async fn main() {
                         println!("{} Pulling config.json...", "[~]".yellow());
                         let config_url = hf_repo.url("config.json");
                         let config_dest = ore_models_dir.join("config.json");
-                        download_with_progress(&config_url, &config_dest, &hf_token.clone()).await.unwrap();
+                        download_with_progress(&config_url, &config_dest, &hf_token.clone())
+                            .await
+                            .unwrap();
 
                         // 3. Download Tokenizer
                         println!("{} Pulling tokenizer.json...", "[~]".yellow());
                         let tok_url = hf_repo.url("tokenizer.json");
                         let tok_dest = ore_models_dir.join("tokenizer.json");
-                        download_with_progress(&tok_url, &tok_dest, &hf_token).await.unwrap();
+                        download_with_progress(&tok_url, &tok_dest, &hf_token)
+                            .await
+                            .unwrap();
 
                         println!("{} All files secured.", "[+]".green());
-                        println!("\n{} '{}' INSTALLED NATIVELY.", "[OK]".green(), model_name.to_uppercase());
+                        println!(
+                            "\n{} '{}' INSTALLED NATIVELY.",
+                            "[OK]".green(),
+                            model_name.to_uppercase()
+                        );
                     }
                 }
             } else {
@@ -556,10 +642,9 @@ async fn main() {
             {
                 Ok(response) => {
                     if response.status().is_success() {
-                        
                         use std::io::Write;
-                        println!(); 
-                        
+                        println!();
+
                         let mut stream = response.bytes_stream();
                         while let Some(chunk) = stream.next().await {
                             if let Ok(bytes) = chunk {
@@ -700,10 +785,10 @@ async fn main() {
                 println!("\n>>> CONFIGURING: Resources");
 
                 let mut available_models = Vec::new();
-                if let Ok(res) = client.get("http://127.0.0.1:11434/api/tags").send().await {
-                    if let Ok(tags) = res.json::<DriverTagsResponse>().await {
-                        available_models = tags.models.into_iter().map(|m| m.name).collect();
-                    }
+                if let Ok(res) = client.get("http://127.0.0.1:11434/api/tags").send().await
+                    && let Ok(tags) = res.json::<DriverTagsResponse>().await
+                {
+                    available_models = tags.models.into_iter().map(|m| m.name).collect();
                 }
 
                 let selected_models_formatted;
@@ -762,8 +847,8 @@ async fn main() {
                 let paging = Confirm::with_theme(&SimpleTheme)
                     .with_prompt("Enable Stateful Paging (KV-Cache SSD Swap for long tasks)?")
                     .default(false)
-                    .interact().unwrap();
-
+                    .interact()
+                    .unwrap();
 
                 toml_output.push_str("[resources]\n");
                 toml_output.push_str(&format!("allowed_models = {}\n", selected_models_formatted));
@@ -866,7 +951,9 @@ async fn main() {
                     .unwrap();
 
                 let pipes: String = Input::with_theme(&SimpleTheme)
-                    .with_prompt("Tier 2: Allowed Semantic Memory pipes (comma-separated, e.g., rust_docs)")
+                    .with_prompt(
+                        "Tier 2: Allowed Semantic Memory pipes (comma-separated, e.g., rust_docs)",
+                    )
                     .default("".into())
                     .interact_text()
                     .unwrap();
@@ -899,9 +986,17 @@ async fn main() {
             println!("Preview:\n{}", toml_output);
         }
         Commands::Clear { app_id } => {
-            println!("{} Instructing Kernel to wipe memory for: {}", "[*]".bright_blue(), app_id.blue().bold());
-            
-            match client.get(format!("{}/clear/{}", kernel_url, app_id)).send().await {
+            println!(
+                "{} Instructing Kernel to wipe memory for: {}",
+                "[*]".bright_blue(),
+                app_id.blue().bold()
+            );
+
+            match client
+                .get(format!("{}/clear/{}", kernel_url, app_id))
+                .send()
+                .await
+            {
                 Ok(response) => println!("\n{}", response.text().await.unwrap_or_default().green()),
                 Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
             }

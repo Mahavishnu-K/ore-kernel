@@ -1,20 +1,26 @@
 use dashmap::DashMap;
-use tokio::sync::broadcast;
-use std::time::{Instant, Duration, SystemTime, UNIX_EPOCH};
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::broadcast;
 
 // Inter-process communication structures and utilities for ORE Agents
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AgentMessage {
     pub from_app: String,
     pub to_app: String,
-    pub payload: String, 
+    pub payload: String,
     pub timestamp: u64,
 }
 
 pub struct MessageBus {
     channel: DashMap<String, broadcast::Sender<AgentMessage>>,
+}
+
+impl Default for MessageBus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MessageBus {
@@ -30,7 +36,10 @@ impl MessageBus {
             let _ = target_channel.send(msg);
             Ok(())
         } else {
-            Err(format!("Agent '{}' is not currently listening.", msg.to_app))
+            Err(format!(
+                "Agent '{}' is not currently listening.",
+                msg.to_app
+            ))
         }
     }
 
@@ -82,18 +91,22 @@ impl SemanticBus {
         self.embedding_cache.get(&hash).map(|v| v.0.clone())
     }
 
-    pub fn write_chunk(&self, pipe_name: &str, text: String, vector: Vec<f32>,  source_app: &str) {
+    pub fn write_chunk(&self, pipe_name: &str, text: String, vector: Vec<f32>, source_app: &str) {
         let hash = Self::hash_text(&text);
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        
-        self.embedding_cache.insert(hash, (vector.clone(), timestamp));
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        let mut pipe = self.memory_pipes.entry(pipe_name.to_string()).or_insert_with(Vec::new);
-        pipe.push(MemoryChunk { 
-            text, 
-            vector, 
+        self.embedding_cache
+            .insert(hash, (vector.clone(), timestamp));
+
+        let mut pipe = self.memory_pipes.entry(pipe_name.to_string()).or_default();
+        pipe.push(MemoryChunk {
+            text,
+            vector,
             source_app: source_app.to_string(),
-            timestamp 
+            timestamp,
         });
     }
 
@@ -102,33 +115,52 @@ impl SemanticBus {
         let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
         let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
         let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm_a == 0.0 || norm_b == 0.0 { 0.0 } else { dot / (norm_a * norm_b) }
+        if norm_a == 0.0 || norm_b == 0.0 {
+            0.0
+        } else {
+            dot / (norm_a * norm_b)
+        }
     }
 
     /// Searches the pipe and returns the top 3 most relevant text chunks based on cosine similarity
-    pub fn search_pipe(&self, pipe_name: &str, query_vector: &[f32], top_k: usize, filter_app: Option<&str>)  -> Vec<String> {
+    pub fn search_pipe(
+        &self,
+        pipe_name: &str,
+        query_vector: &[f32],
+        top_k: usize,
+        filter_app: Option<&str>,
+    ) -> Vec<String> {
         if let Some(pipe) = self.memory_pipes.get(pipe_name) {
-            
-            let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let current_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
 
-            let mut scored_chunks: Vec<(f32, String)> = pipe.iter()
-                .filter(|chunk| filter_app.map_or(true, |app| chunk.source_app == app))
+            let mut scored_chunks: Vec<(f32, String)> = pipe
+                .iter()
+                .filter(|chunk| filter_app.is_none_or(|app| chunk.source_app == app))
                 .map(|chunk| {
                     let base_score = Self::cosine_similarity(&chunk.vector, query_vector);
 
                     // time decay - Older memories lose slight relevance (1% drop per hour old)
                     let hours_old = (current_time.saturating_sub(chunk.timestamp)) as f32 / 3600.0;
-                    let decay_factor = (1.0 - (hours_old * 0.01)).clamp(0.5, 1.0); 
-                    
+                    let decay_factor = (1.0 - (hours_old * 0.01)).clamp(0.5, 1.0);
+
                     let final_score = base_score * decay_factor;
 
                     (final_score, chunk.text.clone())
-                }).collect();
+                })
+                .collect();
 
             // Sort descending by highest match score
-            scored_chunks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            scored_chunks
+                .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-            return scored_chunks.into_iter().take(top_k).map(|(_, text)| text).collect();
+            return scored_chunks
+                .into_iter()
+                .take(top_k)
+                .map(|(_, text)| text)
+                .collect();
         }
         vec![]
     }
@@ -142,8 +174,10 @@ impl SemanticBus {
         while i < words.len() {
             let end = std::cmp::min(i + window_size, words.len());
             chunks.push(words[i..end].join(" "));
-            if end == words.len() { break; }
-            i += window_size - overlap; 
+            if end == words.len() {
+                break;
+            }
+            i += window_size - overlap;
         }
         chunks
     }
@@ -157,14 +191,17 @@ impl SemanticBus {
 
         if self.cache_ttl_secs > 0 {
             let initial_cache_size = self.embedding_cache.len();
-            
+
             self.embedding_cache.retain(|_, (_, timestamp)| {
                 current_time.saturating_sub(*timestamp) < self.cache_ttl_secs
             });
-            
+
             let cleaned_cache = initial_cache_size - self.embedding_cache.len();
             if cleaned_cache > 0 {
-                println!("-> [KERNEL GC] Swept {} stale embedding calculations from RAM.", cleaned_cache);
+                println!(
+                    "-> [KERNEL GC] Swept {} stale embedding calculations from RAM.",
+                    cleaned_cache
+                );
             }
         }
 
@@ -190,15 +227,23 @@ impl SemanticBus {
             self.memory_pipes.retain(|_, chunks| !chunks.is_empty());
 
             if chunks_swept > 0 {
-                println!("-> [KERNEL GC] Swept {} stale memory chunks across {} Semantic Pipes.", chunks_swept, pipes_cleaned);
+                println!(
+                    "-> [KERNEL GC] Swept {} stale memory chunks across {} Semantic Pipes.",
+                    chunks_swept, pipes_cleaned
+                );
             }
         }
     }
-
 }
 
 pub struct RateLimiter {
     usage: DashMap<String, (u32, Instant)>,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RateLimiter {
@@ -210,8 +255,11 @@ impl RateLimiter {
 
     /// checks if the Agent has exceeded its allowed quota per minute
     pub fn check_and_add(&self, app_id: &str, limit: u32, requested_tokens: u32) -> bool {
-        let mut entry = self.usage.entry(app_id.to_string()).or_insert((0, Instant::now()));
-        
+        let mut entry = self
+            .usage
+            .entry(app_id.to_string())
+            .or_insert((0, Instant::now()));
+
         // reset the counter if a minute has passed
         if entry.1.elapsed() > Duration::from_secs(60) {
             entry.0 = 0;
@@ -219,7 +267,7 @@ impl RateLimiter {
         }
 
         if entry.0 + requested_tokens > limit {
-            return false; 
+            return false;
         }
 
         entry.0 += requested_tokens;
