@@ -9,8 +9,9 @@ use std::fs;
 use uuid::Uuid;
 use tokio::net::TcpListener;
 
-use ore_core::driver::{InferenceDriver, OllamaDriver};
+use ore_core::driver::InferenceDriver;
 use ore_core::native::NativeDriver;
+use ore_core::external::ollama::OllamaDriver;
 use ore_core::registry::AppRegistry;
 use ore_core::ipc::{SemanticBus, RateLimiter, MessageBus};
 use ore_core::scheduler::GpuScheduler;

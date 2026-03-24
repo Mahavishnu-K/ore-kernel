@@ -5,3 +5,4 @@ pub mod ipc;
 pub mod scheduler;
 pub mod swap;
 pub mod native;
+pub mod external;
