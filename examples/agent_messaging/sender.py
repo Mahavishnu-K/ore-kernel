@@ -1,5 +1,5 @@
 """
-04_agent_messaging/sender.py — Send a direct message to another agent.
+agent_messaging/sender.py — Send a direct message to another agent.
 
 Sends a message from agent_alpha to agent_beta through ORE's
 Message Bus. The kernel checks agent_alpha's manifest to verify

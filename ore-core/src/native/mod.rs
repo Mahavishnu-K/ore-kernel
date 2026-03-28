@@ -100,11 +100,11 @@ impl NativeDriver {
 
         // universal tokenizer fallback
         let tokenizer = if Path::new(&local_tokenizer_path).exists() {
-            println!("->[CANDLE] Using Local Dictionary...");
+            println!("-> [CANDLE] Using Local Dictionary...");
             Tokenizer::from_file(&local_tokenizer_path).map_err(E::msg)?
         } else if Path::new(&global_path).exists() {
             println!(
-                "->[CANDLE] Local dictionary not found. Using Universal OS Dictionary for '{}'...",
+                "-> [CANDLE] Local dictionary not found. Using Universal OS Dictionary for '{}'...",
                 arch_name
             );
             Tokenizer::from_file(&global_path).map_err(E::msg)?
@@ -338,13 +338,39 @@ impl InferenceDriver for NativeDriver {
         // Spawn a blocking thread
         let result = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>, String> {
             let model_dir = format!("../models/{}", safe_model);
+            let config_path = format!("{}/config.json", model_dir);
 
-            let embedder = models::bert::SystemEmbedder::load(&model_dir, &device)
-                .map_err(|e| format!("Failed to load embedder: {}", e))?;
+            if !Path::new(&config_path).exists() {
+                return Err(format!("Embedder config missing. Run 'ore pull {}'", safe_model));
+            }
 
-            let vectors = embedder
-                .embed_batch(inputs)
-                .map_err(|e| format!("Math execution failed: {}", e))?;
+            // Detemine the architecture
+            let config_str = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+            let config_val: serde_json::Value = serde_json::from_str(&config_str).map_err(|e| e.to_string())?;
+
+            let arch = config_val.get("architectures")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .unwrap_or("BertModel"); // Default to standard BERT if missing
+
+            println!("-> [NATIVE] Detected Embedder Architecture: '{}'", arch);
+
+            let vectors = match arch {
+                "NomicBertModel" => {
+                    // Route to custom Nomic RoPE/SwiGLU implementation
+                    let embedder = models::nomic::SystemEmbedder::load(&model_dir, &device)
+                        .map_err(|e| format!("Failed to load Nomic embedder: {}", e))?;
+                    embedder.embed_batch(inputs).map_err(|e| format!("Nomic math failed: {}", e))?
+                },
+                "BertModel" => {
+                    // Route to the ultra-fast standard MiniLM implementation
+                    let embedder = models::bert::SystemEmbedder::load(&model_dir, &device)
+                        .map_err(|e| format!("Failed to load BERT embedder: {}", e))?;
+                    embedder.embed_batch(inputs).map_err(|e| format!("BERT math failed: {}", e))?
+                },
+                _ => return Err(format!("Unsupported embedding architecture: {}", arch)),
+            };
 
             // The moment this thread finishes, `embedder` goes out of scope.
             // Rust's memory safety automatically drops the model and flushes the RAM to 0MB.

@@ -13,10 +13,10 @@ A terminal REPL that takes your input, sends it to the ORE Kernel via `POST /run
 cargo run --release -p ore-server
 
 # 2. Make sure you have a model installed
-ore pull qwen2.5:0.5b
+ore pull llama3.2:1b
 
 # 3. Run the bot
-cd examples/01_simple_bot
+cd examples/simple_bot
 python bot.py
 ```
 

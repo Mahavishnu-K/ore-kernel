@@ -1,9 +1,10 @@
 [system]
 engine = "native"
+embedder = "system-embedder"
 
 [native]
 default_model = "llama3.2:1b"
 
 [memory]
-cache_ttl_hours = 24 
+cache_ttl_hours = 24
 pipe_ttl_hours = 32

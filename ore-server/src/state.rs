@@ -14,6 +14,13 @@ pub struct OreConfig {
 #[derive(Deserialize, Clone)]
 pub struct SystemConfig {
     pub engine: String,
+
+    #[serde(default = "default_embedder")] // Fallback if an old config exists
+    pub embedder: String,
+}
+
+fn default_embedder() -> String {
+    "all-minilm".to_string()
 }
 
 #[derive(Deserialize, Clone)]
@@ -31,4 +38,5 @@ pub struct KernelState {
     pub message_bus: MessageBus,
     pub rate_limiter: RateLimiter,
     pub auth_token: String,
+    pub system_embedder: String,
 }

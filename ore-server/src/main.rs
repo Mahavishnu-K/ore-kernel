@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         message_bus: MessageBus::new(),
         rate_limiter: RateLimiter::new(),
         auth_token: session_token,
+        system_embedder: config.system.embedder.clone(),
     });
 
     let app = Router::new()

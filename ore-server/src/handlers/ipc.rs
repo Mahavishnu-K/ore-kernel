@@ -7,8 +7,6 @@ use axum::{
 use ore_core::ipc::{AgentMessage, SemanticBus};
 use std::sync::Arc;
 
-const SYSTEM_EMBEDDER: &str = "system-embedder";
-
 pub async fn sys_share_context(
     State(state): State<Arc<KernelState>>,
     Json(payload): Json<IpcShareRequest>,
@@ -95,7 +93,7 @@ pub async fn sys_share_context(
 
         match state
             .driver
-            .generate_embeddings(SYSTEM_EMBEDDER, chunks_to_embed.clone())
+            .generate_embeddings(&state.system_embedder, chunks_to_embed.clone())
             .await
         {
             Ok(vectors) => {
@@ -120,7 +118,7 @@ pub async fn sys_share_context(
 
     // ZERO-RAM ARCHITECTURE: kill the Nomic model to free memory
     if wake_embedder {
-        let _ = state.driver.unload_model(SYSTEM_EMBEDDER).await;
+        let _ = state.driver.unload_model(&state.system_embedder).await;
         println!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
     } else {
         println!("-> [SEMANTIC BUS] Knowledge embedded entirely from Cache. Zero compute used.");
@@ -177,7 +175,7 @@ pub async fn sys_search_context(
     // Translate the question into Math using the System Embedder
     let query_vector = match state
         .driver
-        .generate_embeddings(SYSTEM_EMBEDDER, vec![payload.query.clone()])
+        .generate_embeddings(&state.system_embedder, vec![payload.query.clone()])
         .await
     {
         Ok(v) => v[0].clone(),
@@ -191,7 +189,7 @@ pub async fn sys_search_context(
             .semantic_bus
             .search_pipe(&payload.target_pipe, &query_vector, k, filter_ref);
 
-    let _ = state.driver.unload_model(SYSTEM_EMBEDDER).await;
+    let _ = state.driver.unload_model(&state.system_embedder).await;
 
     println!("-> [SEMANTIC BUS] Search complete. Handing English text back to Agent.");
 

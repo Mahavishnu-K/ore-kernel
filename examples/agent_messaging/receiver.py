@@ -1,5 +1,5 @@
 """
-04_agent_messaging/receiver.py — Listen for incoming agent messages.
+agent_messaging/receiver.py — Listen for incoming agent messages.
 
 Registers agent_beta as a listener on ORE's Message Bus and polls
 for incoming messages. Run this before sender.py.

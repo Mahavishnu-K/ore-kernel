@@ -1,5 +1,5 @@
 """
-02_semantic_swarm/scraper_agent.py — The knowledge gatherer.
+semantic_swarm/scraper_agent.py — The knowledge gatherer.
 
 This agent fetches content about a topic and pushes it into ORE's
 Semantic Bus. The content is automatically chunked, embedded, and

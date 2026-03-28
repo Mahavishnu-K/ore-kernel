@@ -13,17 +13,17 @@ The two scripts share knowledge through a named **semantic pipe** (`research`) â
 
 ```bash
 # 1. Install the example manifests
-cp examples/02_semantic_swarm/manifests/*.toml manifests/
+cp examples/semantic_swarm/manifests/*.toml manifests/
 
 # 2. Restart the kernel to pick up the new manifests
 cargo run --release -p ore-server
 
 # 3. Make sure you have the system embedder installed
 ore pull system-embedder
-ore pull qwen2.5:0.5b
+ore pull llama3.2:1b
 
 # 4. Run the scraper first (populates the Semantic Bus)
-cd examples/02_semantic_swarm
+cd examples/semantic_swarm
 python scraper_agent.py
 
 # 5. Then run the writer (queries the Semantic Bus and generates text)

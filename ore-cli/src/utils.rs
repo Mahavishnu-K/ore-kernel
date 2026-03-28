@@ -76,10 +76,10 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         }),
 
         // --- SYSTEM EMBEDDERS (SAFETENSORS) ---
-        "nomic-embed-text" => Some(ModelAsset::Safetensors {
+        "system-embedder" => Some(ModelAsset::Safetensors {
             repo: "nomic-ai/nomic-embed-text-v1.5",
         }),
-        "system-embedder" => Some(ModelAsset::Safetensors {
+        "all-minilm" => Some(ModelAsset::Safetensors {
             repo: "sentence-transformers/all-MiniLM-L6-v2",
         }),
         _ => None,

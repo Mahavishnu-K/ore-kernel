@@ -29,12 +29,27 @@ pub fn run_init_wizard() {
         .interact()
         .unwrap();
 
+    let embedders = &[
+        "all-minilm (Fast & Lightweight, 90MB - Best for laptops)",
+        "system-embedder (Nomic v1.5, High Accuracy, 500MB - Best for desktops)"
+    ];
+
+    let embedder_idx = Select::with_theme(&SimpleTheme)
+        .with_prompt("Select your System Embedder (Semantic Bus Engine)")
+        .default(0)
+        .items(embedders)
+        .interact()
+        .unwrap();
+
+    let selected_embedder = if embedder_idx == 0 { "all-minilm" } else { "system-embedder" };
+
     let mut toml_output = String::new();
     toml_output.push_str("[system]\n");
 
     if engine_idx == 0 {
         // OLLAMA SETUP
-        toml_output.push_str("engine = \"ollama\"\n\n");
+        toml_output.push_str("engine = \"ollama\"\n");
+        toml_output.push_str(&format!("embedder = \"{}\"\n\n", selected_embedder));
         toml_output.push_str("[ollama]\n");
 
         let url: String = Input::with_theme(&SimpleTheme)
@@ -46,7 +61,8 @@ pub fn run_init_wizard() {
         toml_output.push_str(&format!("url = \"{}\"\n", url));
     } else {
         // NATIVE SETUP
-        toml_output.push_str("engine = \"native\"\n\n");
+        toml_output.push_str("engine = \"native\"\n");
+        toml_output.push_str(&format!("embedder = \"{}\"\n\n", selected_embedder));
         toml_output.push_str("[native]\n");
 
         let model: String = Input::with_theme(&SimpleTheme)

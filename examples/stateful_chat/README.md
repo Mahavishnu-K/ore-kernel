@@ -20,7 +20,7 @@ Your conversation survives kernel restarts. No database required.
 cargo run --release -p ore-server
 
 # 2. Run the chat
-cd examples/03_stateful_chat
+cd examples/stateful_chat
 python chat.py
 ```
 

@@ -1,5 +1,5 @@
 """
-05_firewall_demo/firewall_test.py — Context Firewall test harness.
+firewall_demo/firewall_test.py — Context Firewall test harness.
 
 Fires adversarial prompts at the ORE Kernel to demonstrate each
 layer of the Context Firewall: injection blocking, PII redaction,

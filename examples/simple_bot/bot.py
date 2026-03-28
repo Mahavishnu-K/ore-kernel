@@ -1,5 +1,5 @@
 """
-01_simple_bot/bot.py — The "Hello World" of ORE.
+simple_bot/bot.py — The "Hello World" of ORE.
 
 A minimal terminal chatbot that sends prompts to the ORE Kernel
 and streams the AI response back in real-time.

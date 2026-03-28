@@ -17,7 +17,7 @@ A test harness that fires a series of adversarial and sensitive prompts at the O
 cargo run --release -p ore-server
 
 # 2. Run the firewall tests
-cd examples/05_firewall_demo
+cd examples/firewall_demo
 python firewall_test.py
 ```
 

@@ -52,25 +52,35 @@ class OreClient:
     # ─── Inference ───────────────────────────────────────────────
 
     def run(self, model: str, prompt: str, stream: bool = False) -> str:
-        """POST /run — Streamed inference with rate limiting."""
-        r = requests.post(
-            f"{self.base_url}/run",
-            json={"model": model, "prompt": prompt},
-            headers=self.headers,
-            stream=stream,
-        )
-        r.raise_for_status()
+        """Executes a prompt against the ORE Kernel."""
+        payload = {
+            "model": model,
+            "prompt": prompt
+        }
+        
+        response = requests.post(f"{self.base_url}/run", json=payload, headers=self.headers, stream=True)
+        
+        if response.status_code != 200:
+            print(f"\n[!] ORE KERNEL ERROR: {response.status_code}")
+            print(response.text)
+            return response.text
 
+        full_text = ""
+        
+        for chunk in response.iter_content(chunk_size=1024):
+            if chunk:
+                text_chunk = chunk.decode('utf-8', errors='replace')
+                
+                if stream:
+                    # Print to terminal without a newline, and flush immediately
+                    print(text_chunk, end="", flush=True)
+                
+                full_text += text_chunk
+                
         if stream:
-            full = ""
-            for chunk in r.iter_content(decode_unicode=True):
-                if chunk:
-                    print(chunk, end="", flush=True)
-                    full += chunk
-            print()  # newline after stream
-            return full
-        else:
-            return r.text
+            print() 
+            
+        return full_text
 
     def ask(self, prompt: str) -> str:
         """GET /ask/:prompt — Secured inference with firewall + SSD paging."""

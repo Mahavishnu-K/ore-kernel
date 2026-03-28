@@ -15,17 +15,17 @@ The kernel enforces that the sender's manifest lists the receiver in `allowed_ag
 
 ```bash
 # 1. Install the example manifests
-cp examples/04_agent_messaging/manifests/*.toml manifests/
+cp examples/agent_messaging/manifests/*.toml manifests/
 
 # 2. Restart the kernel
 cargo run --release -p ore-server
 
 # 3. Terminal A — start the receiver (polls for messages)
-cd examples/04_agent_messaging
+cd examples/agent_messaging
 python receiver.py
 
 # 4. Terminal B — send a message
-cd examples/04_agent_messaging
+cd examples/agent_messaging
 python sender.py --message "Hello from sender!"
 ```
 

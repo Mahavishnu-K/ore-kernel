@@ -1,5 +1,5 @@
 """
-06_multi_agent_pipeline/researcher.py — Stage 1: Knowledge Gathering.
+multi_agent_pipeline/researcher.py — Stage 1: Knowledge Gathering.
 
 Collects raw knowledge about a topic and pushes it into the
 'pipeline_data' semantic pipe for downstream agents.

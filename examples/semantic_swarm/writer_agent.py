@@ -1,5 +1,5 @@
 """
-02_semantic_swarm/writer_agent.py — The knowledge consumer.
+semantic_swarm/writer_agent.py — The knowledge consumer.
 
 This agent searches ORE's Semantic Bus for relevant context,
 then asks the LLM to write a response grounded in that knowledge.
@@ -25,8 +25,8 @@ def main():
         default="How does Rust prevent memory bugs without a garbage collector?",
         help="Question to research and answer",
     )
-    parser.add_argument("--model", default="qwen2.5:0.5b", help="Model to use")
-    parser.add_argument("--top-k", type=int, default=3, help="Number of context chunks")
+    parser.add_argument("--model", default="llama3.2:1b", help="Model to use")
+    parser.add_argument("--top-k", type=int, default=5, help="Number of context chunks")
     args = parser.parse_args()
 
     ore = OreClient()

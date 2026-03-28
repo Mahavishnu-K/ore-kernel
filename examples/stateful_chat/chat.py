@@ -1,5 +1,5 @@
 """
-03_stateful_chat/chat.py — Multi-turn conversations with memory.
+stateful_chat/chat.py — Multi-turn conversations with memory.
 
 Unlike the Simple Bot, this chat uses ORE's /ask route which
 automatically pages conversation history to/from the SSD.

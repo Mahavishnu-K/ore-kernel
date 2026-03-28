@@ -1,5 +1,5 @@
 """
-06_multi_agent_pipeline/reporter.py — Stage 3: Final Report.
+multi_agent_pipeline/reporter.py — Stage 3: Final Report.
 
 Searches the 'pipeline_analysis' pipe for processed insights and
 generates a polished executive summary.

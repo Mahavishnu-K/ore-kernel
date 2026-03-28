@@ -632,6 +632,13 @@ Areas where contributions are especially welcome:
 
 Join us on [**Discord**](https://discord.com/channels/1477053099494342755/1477053558879686737) - we hang out in `#dev-core` 👾.
 
+## Acknowledgments & Credits
+
+ORE would not be possible without the incredible work of the open-source AI community.
+Special thanks to:
+* **[Hugging Face Candle](https://github.com/huggingface/candle)**: The pure-Rust ML framework powering ORE's Native Engine. Specifically, we utilize adapted implementations of their Transformer architectures (including community PRs for Nomic/SwiGLU).
+* **[Ollama](https://github.com/ollama/ollama)**: For providing an excellent HTTP-based local engine that acts as ORE's universal fallback driver.
+
 ---
 
 ## License

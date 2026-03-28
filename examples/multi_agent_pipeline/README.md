@@ -16,7 +16,7 @@ Each agent only has access to the pipes it needs. The researcher can't read the 
 
 ```bash
 # 1. Install the example manifests
-cp examples/06_multi_agent_pipeline/manifests/*.toml manifests/
+cp examples/multi_agent_pipeline/manifests/*.toml manifests/
 
 # 2. Restart the kernel
 cargo run --release -p ore-server
@@ -26,7 +26,7 @@ ore pull system-embedder
 ore pull qwen2.5:0.5b
 
 # 4. Run the pipeline stages in order
-cd examples/06_multi_agent_pipeline
+cd examples/multi_agent_pipeline
 python researcher.py
 python analyst.py
 python reporter.py
@@ -35,16 +35,16 @@ python reporter.py
 ## Architecture
 
 ```
-┌─────────────┐  write   ┌─────────────────┐  write   ┌─────────────────┐
-│ researcher  │ ────────▶ │  pipeline_data  │          │pipeline_analysis│
-│             │           │  (semantic pipe)│          │ (semantic pipe) │
-└─────────────┘           └───────┬─────────┘          └───────┬─────────┘
+┌─────────────┐  write     ┌─────────────────┐  write   ┌───────────────────┐
+│ researcher  │ ────────▶ │ pipeline_data   │          │ pipeline_analysis │
+│             │            │ (semantic pipe) │          │ (semantic pipe)   │
+└─────────────┘            └───────┬─────────┘          └───────┬───────────┘
                                   │ read                       │ read
                                   ▼                            ▼
-                          ┌─────────────┐  write       ┌─────────────┐
+                          ┌─────────────┐  write        ┌─────────────┐
                           │   analyst   │ ────────────▶│   reporter  │
-                          │             │  to analysis ││             │
-                          └─────────────┘              └─────────────┘
+                          │             │  to analysis  │             │
+                          └─────────────┘               └─────────────┘
                                                               │
                                                               ▼
                                                        Final Report
