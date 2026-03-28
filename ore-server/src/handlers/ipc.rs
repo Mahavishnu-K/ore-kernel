@@ -1,8 +1,10 @@
-use crate::payloads::{IpcSearchRequest, IpcShareRequest};
+use crate::payloads::ChunkStrategy;
+use crate::payloads::{IpcSearchRequest, IpcShareRequest, SearchResult};
 use crate::state::KernelState;
 use axum::{
     extract::{Json, Path, State},
-    response::Json as JsonResponse,
+    http::StatusCode,
+    response::{IntoResponse, Json as JsonResponse},
 };
 use ore_core::ipc::{AgentMessage, SemanticBus};
 use std::sync::Arc;
@@ -56,7 +58,15 @@ pub async fn sys_share_context(
         c_overlap
     };
 
-    let chunks = SemanticBus::create_sliding_windows(&payload.knowledge_text, c_size, safe_overlap);
+    let strategy_str = match payload.chunk_strategy.unwrap_or_default() {
+        ChunkStrategy::SlidingWindow => "sliding_window",
+        ChunkStrategy::SentenceAware => "sentence_aware",
+        ChunkStrategy::Paragraph => "paragraph",
+        ChunkStrategy::ExactMatch => "exact_match",
+    };
+
+    let chunks =
+        SemanticBus::chunk_text(&payload.knowledge_text, strategy_str, c_size, safe_overlap);
 
     let total_blocks = chunks.len();
 
@@ -87,6 +97,8 @@ pub async fn sys_share_context(
 
     let mut wake_embedder = false;
 
+    let _embedder_guard = state.embedder_lock.lock().await;
+
     // Convert text to Math Vectors
     if !chunks_to_embed.is_empty() {
         wake_embedder = true;
@@ -111,9 +123,12 @@ pub async fn sys_share_context(
     }
 
     for (chunk, vector) in cached_chunks {
-        state
-            .semantic_bus
-            .write_chunk(&payload.target_pipe, chunk, vector, &manifest.app_id);
+        state.semantic_bus.write_chunk(
+            &payload.target_pipe,
+            chunk,
+            vector.to_vec(),
+            &manifest.app_id,
+        );
     }
 
     // ZERO-RAM ARCHITECTURE: kill the Nomic model to free memory
@@ -130,7 +145,8 @@ pub async fn sys_share_context(
 pub async fn sys_search_context(
     State(state): State<Arc<KernelState>>,
     Json(payload): Json<IpcSearchRequest>,
-) -> JsonResponse<Vec<String>> {
+) -> impl IntoResponse {
+    // 1. REGISTRY CHECK
     let manifest = match state.registry.get_app(&payload.source_app) {
         Some(m) => m,
         None => {
@@ -138,13 +154,15 @@ pub async fn sys_search_context(
                 "-> [SECURITY ALERT] Ghost Agent '{}' tried to read memory!",
                 payload.source_app
             );
-            return JsonResponse(vec![format!(
-                "KERNEL ALERT: Unregistered Agent '{}'.",
-                payload.source_app
-            )]);
+            return (
+                StatusCode::UNAUTHORIZED,
+                format!("KERNEL ALERT: Unregistered Agent '{}'.", payload.source_app),
+            )
+                .into_response();
         }
     };
 
+    // 2. PERMISSION CHECK
     if !manifest
         .ipc
         .allowed_semantic_pipes
@@ -154,36 +172,64 @@ pub async fn sys_search_context(
             "-> [BLOCKED] Agent '{}' tried to read restricted pipe '{}'.",
             payload.source_app, payload.target_pipe
         );
-        return JsonResponse(vec![format!(
-            "KERNEL ALERT: Permission Denied. Add '{}' to allowed_semantic_pipes in manifest.",
-            payload.target_pipe
-        )]);
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "KERNEL ALERT: Permission Denied. Pipe '{}' is locked.",
+                payload.target_pipe
+            ),
+        )
+            .into_response();
     }
 
     println!(
-        "-> [SEMANTIC BUS] Verified Agent '{}' searching pipe '{}' for: {}",
-        manifest.app_id, payload.target_pipe, payload.query
+        "-> [SEMANTIC BUS] Verified Agent '{}' searching pipe '{}'",
+        manifest.app_id, payload.target_pipe
     );
 
+    // 3. GENERATE EMBEDDINGS
+    // We wrap the single query in a Vec for the batch-processing driver
+    let query_vector =
+        if let Some(cached_vec) = state.semantic_bus.get_cached_embedding(&payload.query) {
+            println!("-> [SEMANTIC BUS] Query found in System Cache. Zero compute used.");
+            cached_vec
+        } else {
+            let _embedder_guard = state.embedder_lock.lock().await;
+
+            match state
+                .driver
+                .generate_embeddings(&state.system_embedder, vec![payload.query.clone()])
+                .await
+            {
+                Ok(v) => {
+                    let arc_vec = std::sync::Arc::new(v[0].clone());
+
+                    // Use cache_only instead of write_chunk!
+                    // This stores the math for the Kernel's eyes only.
+                    state
+                        .semantic_bus
+                        .cache_only(&payload.query, Arc::clone(&arc_vec));
+
+                    arc_vec
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("KERNEL ERROR: {}", e),
+                    )
+                        .into_response();
+                }
+            }
+        };
+
     let k = payload.top_k.unwrap_or(3);
+    let filter_ref = payload.filter_app.as_deref();
 
     println!(
         "-> [SEMANTIC BUS] Retrieving the top {} most relevant memory chunks...",
         k
     );
 
-    // Translate the question into Math using the System Embedder
-    let query_vector = match state
-        .driver
-        .generate_embeddings(&state.system_embedder, vec![payload.query.clone()])
-        .await
-    {
-        Ok(v) => v[0].clone(),
-        Err(_) => return JsonResponse(vec!["KERNEL ERROR: Embedding failed.".to_string()]),
-    };
-
-    // Perform Pure-Rust Math Search (Zero GPU used here)
-    let filter_ref = payload.filter_app.as_deref();
     let top_results =
         state
             .semantic_bus
@@ -191,9 +237,22 @@ pub async fn sys_search_context(
 
     let _ = state.driver.unload_model(&state.system_embedder).await;
 
-    println!("-> [SEMANTIC BUS] Search complete. Handing English text back to Agent.");
+    let results: Vec<SearchResult> = top_results
+        .into_iter()
+        .map(|(score, chunk_arc)| SearchResult {
+            text: chunk_arc.text.to_string(), // Deref Arc to String
+            score,
+            source_app: chunk_arc.source_app.clone(),
+            timestamp: chunk_arc.timestamp,
+        })
+        .collect();
 
-    JsonResponse(top_results)
+    println!(
+        "-> [SEMANTIC BUS] Search complete. Returning {} results.",
+        results.len()
+    );
+
+    JsonResponse(results).into_response()
 }
 
 pub async fn ipc_send(
@@ -252,10 +311,7 @@ pub async fn ipc_listen(
 
     println!("-> [IPC BUS] App '{}' is polling its channel...", app_id);
 
-    let mut receiver = state.message_bus.register_listener(&app_id);
+    let receiver = state.message_bus.read_message(&app_id);
 
-    match receiver.try_recv() {
-        Ok(msg) => JsonResponse(Some(msg)),
-        Err(_) => JsonResponse(None),
-    }
+    JsonResponse(receiver)
 }

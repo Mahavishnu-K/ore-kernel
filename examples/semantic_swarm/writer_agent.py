@@ -51,15 +51,15 @@ def main():
         print("  No results found. Run scraper_agent.py first!")
         sys.exit(1)
 
+    context_chunks = [r['text'] for r in results]
+    context = "\n\n".join(context_chunks)
+
     print(f"  Found {len(results)} relevant chunks:\n")
-    for i, chunk in enumerate(results, 1):
-        preview = chunk[:80].replace("\n", " ")
-        print(f"    [{i}] {preview}...")
+    
+    for i, r in enumerate(results, 1):
+        preview = r['text'][:60].replace("\n", " ")
+        print(f"    [{i}] [Score: {r['score']:.2f}] {preview}...")
 
-    # Step 2: Build a grounded prompt with the retrieved context
-    print("\n  [2/3] Building context-grounded prompt...")
-
-    context = "\n\n".join(results)
     grounded_prompt = (
         f"You are a technical writer. Based ONLY on the following research context, "
         f"write a clear, concise answer to the question.\n\n"

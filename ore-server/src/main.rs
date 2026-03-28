@@ -11,6 +11,7 @@ use axum::{
 use std::fs;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use ore_core::driver::InferenceDriver;
@@ -56,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_state = Arc::new(KernelState {
         driver,
         scheduler: Arc::new(GpuScheduler::new()),
+        embedder_lock: Arc::new(Mutex::new(())),
         registry: app_registry,
         semantic_bus: Arc::clone(&shared_semantic_bus),
         message_bus: MessageBus::new(),

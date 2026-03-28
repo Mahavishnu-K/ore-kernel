@@ -4,7 +4,7 @@
 //!
 //! This file contains code adapted from the huggingface/candle repository:
 //! https://github.com/huggingface/candle
-//! 
+//!
 //! Modifications made for the ORE Kernel:
 //! - Stripped unused submodules to eliminate internal crate dependencies.
 //! - Added the `SystemEmbedder` OS wrapper for the Semantic Bus integration.

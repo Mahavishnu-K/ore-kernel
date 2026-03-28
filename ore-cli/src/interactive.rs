@@ -31,7 +31,7 @@ pub fn run_init_wizard() {
 
     let embedders = &[
         "all-minilm (Fast & Lightweight, 90MB - Best for laptops)",
-        "system-embedder (Nomic v1.5, High Accuracy, 500MB - Best for desktops)"
+        "system-embedder (Nomic v1.5, High Accuracy, 500MB - Best for desktops)",
     ];
 
     let embedder_idx = Select::with_theme(&SimpleTheme)
@@ -41,7 +41,11 @@ pub fn run_init_wizard() {
         .interact()
         .unwrap();
 
-    let selected_embedder = if embedder_idx == 0 { "all-minilm" } else { "system-embedder" };
+    let selected_embedder = if embedder_idx == 0 {
+        "all-minilm"
+    } else {
+        "system-embedder"
+    };
 
     let mut toml_output = String::new();
     toml_output.push_str("[system]\n");

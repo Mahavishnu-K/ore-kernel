@@ -9,11 +9,7 @@ use futures_util::StreamExt;
 use hf_hub::{Repo, RepoType, api::tokio::Api};
 use std::{fs, path::Path, process::exit};
 use utils::{
-    ModelAsset, 
-    build_secure_client, 
-    download_with_progress, 
-    get_hf_token, 
-    get_model_map,
+    ModelAsset, build_secure_client, download_with_progress, get_hf_token, get_model_map,
     get_system_engine,
 };
 

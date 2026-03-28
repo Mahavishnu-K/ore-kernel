@@ -16,19 +16,21 @@
 //!
 //! This file contains code adapted from the huggingface/candle repository:
 //! https://github.com/huggingface/candle
-//! 
+//!
 //! Modifications made for the ORE Kernel:
 //! - Stripped unused submodules to eliminate internal crate dependencies.
 //! - Added the `SystemEmbedder` OS wrapper for the Semantic Bus integration.
 //! -------------------------------------------------------------------------
 
-use crate::native::models::utils::with_tracing::{layer_norm, linear, linear_no_bias, LayerNorm, Linear};
-use candle_core::{DType, Device, Result, Tensor, D};
-use candle_nn::{embedding, Embedding, Module, VarBuilder};
-use tokenizers::{Tokenizer, PaddingParams, TruncationParams};
+use crate::native::models::utils::with_tracing::{
+    LayerNorm, Linear, layer_norm, linear, linear_no_bias,
+};
+use candle_core::{D, DType, Device, Result, Tensor};
+use candle_nn::{Embedding, Module, VarBuilder, embedding};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
+use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
 
 // Matches nomic-ai/nomic-embed-text-v1.5 config.json field names.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -516,25 +518,43 @@ impl SystemEmbedder {
         }
 
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(anyhow::Error::msg)?;
-        
-        let pp = PaddingParams { strategy: tokenizers::PaddingStrategy::BatchLongest, ..Default::default() };
-        let tp = TruncationParams { max_length: 8192, ..Default::default() };
-        tokenizer.with_padding(Some(pp)).with_truncation(Some(tp)).map_err(anyhow::Error::msg)?;
+
+        let pp = PaddingParams {
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
+            ..Default::default()
+        };
+        let tp = TruncationParams {
+            max_length: 8192,
+            ..Default::default()
+        };
+        tokenizer
+            .with_padding(Some(pp))
+            .with_truncation(Some(tp))
+            .map_err(anyhow::Error::msg)?;
 
         let config_str = fs::read_to_string(&config_path)?;
         let config: Config = serde_json::from_str(&config_str)?;
 
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[&safetensors_path], DType::F32, device)? };
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[&safetensors_path], DType::F32, device)?
+        };
         let model = NomicBertModel::load(vb, &config)?;
 
-        Ok(Self { model, tokenizer, device: device.clone() })
+        Ok(Self {
+            model,
+            tokenizer,
+            device: device.clone(),
+        })
     }
 
     pub fn embed_batch(&self, texts: Vec<String>) -> anyhow::Result<Vec<Vec<f32>>> {
         let mut all_vectors = Vec::new();
 
         for text in texts {
-            let tokens = self.tokenizer.encode(text, true).map_err(anyhow::Error::msg)?;
+            let tokens = self
+                .tokenizer
+                .encode(text, true)
+                .map_err(anyhow::Error::msg)?;
             let token_ids = tokens.get_ids().to_vec();
             let mask = tokens.get_attention_mask().to_vec();
 
@@ -542,7 +562,9 @@ impl SystemEmbedder {
             let mask_tensor = Tensor::new(mask.as_slice(), &self.device)?.unsqueeze(0)?;
 
             // 1. Forward Pass
-            let embeddings = self.model.forward(&token_tensor, None, Some(&mask_tensor))?;
+            let embeddings = self
+                .model
+                .forward(&token_tensor, None, Some(&mask_tensor))?;
 
             // 2. Use Daniel's built-in pooling and normalization!
             let pooled = mean_pooling(&embeddings, &mask_tensor)?;

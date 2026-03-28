@@ -341,14 +341,19 @@ impl InferenceDriver for NativeDriver {
             let config_path = format!("{}/config.json", model_dir);
 
             if !Path::new(&config_path).exists() {
-                return Err(format!("Embedder config missing. Run 'ore pull {}'", safe_model));
+                return Err(format!(
+                    "Embedder config missing. Run 'ore pull {}'",
+                    safe_model
+                ));
             }
 
             // Detemine the architecture
             let config_str = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-            let config_val: serde_json::Value = serde_json::from_str(&config_str).map_err(|e| e.to_string())?;
+            let config_val: serde_json::Value =
+                serde_json::from_str(&config_str).map_err(|e| e.to_string())?;
 
-            let arch = config_val.get("architectures")
+            let arch = config_val
+                .get("architectures")
                 .and_then(|v| v.as_array())
                 .and_then(|a| a.first())
                 .and_then(|v| v.as_str())
@@ -361,14 +366,18 @@ impl InferenceDriver for NativeDriver {
                     // Route to custom Nomic RoPE/SwiGLU implementation
                     let embedder = models::nomic::SystemEmbedder::load(&model_dir, &device)
                         .map_err(|e| format!("Failed to load Nomic embedder: {}", e))?;
-                    embedder.embed_batch(inputs).map_err(|e| format!("Nomic math failed: {}", e))?
-                },
+                    embedder
+                        .embed_batch(inputs)
+                        .map_err(|e| format!("Nomic math failed: {}", e))?
+                }
                 "BertModel" => {
                     // Route to the ultra-fast standard MiniLM implementation
                     let embedder = models::bert::SystemEmbedder::load(&model_dir, &device)
                         .map_err(|e| format!("Failed to load BERT embedder: {}", e))?;
-                    embedder.embed_batch(inputs).map_err(|e| format!("BERT math failed: {}", e))?
-                },
+                    embedder
+                        .embed_batch(inputs)
+                        .map_err(|e| format!("BERT math failed: {}", e))?
+                }
                 _ => return Err(format!("Unsupported embedding architecture: {}", arch)),
             };
 

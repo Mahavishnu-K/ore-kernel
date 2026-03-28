@@ -54,16 +54,18 @@ def main():
         print("  No data found. Run researcher.py first!")
         sys.exit(1)
 
-    print(f"  Retrieved {len(results)} relevant chunks.\n")
+    context_chunks = [r['text'] for r in results]
+    context = "\n\n".join(context_chunks)
 
-    for i, chunk in enumerate(results, 1):
-        preview = chunk[:70].replace("\n", " ").strip()
-        print(f"    [{i}] {preview}...")
+    print(f"  Found {len(results)} relevant chunks:\n")
+    
+    for i, r in enumerate(results, 1):
+        preview = r['text'][:60].replace("\n", " ")
+        print(f"    [{i}] [Score: {r['score']:.2f}] {preview}...")
 
     # Step 2: Ask the LLM to analyze
     print("\n  [2/3] Generating analysis with LLM...")
-
-    context = "\n\n".join(results)
+    
     analysis_prompt = (
         f"You are a senior technical analyst. Based on the following research data, "
         f"extract the 3-5 most important technical insights. Be specific and concise. "

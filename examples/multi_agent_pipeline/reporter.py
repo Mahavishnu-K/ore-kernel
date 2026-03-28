@@ -44,12 +44,16 @@ def main():
         print("  No analysis found. Run analyst.py first!")
         sys.exit(1)
 
-    print(f"  Retrieved {len(results)} analysis chunks.\n")
+    context_chunks = [r['text'] for r in results]
+    context = "\n\n".join(context_chunks)
 
-    # Step 2: Generate the final report
+    print(f"  Found {len(results)} relevant chunks:\n")
+    
+    for i, r in enumerate(results, 1):
+        preview = r['text'][:60].replace("\n", " ")
+        print(f"    [{i}] [Score: {r['score']:.2f}] {preview}...")
+
     print("  [2/2] Generating executive summary...\n")
-
-    context = "\n\n".join(results)
     report_prompt = (
         f"You are a technical report writer. Based on the following analysis, "
         f"write a concise executive summary (3-4 paragraphs). "

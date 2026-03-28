@@ -4,6 +4,7 @@ use ore_core::registry::AppRegistry;
 use ore_core::scheduler::GpuScheduler;
 use serde::Deserialize;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Deserialize, Clone)]
 pub struct OreConfig {
@@ -33,6 +34,7 @@ pub struct MemoryConfig {
 pub struct KernelState {
     pub driver: Arc<dyn InferenceDriver>,
     pub scheduler: Arc<GpuScheduler>,
+    pub embedder_lock: Arc<Mutex<()>>,
     pub registry: AppRegistry,
     pub semantic_bus: Arc<SemanticBus>,
     pub message_bus: MessageBus,
