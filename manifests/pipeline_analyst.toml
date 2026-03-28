@@ -1,0 +1,14 @@
+app_id = "pipeline_analyst"
+description = "Pipeline Stage 2 — Analyzes raw data and produces insights"
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true
+
+[resources]
+allowed_models = ["qwen2.5:0.5b", "llama3.2:1b"]
+max_tokens_per_minute = 15000
+gpu_priority = "normal"
+
+[ipc]
+allowed_semantic_pipes = ["pipeline_data", "pipeline_analysis"]

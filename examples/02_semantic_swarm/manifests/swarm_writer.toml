@@ -1,0 +1,14 @@
+app_id = "swarm_writer"
+description = "Searches the Semantic Bus and writes grounded content"
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true
+
+[resources]
+allowed_models = ["qwen2.5:0.5b", "llama3.2:1b"]
+max_tokens_per_minute = 10000
+gpu_priority = "normal"
+
+[ipc]
+allowed_semantic_pipes = ["research"]

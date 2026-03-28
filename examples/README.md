@@ -1,0 +1,48 @@
+# ORE Examples
+
+> Real, runnable applications built on top of the ORE Kernel.
+> Each example is a standalone Python script that talks to ORE over HTTP.
+
+## Prerequisites
+
+1. **ORE Kernel running** — `cargo run --release -p ore-server` in a separate terminal
+2. **Python 3.8+** with `requests` installed: `pip install requests`
+3. **A model pulled** — `ore pull qwen2.5:0.5b` (or `llama3.2:1b`)
+4. **System embedder** (for IPC examples) — `ore pull system-embedder`
+
+## Examples
+
+| # | Name | Features Demonstrated | Difficulty |
+|---|---|---|---|
+| 01 | [**Simple Bot**](./01_simple_bot/) | Basic inference via `POST /run` | ⭐ Beginner |
+| 02 | [**Semantic Swarm**](./02_semantic_swarm/) | Semantic Bus: `/ipc/share` + `/ipc/search` | ⭐⭐ Intermediate |
+| 03 | [**Stateful Chat**](./03_stateful_chat/) | SSD Pager: multi-turn conversations via `GET /ask` | ⭐ Beginner |
+| 04 | [**Agent Messaging**](./04_agent_messaging/) | Direct agent IPC: `/ipc/send` + `/ipc/listen` | ⭐⭐ Intermediate |
+| 05 | [**Firewall Demo**](./05_firewall_demo/) | Context Firewall: injection blocking + PII redaction | ⭐ Beginner |
+| 06 | [**Multi-Agent Pipeline**](./06_multi_agent_pipeline/) | Full swarm: 3 agents chained via Semantic Bus | ⭐⭐⭐ Advanced |
+
+## Quick Start
+
+```bash
+# Terminal 1: Boot the kernel
+cargo run --release -p ore-server
+
+# Terminal 2: Run any example
+cd examples/01_simple_bot
+python bot.py
+```
+
+## Shared Utility
+
+All examples import [`ore_client.py`](./ore_client.py) — a lightweight Python wrapper around ORE's HTTP API. It handles token authentication, error formatting, and streaming automatically.
+
+## Manifest Installation
+
+Each example includes the `.toml` manifests it needs. Copy them to the `manifests/` directory and restart the kernel before running:
+
+```bash
+# Example: install manifests for the Semantic Swarm
+cp examples/02_semantic_swarm/manifests/*.toml manifests/
+```
+
+Then reboot the kernel to load the new manifests.
