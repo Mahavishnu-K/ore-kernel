@@ -34,7 +34,7 @@ This phase transforms ORE from an API proxy into a true bare-metal Memory Manage
   - *Goal:* Boot a 4GB model in 50 milliseconds.
   - *Implementation:* Ensure `memmap2` is aggressively utilized so the OS streams only the required weights directly from SSD to GPU, bypassing system RAM bottlenecks.
 - [ ] **Expand Native Architecture Support:**
-  - *Goal:* Expand the `OreBrain` polymorphic router.
+  - *Goal:* Expand the `OreEngine` polymorphic router.
   - *Implementation:* Add native `candle` support for Mistral, Gemma, Deepseek, Microsoft Phi, and GLM.
 
 ---
