@@ -65,9 +65,9 @@ impl InjectionBlocker {
 
 ### Design Decisions
 
-- **Heuristic, not ML-based** — Intentionally simple. False negatives are acceptable at this stage because `BoundaryEnforcer` provides a structural second line of defense. An ML classifier would add latency and model dependencies to the kernel itself.
-- **Compound checks** — `"ignore" + "previous"` requires both words present, reducing false positives (a user asking about "ignoring" something unrelated won't trigger it).
-- **Lowercase comparison** — Case-insensitive to catch `"IGNORE previous"`, `"Ignore Previous"`, etc.
+- **Heuristic, not ML-based** - Intentionally simple. False negatives are acceptable at this stage because `BoundaryEnforcer` provides a structural second line of defense. An ML classifier would add latency and model dependencies to the kernel itself.
+- **Compound checks** - `"ignore" + "previous"` requires both words present, reducing false positives (a user asking about "ignoring" something unrelated won't trigger it).
+- **Lowercase comparison** - Case-insensitive to catch `"IGNORE previous"`, `"Ignore Previous"`, etc.
 
 ### Extension Point
 
@@ -101,8 +101,8 @@ impl PiiRedactor {
 
 ### Design Decisions
 
-- **`OnceLock` caching** — Regex compilation is expensive. `OnceLock::get_or_init()` compiles each pattern exactly once across all threads, then returns a reference forever after. Zero overhead on subsequent calls.
-- **Replace, don't reject** — Unlike injection detection, PII redaction doesn't block the request. It silently replaces sensitive data so the user still gets their inference result — just without leaking their email to the model.
+- **`OnceLock` caching** - Regex compilation is expensive. `OnceLock::get_or_init()` compiles each pattern exactly once across all threads, then returns a reference forever after. Zero overhead on subsequent calls.
+- **Replace, don't reject** - Unlike injection detection, PII redaction doesn't block the request. It silently replaces sensitive data so the user still gets their inference result - just without leaking their email to the model.
 
 ### Extension Point
 
@@ -136,9 +136,9 @@ impl BoundaryEnforcer {
 
 ### Design Decisions
 
-- **Randomized tags** — The XML-like tag includes 8 hex characters from a UUID v4. An attacker cannot predict the tag and pre-close it in their prompt (e.g., crafting `</user_input_...>` to escape the boundary).
-- **Instruction prefix** — The wrapper explicitly tells the model not to execute commands or reveal the boundary tags. This acts as a structural guardrail on top of the heuristic injection blocker.
-- **Per-request uniqueness** — Every inference call generates a fresh UUID, so even if an attacker observes one tag, it won't be reused.
+- **Randomized tags** - The XML-like tag includes 8 hex characters from a UUID v4. An attacker cannot predict the tag and pre-close it in their prompt (e.g., crafting `</user_input_...>` to escape the boundary).
+- **Instruction prefix** - The wrapper explicitly tells the model not to execute commands or reveal the boundary tags. This acts as a structural guardrail on top of the heuristic injection blocker.
+- **Per-request uniqueness** - Every inference call generates a fresh UUID, so even if an attacker observes one tag, it won't be reused.
 
 ---
 

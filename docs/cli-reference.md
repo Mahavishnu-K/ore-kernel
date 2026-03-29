@@ -17,9 +17,9 @@ ore init
 ```
 
 Configures:
-- **Engine selection** — Ollama (daemon-based) or Native (bare-metal Rust)
-- **Engine defaults** — Model paths, API URLs
-- **Memory GC** — Embedding cache TTL and semantic pipe TTL
+- **Engine selection** - Ollama (daemon-based) or Native (bare-metal Rust)
+- **Engine defaults** - Model paths, API URLs
+- **Memory GC** - Embedding cache TTL and semantic pipe TTL
 
 ---
 
@@ -39,7 +39,7 @@ ore status
 
 ### `ore top`
 
-View kernel telemetry — driver info, scheduler state, firewall status.
+View kernel telemetry - driver info, scheduler state, firewall status.
 
 ```bash
 ore top
@@ -100,9 +100,9 @@ ore ls --agents
 ```
 
 Status values:
-- **SECURED** — PII redaction enabled, no shell access
-- **UNSAFE** — Shell access granted or PII redaction disabled
-- **DORMANT** — No models assigned
+- **SECURED** - PII redaction enabled, no shell access
+- **UNSAFE** - Shell access granted or PII redaction disabled
+- **DORMANT** - No models assigned
 
 ```bash
 ore ls --manifests

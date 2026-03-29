@@ -2,7 +2,7 @@
 
 > Every knob you can turn in the ORE kernel.
 
-## `ore.toml` — System Configuration
+## `ore.toml` - System Configuration
 
 The kernel reads `ore.toml` from the workspace root on boot. Generate it via `ore init` or edit manually.
 
@@ -11,6 +11,7 @@ The kernel reads `ore.toml` from the workspace root on boot. Generate it via `or
 ```toml
 [system]
 engine = "native"           # "native" or "ollama"
+embedder = "all-minilm"     # "all-minilm" (90MB Fast) or "system-embedder" (500MB Nomic)
 
 [native]
 default_model = "llama3.2:1b"  # Default model for the Native Candle engine
@@ -25,6 +26,7 @@ pipe_ttl_hours = 32         # Semantic pipe data lifetime in hours (0 = infinite
 | Key | Type | Values | Description |
 |---|---|---|---|
 | `engine` | string | `"native"`, `"ollama"` | Which inference backend to use on boot |
+| `embedder` | string | `"all-minilm"`, `"system-embedder"` | Which Native System Embedder architecture to use for Semantic Bus searching |
 
 ### `[native]` Section
 
@@ -32,7 +34,7 @@ Only read when `engine = "native"`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `default_model` | string | — | The model loaded by default when no model is specified |
+| `default_model` | string | - | The model loaded by default when no model is specified |
 
 ### `[memory]` Section
 
@@ -60,7 +62,7 @@ channel = "1.93.0"
 
 ---
 
-## `Cargo.toml` — Workspace & Release Profile
+## `Cargo.toml` - Workspace & Release Profile
 
 ```toml
 [workspace]
@@ -82,7 +84,7 @@ strip = true         # Strip debug symbols
 
 | | Native (Candle) | Ollama |
 |---|---|---|
-| **Dependencies** | Zero — pure Rust | Requires Ollama daemon |
+| **Dependencies** | Zero - pure Rust | Requires Ollama daemon |
 | **Model Format** | GGUF (quantized) | All Ollama-compatible |
 | **Hardware** | CPU / CUDA / Metal (auto-detected) | Depends on Ollama |
 | **Embeddings** | Built-in BERT (Safetensors) | Via `/api/embed` endpoint |

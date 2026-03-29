@@ -74,7 +74,7 @@ curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
 
 ### `GET /agents`
 
-Agent security dashboard — lists all registered agents with security assessment.
+Agent security dashboard - lists all registered agents with security assessment.
 
 ```bash
 curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
@@ -175,7 +175,7 @@ curl -X POST \
 }
 ```
 
-**Response:** `text/event-stream` — tokens streamed in real-time.
+**Response:** `text/event-stream` - tokens streamed in real-time.
 
 ---
 
@@ -219,12 +219,13 @@ curl -X POST \
 | `knowledge_text` | string | ✅ | Raw text to chunk and embed |
 | `chunk_size` | usize | ❌ | Words per chunk (default: 50) |
 | `chunk_overlap` | usize | ❌ | Overlap words between chunks (default: 10) |
+| `chunk_strategy` | string | ❌ | Strategy to use: `"sliding_window"` (default), `"sentence_aware"`, `"paragraph"`, `"exact_match"` |
 
 ---
 
 ### `POST /ipc/search`
 
-Search a Semantic Bus pipe using cosine similarity with time-decay scoring.
+Search a Semantic Bus pipe using fast dot-product similarity with time-decay scoring.
 
 ```bash
 curl -X POST \
@@ -258,7 +259,19 @@ curl -X POST \
 | `filter_app` | string | ❌ | Only return results from this specific app |
 | `top_k` | usize | ❌ | Number of results (default: 3) |
 
-**Response:** Array of the top-K most relevant text chunks, ranked by cosine similarity × time-decay factor.
+**Response:** Array of `SearchResult` JSON objects containing the top-K most relevant text chunks, ranked by dot-product match × time-decay factor. Example:
+```json
+[
+  {
+    "text": "Rust ownership means each value...",
+    "score": 0.98,
+    "source_app": "scraper_agent",
+    "timestamp": 1711728200
+  }
+]
+```
+
+**Errors:** Returns standard HTTP status codes like `401 Unauthorized` or `403 Forbidden` if manifest permissions are denied.
 
 ---
 
@@ -291,7 +304,7 @@ curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
      http://127.0.0.1:3000/ipc/listen/writer_agent
 ```
 
-**Response:** The next pending `AgentMessage` from the broadcast channel, or empty if none.
+**Response:** The next pending `AgentMessage` from the unbounded channel queue, or empty if none.
 
 ---
 

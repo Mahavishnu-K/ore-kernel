@@ -4,7 +4,7 @@
 
 ## Overview
 
-An AppManifest is a `.toml` file in the `manifests/` directory that declares exactly what an agent is allowed to do. ORE enforces these permissions at the kernel level — not in the application. No manifest = no access.
+An AppManifest is a `.toml` file in the `manifests/` directory that declares exactly what an agent is allowed to do. ORE enforces these permissions at the kernel level - not in the application. No manifest = no access.
 
 Generate one interactively:
 
@@ -49,7 +49,7 @@ allow_localhost_access = false
 
 # ─── Execution ───────────────────────────────────
 [execution]
-can_execute_shell = false             # ⚠️ High risk — flagged as UNSAFE
+can_execute_shell = false             # ⚠️ High risk - flagged as UNSAFE
 can_execute_wasm = true
 allowed_tools = ["file_search", "git_commit"]
 

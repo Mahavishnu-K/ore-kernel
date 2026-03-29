@@ -1,5 +1,5 @@
 """
-ore_client.py — Lightweight Python client for the ORE Kernel API.
+ore_client.py - Lightweight Python client for the ORE Kernel API.
 
 Usage:
     from ore_client import OreClient
@@ -83,7 +83,7 @@ class OreClient:
         return full_text
 
     def ask(self, prompt: str) -> str:
-        """GET /ask/:prompt — Secured inference with firewall + SSD paging."""
+        """GET /ask/:prompt - Secured inference with firewall + SSD paging."""
         safe = prompt.replace(" ", "_")
         r = requests.get(
             f"{self.base_url}/ask/{safe}",
@@ -95,43 +95,43 @@ class OreClient:
     # ─── System ──────────────────────────────────────────────────
 
     def health(self) -> str:
-        """GET /health — Kernel health check."""
+        """GET /health - Kernel health check."""
         r = requests.get(f"{self.base_url}/health", headers=self.headers)
         r.raise_for_status()
         return r.text
 
     def ps(self) -> str:
-        """GET /ps — Models in VRAM."""
+        """GET /ps - Models in VRAM."""
         r = requests.get(f"{self.base_url}/ps", headers=self.headers)
         r.raise_for_status()
         return r.text
 
     def ls(self) -> str:
-        """GET /ls — Models on disk."""
+        """GET /ls - Models on disk."""
         r = requests.get(f"{self.base_url}/ls", headers=self.headers)
         r.raise_for_status()
         return r.text
 
     def agents(self) -> str:
-        """GET /agents — Agent security dashboard."""
+        """GET /agents - Agent security dashboard."""
         r = requests.get(f"{self.base_url}/agents", headers=self.headers)
         r.raise_for_status()
         return r.text
 
     def load(self, model: str) -> str:
-        """GET /load/:model — Pre-load model into VRAM."""
+        """GET /load/:model - Pre-load model into VRAM."""
         r = requests.get(f"{self.base_url}/load/{model}", headers=self.headers)
         r.raise_for_status()
         return r.text
 
     def expel(self, model: str) -> str:
-        """GET /expel/:model — Evict model from VRAM."""
+        """GET /expel/:model - Evict model from VRAM."""
         r = requests.get(f"{self.base_url}/expel/{model}", headers=self.headers)
         r.raise_for_status()
         return r.text
 
     def clear(self, app_id: str) -> str:
-        """GET /clear/:app_id — Wipe agent swap memory."""
+        """GET /clear/:app_id - Wipe agent swap memory."""
         r = requests.get(f"{self.base_url}/clear/{app_id}", headers=self.headers)
         r.raise_for_status()
         return r.text
@@ -146,7 +146,7 @@ class OreClient:
         chunk_size: int = 100,
         chunk_overlap: int = 20,
     ) -> str:
-        """POST /ipc/share — Write knowledge to a Semantic Bus pipe."""
+        """POST /ipc/share - Write knowledge to a Semantic Bus pipe."""
         r = requests.post(
             f"{self.base_url}/ipc/share",
             json={
@@ -169,7 +169,7 @@ class OreClient:
         top_k: int = 3,
         filter_app: str = None,
     ) -> list:
-        """POST /ipc/search — Search a Semantic Bus pipe."""
+        """POST /ipc/search - Search a Semantic Bus pipe."""
         payload = {
             "source_app": source_app,
             "target_pipe": target_pipe,
@@ -190,7 +190,7 @@ class OreClient:
     # ─── IPC: Message Bus ────────────────────────────────────────
 
     def ipc_send(self, from_app: str, to_app: str, payload: str) -> str:
-        """POST /ipc/send — Send a direct agent message."""
+        """POST /ipc/send - Send a direct agent message."""
         import time
 
         r = requests.post(
@@ -207,7 +207,7 @@ class OreClient:
         return r.text
 
     def ipc_listen(self, app_id: str) -> dict | None:
-        """GET /ipc/listen/:app_id — Poll for incoming messages."""
+        """GET /ipc/listen/:app_id - Poll for incoming messages."""
         r = requests.get(
             f"{self.base_url}/ipc/listen/{app_id}",
             headers=self.headers,

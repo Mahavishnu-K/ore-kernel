@@ -1,4 +1,4 @@
-# 01 — Simple Bot
+# 01 - Simple Bot
 
 > The "Hello World" of ORE. A 30-line Python script that proves how easy it is to build an AI app when ORE handles the heavy lifting.
 
@@ -35,7 +35,7 @@ python bot.py
 
 | File | Purpose |
 |---|---|
-| `bot.py` | The bot script — ~30 lines of Python |
+| `bot.py` | The bot script - ~30 lines of Python |
 | `simple_bot.toml` | Manifest for the `terminal_user` identity this bot uses |
 
 > **Note:** The `/run` route uses `terminal_user` as its app identity. The default `terminal_user.toml` manifest is already installed in `manifests/`. No extra setup needed.

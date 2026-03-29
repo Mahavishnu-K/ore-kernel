@@ -1,4 +1,4 @@
-# 03 — Stateful Chat
+# 03 - Stateful Chat
 
 > Multi-turn conversations that survive kernel restarts. ORE's SSD Pager remembers context automatically.
 
@@ -57,7 +57,7 @@ Turn 2:
 
 | | Simple Bot (`/run`) | Stateful Chat (`/ask`) |
 |---|---|---|
-| **History** | None — each prompt is independent | Full conversation history from SSD |
+| **History** | None - each prompt is independent | Full conversation history from SSD |
 | **Manifest** | `terminal_user` | `openclaw` |
 | **Paging** | Disabled | Automatic page-in/page-out |
 | **Use Case** | One-shot questions | Long conversations |

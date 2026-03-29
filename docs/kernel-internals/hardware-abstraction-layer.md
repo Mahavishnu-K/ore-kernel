@@ -8,7 +8,7 @@
 
 ## Overview
 
-The Hardware Abstraction Layer (HAL) is a single Rust trait — `InferenceDriver` — that decouples all kernel logic from the physical inference engine. Applications and subsystems interact with the driver through this trait, never through engine-specific APIs directly.
+The Hardware Abstraction Layer (HAL) is a single Rust trait - `InferenceDriver` - that decouples all kernel logic from the physical inference engine. Applications and subsystems interact with the driver through this trait, never through engine-specific APIs directly.
 
 Two implementations ship today:
 
@@ -27,7 +27,7 @@ pub trait InferenceDriver: Send + Sync {
     /// Human-readable engine name (e.g., "Native Candle Engine")
     fn engine_name(&self) -> &'static str;
 
-    /// Health check — is the backend reachable?
+    /// Health check - is the backend reachable?
     async fn is_online(&self) -> bool;
 
     /// List models currently loaded in VRAM
@@ -45,7 +45,7 @@ pub trait InferenceDriver: Send + Sync {
     /// List all models installed on disk
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError>;
 
-    /// Run inference — stream tokens through the mpsc channel
+    /// Run inference - stream tokens through the mpsc channel
     async fn generate_text(
         &self,
         model: &str,
@@ -126,7 +126,7 @@ let driver: Arc<dyn InferenceDriver> = if config.system.engine == "native" {
 };
 ```
 
-After this point, **all kernel code is engine-agnostic**. The scheduler, firewall, handlers, and IPC layer only interact with `&dyn InferenceDriver` — they don't know or care which backend is running.
+After this point, **all kernel code is engine-agnostic**. The scheduler, firewall, handlers, and IPC layer only interact with `&dyn InferenceDriver` - they don't know or care which backend is running.
 
 To switch engines:
 

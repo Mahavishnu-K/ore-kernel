@@ -1,5 +1,5 @@
 """
-simple_bot/bot.py — The "Hello World" of ORE.
+simple_bot/bot.py - The "Hello World" of ORE.
 
 A minimal terminal chatbot that sends prompts to the ORE Kernel
 and streams the AI response back in real-time.
@@ -34,7 +34,7 @@ def main():
         status = ore.health()
         print(f"  Kernel: {status}")
     except Exception as e:
-        print(f"  ERROR: Cannot reach ORE Kernel — {e}")
+        print(f"  ERROR: Cannot reach ORE Kernel - {e}")
         print("  Start it with: cargo run --release -p ore-server")
         sys.exit(1)
 

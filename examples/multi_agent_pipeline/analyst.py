@@ -1,5 +1,5 @@
 """
-multi_agent_pipeline/analyst.py — Stage 2: Analysis.
+multi_agent_pipeline/analyst.py - Stage 2: Analysis.
 
 Searches the 'pipeline_data' pipe for raw knowledge, asks the LLM
 to extract key insights, and pushes the analysis to 'pipeline_analysis'.
@@ -33,7 +33,7 @@ def main():
 
     print()
     print("╔" + "═" * 58 + "╗")
-    print("║" + "  PIPELINE STAGE 2 — ANALYST".center(58) + "║")
+    print("║" + "  PIPELINE STAGE 2 - ANALYST".center(58) + "║")
     print("╚" + "═" * 58 + "╝")
     print()
 

@@ -1,5 +1,5 @@
 """
-stateful_chat/chat.py — Multi-turn conversations with memory.
+stateful_chat/chat.py - Multi-turn conversations with memory.
 
 Unlike the Simple Bot, this chat uses ORE's /ask route which
 automatically pages conversation history to/from the SSD.
@@ -26,8 +26,8 @@ def main():
     print("  It survives kernel restarts.")
     print()
     print("  Commands:")
-    print("    /clear  — Wipe conversation history")
-    print("    /quit   — Exit")
+    print("    /clear  - Wipe conversation history")
+    print("    /quit   - Exit")
     print("=" * 60)
 
     # Check kernel health
@@ -35,7 +35,7 @@ def main():
         status = ore.health()
         print(f"  Kernel: {status}")
     except Exception as e:
-        print(f"  ERROR: Cannot reach ORE Kernel — {e}")
+        print(f"  ERROR: Cannot reach ORE Kernel - {e}")
         sys.exit(1)
 
     print()

@@ -1,13 +1,13 @@
-# 02 — Semantic Swarm
+# 02 - Semantic Swarm
 
-> The "killer feature" showcase. Two agents share memory through ORE's Semantic Bus — no external vector database required.
+> The "killer feature" showcase. Two agents share memory through ORE's Semantic Bus - no external vector database required.
 
 ## What It Does
 
 1. **`scraper_agent.py`** downloads content from a topic (e.g., "Rust programming language") and pushes it into the ORE Semantic Bus via `POST /ipc/share`
 2. **`writer_agent.py`** searches that shared memory via `POST /ipc/search`, retrieves the most relevant paragraphs, and asks ORE to write an essay using that context
 
-The two scripts share knowledge through a named **semantic pipe** (`research`) — ORE handles the embedding, vector storage, and cosine similarity search entirely in memory.
+The two scripts share knowledge through a named **semantic pipe** (`research`) - ORE handles the embedding, vector storage, and cosine similarity search entirely in memory.
 
 ## Setup
 

@@ -1,4 +1,4 @@
-# 04 — Agent Messaging
+# 04 - Agent Messaging
 
 > Direct agent-to-agent communication through ORE's Message Bus.
 
@@ -20,11 +20,11 @@ cp examples/agent_messaging/manifests/*.toml manifests/
 # 2. Restart the kernel
 cargo run --release -p ore-server
 
-# 3. Terminal A — start the receiver (polls for messages)
+# 3. Terminal A - start the receiver (polls for messages)
 cd examples/agent_messaging
 python receiver.py
 
-# 4. Terminal B — send a message
+# 4. Terminal B - send a message
 cd examples/agent_messaging
 python sender.py --message "Hello from sender!"
 ```
@@ -54,8 +54,8 @@ python sender.py --message "Hello from sender!"
 |---|---|
 | `sender.py` | Sends messages as `agent_alpha` |
 | `receiver.py` | Listens for messages as `agent_beta` |
-| `manifests/agent_alpha.toml` | Sender manifest — lists `agent_beta` as allowed target |
-| `manifests/agent_beta.toml` | Receiver manifest — registered so it can listen |
+| `manifests/agent_alpha.toml` | Sender manifest - lists `agent_beta` as allowed target |
+| `manifests/agent_beta.toml` | Receiver manifest - registered so it can listen |
 
 ## IPC Firewall in Action
 

@@ -115,7 +115,7 @@ pub trait InferenceDriver: Send + Sync {
 - `generate_text` must stream tokens through the `tx: UnboundedSender<String>` channel
 - `generate_embeddings` must return one `Vec<f32>` per input string
 - Use `DriverError` for all error reporting (not panics)
-- The trait requires `Send + Sync` — the driver is shared across async tasks via `Arc`
+- The trait requires `Send + Sync` - the driver is shared across async tasks via `Arc`
 
 ---
 
@@ -179,7 +179,7 @@ The PII redactor uses `OnceLock`-cached compiled regex patterns. Adding a new pa
 
 ### Guidelines
 
-- Use `OnceLock` — the regex is compiled once and reused forever
+- Use `OnceLock` - the regex is compiled once and reused forever
 - Place the `static` declaration next to the existing `EMAIL_REGEX` and `CREDIT_CARD_REGEX`
 - Test edge cases: international formats, separators, partial matches
 
@@ -217,7 +217,7 @@ pub fn check(prompt: &str) -> Result<(), FirewallError> {
 
 - Combine multiple `contains()` checks to reduce false positives (e.g., `"ignore" + "previous"` instead of just `"ignore"`)
 - Test against legitimate user prompts to avoid over-blocking
-- Open an Issue first if your rule is complex — we'll design it together
+- Open an Issue first if your rule is complex - we'll design it together
 
 ---
 
@@ -233,7 +233,7 @@ pub fn check(prompt: &str) -> Result<(), FirewallError> {
    ```
 4. **Commit:** `git commit -m 'feat: describe your change'`
 5. **Push:** `git push origin feat/your-feature`
-6. **Open a PR** — we review actively
+6. **Open a PR** - we review actively
 
 Read [CONTRIBUTING.md](../CONTRIBUTING.md) for the full code of conduct.
 

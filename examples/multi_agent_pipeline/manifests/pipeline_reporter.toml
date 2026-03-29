@@ -1,5 +1,5 @@
 app_id = "pipeline_reporter"
-description = "Pipeline Stage 3 — Generates final reports from analysis"
+description = "Pipeline Stage 3 - Generates final reports from analysis"
 version = "1.0.0"
 
 [privacy]

@@ -1,6 +1,6 @@
 # Native Candle Engine
 
-> Pure-Rust GGUF inference — zero external dependencies.
+> Pure-Rust GGUF inference - zero external dependencies.
 
 **Source:** [`ore-core/src/native/`](../../ore-core/src/native/)
 
@@ -8,7 +8,7 @@
 
 ## Overview
 
-The Native Candle Engine is ORE's built-in inference backend, powered by Hugging Face's [Candle](https://github.com/huggingface/candle) framework. It runs quantized GGUF models directly on CPU, CUDA, or Metal — no Python, no daemon, no external runtime.
+The Native Candle Engine is ORE's built-in inference backend, powered by Hugging Face's [Candle](https://github.com/huggingface/candle) framework. It runs quantized GGUF models directly on CPU, CUDA, or Metal - no Python, no daemon, no external runtime.
 
 ```
 ore-core/src/native/
@@ -18,7 +18,8 @@ ore-core/src/native/
 └── models/
     ├── llama.rs          Llama family model loader
     ├── qwen.rs           Qwen2 family model loader
-    └── bert.rs           BERT embedder (Safetensors, mean pooling, L2 norm)
+    ├── bert.rs           BERT embedder (all-MiniLM)
+    └── nomic.rs          Nomic v1.5 embedder (NomicBertModel with custom RoPE/SwiGLU)
 ```
 
 ---
@@ -41,10 +42,10 @@ The selected `candle_core::Device` is passed to all model loaders. No manual con
 
 When an inference request arrives and the model isn't loaded:
 
-1. **Locate the model** — Searches `models/<model_name>/` for `.gguf` files
-2. **Read GGUF metadata** — Extracts architecture type from `general.architecture` field
-3. **Route to loader** — Dispatches to Llama or Qwen2 loader based on architecture
-4. **Store in engine** — The loaded model is held in memory as an `ActiveEngine` until evicted
+1. **Locate the model** - Searches `models/<model_name>/` for `.gguf` files
+2. **Read GGUF metadata** - Extracts architecture type from `general.architecture` field
+3. **Route to loader** - Dispatches to Llama or Qwen2 loader based on architecture
+4. **Store in engine** - The loaded model is held in memory as an `ActiveEngine` until evicted
 
 ### `OreEngine` Enum
 
@@ -81,7 +82,7 @@ Tier 3: Extract from GGUF metadata
 
 Source: [`ore-core/src/native/gguf_tokenizer.rs`](../../ore-core/src/native/gguf_tokenizer.rs)
 
-Some GGUF files embed tokenizer data in their metadata. The engine extracts this data, constructs a tokenizer JSON, and **caches it to disk** so subsequent loads skip the extraction. This is a JIT (just-in-time) caching strategy — the first load is slow, every load after is instant.
+Some GGUF files embed tokenizer data in their metadata. The engine extracts this data, constructs a tokenizer JSON, and **caches it to disk** so subsequent loads skip the extraction. This is a JIT (just-in-time) caching strategy - the first load is slow, every load after is instant.
 
 ---
 
@@ -102,40 +103,56 @@ Handler receives via rx
 Streamed to client as text/event-stream
 ```
 
-This enables real-time streaming — the client sees tokens as they're generated, not all at once after completion.
+This enables real-time streaming - the client sees tokens as they're generated, not all at once after completion.
 
 ---
 
-## Native BERT Embedder
+## Native System Embedders
 
-**Source:** [`ore-core/src/native/models/bert.rs`](../../ore-core/src/native/models/bert.rs)
+**Source:** [`ore-core/src/native/models/bert.rs`](../../ore-core/src/native/models/bert.rs) | [`ore-core/src/native/models/nomic.rs`](../../ore-core/src/native/models/nomic.rs)
 
-A built-in `SystemEmbedder` that generates embedding vectors using BERT-architecture models loaded from Safetensors.
+The kernel includes a built-in `SystemEmbedder` abstraction that generates vector embeddings using Safetensor models. Two architectures are supported:
+
+1. **BERT (`all-MiniLM-L6-v2`)** - The lightweight, ultra-fast default. (Models up to 90MB)
+2. **Nomic (`nomic-embed-text-v1.5`)** - High accuracy, custom RoPE/SwiGLU architecture. (Models up to 500MB+)
 
 ### Architecture
 
 ```
-Input Text → Tokenize → BERT Forward Pass → Hidden States
+Input Text → Tokenize → Model Forward Pass → Hidden States
      → Masked Mean Pooling → L2 Normalization → Embedding Vector
 ```
 
 ### Key Details
 
 - **Model format:** Safetensors (full-precision weights)
-- **Default model:** `all-MiniLM-L6-v2` (pulled via `ore pull system-embedder`)
-- **Pooling:** Masked mean pooling — averages hidden states across non-padding tokens
-- **Normalization:** L2 normalization to unit vectors for cosine similarity
-- **Memory:** Zero-RAM idle design — when the embedding thread completes, Rust's ownership model automatically drops the model and frees all allocated memory
+- **Pooling:** Masked mean pooling - averages hidden states across non-padding tokens.
+- **Normalization:** Vectors are immediately L2 normalized to unit lengths so the Semantic Bus can use cheap arithmetic dot-products during search.
+- **Memory:** Zero-RAM idle design. When the embedding thread completes, Rust's ownership model drops the model and frees all allocated memory.
+
+### The `embedder_lock` (Concurrency Safety)
+
+Because embedder models can require upwards of 500MB of RAM/VRAM to load, parallel Semantic Bus API calls (`POST /ipc/share` or `POST /ipc/search`) could accidentally load the model 10 times simultaneously, blowing past available hardware limits in an Out-Of-Memory (OOM) crash.
+
+To prevent this, the server handler layer wraps the embedding generation in a strict `Arc<Mutex<()>>` `embedder_lock`.
+
+```rust
+let _embedder_guard = state.embedder_lock.lock().await;
+// Load model -> Generate -> Drop model
+```
+
+This enforces serialization: only **one thread** is allowed to instantiate the embedder weights into memory at a time. Other concurrent agent requests wait safely in an async queue.
 
 ### Zero-RAM Idle Design
 
-The BERT model is loaded, used, and dropped within a single function scope. Rust's ownership semantics guarantee that when the embedding computation finishes:
+The embedder model is loaded, used, and dropped within a single function scope. When the computation finishes:
 
-1. The model weights are dropped
-2. All intermediate tensors are freed
-3. RAM returns to 0MB idle
+1. The `_embedder_guard` unlocks (allowing the next request to proceed).
+2. The model weights are dropped.
+3. All intermediate tensors are freed.
+4. RAM instantly returns to 0MB idle.
 
-No manual memory management. No garbage collector. The type system enforces it.
+No manual memory management. No garbage collector. The Rust type system enforces it.
 
 ---
 

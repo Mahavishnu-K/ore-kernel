@@ -1,5 +1,5 @@
 """
-multi_agent_pipeline/researcher.py — Stage 1: Knowledge Gathering.
+multi_agent_pipeline/researcher.py - Stage 1: Knowledge Gathering.
 
 Collects raw knowledge about a topic and pushes it into the
 'pipeline_data' semantic pipe for downstream agents.
@@ -40,7 +40,7 @@ security vulnerabilities.
 
 Security in WebAssembly is achieved through several mechanisms. Code runs in a sandboxed
 environment with no direct access to the host system. Memory access is bounds-checked.
-There are no ambient permissions — all system interactions must go through explicitly
+There are no ambient permissions - all system interactions must go through explicitly
 imported host functions. This makes WebAssembly suitable for running untrusted code safely.
 The capability-based security model means programs can only access resources that are
 explicitly granted to them through the import mechanism.
@@ -70,7 +70,7 @@ the runtime is provided by third-party crates, with Tokio being the most widely 
 The Future trait in Rust is a zero-cost abstraction. A Future represents a value that may
 not be available yet. The trait has a single method called poll that returns either
 Poll::Ready with the final value or Poll::Pending to indicate the value is not yet available.
-Futures in Rust are lazy — they do nothing until polled. This is different from JavaScript
+Futures in Rust are lazy - they do nothing until polled. This is different from JavaScript
 Promises which start executing immediately.
 
 Tokio is a multi-threaded async runtime for Rust. It provides an event loop, I/O drivers
@@ -85,7 +85,7 @@ multiple consumer), mpsc channels (multiple producer, single consumer), and ones
 
 The async/await syntax in Rust desugars into state machines at compile time. Each .await
 point becomes a state in the generated state machine. This means async Rust has zero
-allocation overhead for the state machine itself — the compiler generates exactly the code
+allocation overhead for the state machine itself - the compiler generates exactly the code
 needed. The downside is that async functions cannot be recursive without boxing.
 
 Structured concurrency in Tokio is achieved through JoinHandle and JoinSet. When you
@@ -114,7 +114,7 @@ def main():
 
     print()
     print("╔" + "═" * 58 + "╗")
-    print("║" + "  PIPELINE STAGE 1 — RESEARCHER".center(58) + "║")
+    print("║" + "  PIPELINE STAGE 1 - RESEARCHER".center(58) + "║")
     print("╚" + "═" * 58 + "╝")
     print()
 

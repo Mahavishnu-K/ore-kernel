@@ -12,8 +12,8 @@ ORE's IPC layer has three components:
 
 | Component | Purpose | Data Structure |
 |---|---|---|
-| **Message Bus** | Real-time agent-to-agent messaging | `DashMap<String, broadcast::Sender>` |
-| **Semantic Bus** | In-memory vector database for shared knowledge | `DashMap<String, Vec<MemoryChunk>>` |
+| **Message Bus** | Real-time agent-to-agent messaging | `DashMap<String, (mpsc::Tx, Mutex<mpsc::Rx>)>` |
+| **Semantic Bus** | In-memory vector database for shared knowledge | `DashMap<String, VecDeque<Arc<MemoryChunk>>>` |
 | **Rate Limiter** | Per-agent token quota enforcement | `DashMap<String, (u32, Instant)>` |
 
 All three use `DashMap` for lock-free concurrent access across async tasks.
@@ -24,7 +24,7 @@ All three use `DashMap` for lock-free concurrent access across async tasks.
 
 ```rust
 pub struct MessageBus {
-    channel: DashMap<String, broadcast::Sender<AgentMessage>>,
+    channel: DashMap<String, (mpsc::UnboundedSender<AgentMessage>, StdMutex<mpsc::UnboundedReceiver<AgentMessage>>)>,
 }
 ```
 
@@ -41,28 +41,31 @@ pub struct AgentMessage {
 
 ### Operations
 
-**Register a listener** — An agent subscribes to its own channel:
+**Read a message** - An agent polls for messages on its own channel:
 
 ```rust
-pub fn register_listener(&self, app_id: &str) -> broadcast::Receiver<AgentMessage> {
-    let sender = self.channel.entry(app_id.to_string()).or_insert_with(|| {
-        let (tx, _) = broadcast::channel(100);
-        tx
-    });
-    sender.subscribe()
+pub fn read_message(&self, app_id: &str) -> Option<AgentMessage> {
+    if let Some(target_channel) = self.channel.get(app_id) {
+        let mut rx = target_channel.1.lock().unwrap();
+        // Non-blocking read
+        if let Ok(msg) = rx.try_recv() {
+            return Some(msg);
+        }
+    }
+    None
 }
 ```
 
-**Send a message** — Agent A sends to Agent B's channel:
+**Send a message** - Agent A sends to Agent B's channel:
 
 ```rust
 pub fn send_message(&self, msg: AgentMessage) -> Result<(), String> {
-    if let Some(target_channel) = self.channel.get(&msg.to_app) {
-        let _ = target_channel.send(msg);
-        Ok(())
-    } else {
-        Err(format!("Agent '{}' is not currently listening.", msg.to_app))
-    }
+    let target_channel = self.channel.entry(msg.to_app.clone()).or_insert_with(|| {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (tx, StdMutex::new(rx))
+    });
+
+    target_channel.0.send(msg).map_err(|_| "Failed to deliver message.".to_string())
 }
 ```
 
@@ -85,8 +88,8 @@ An in-memory vector database that enables agents to share knowledge through natu
 
 ```rust
 pub struct SemanticBus {
-    memory_pipes: DashMap<String, Vec<MemoryChunk>>,    // Named data pipes
-    embedding_cache: DashMap<u64, (Vec<f32>, u64)>,     // Hash → (vector, timestamp)
+    memory_pipes: DashMap<String, VecDeque<Arc<MemoryChunk>>>,    // Named data pipes
+    embedding_cache: DashMap<u64, (Arc<Vec<f32>>, u64)>,          // Hash → (vector, timestamp)
     cache_ttl_secs: u64,
     pipe_ttl_secs: u64,
 }
@@ -96,8 +99,8 @@ pub struct SemanticBus {
 
 ```rust
 pub struct MemoryChunk {
-    pub text: String,           // Original text
-    pub vector: Vec<f32>,       // Embedding vector
+    pub text: Arc<String>,      // Original text
+    pub vector: Arc<Vec<f32>>,  // Pre-normalized embedding vector
     pub source_app: String,     // Which agent wrote this
     pub timestamp: u64,         // Unix timestamp (epoch seconds)
 }
@@ -110,7 +113,7 @@ pub fn write_chunk(&self, pipe_name: &str, text: String, vector: Vec<f32>, sourc
     // 1. Cache the embedding (hash → vector) for deduplication
     let hash = Self::hash_text(&text);
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    self.embedding_cache.insert(hash, (vector.clone(), timestamp));
+    self.embedding_cache.insert(hash, (Arc::new(vector.clone()), timestamp));
 
     // 2. Append the chunk to the named pipe
     let mut pipe = self.memory_pipes.entry(pipe_name.to_string()).or_default();
@@ -138,7 +141,7 @@ pub fn search_pipe(
     query_vector: &[f32],
     top_k: usize,
     filter_app: Option<&str>,
-) -> Vec<String>
+) -> Vec<(f32, Arc<MemoryChunk>)>
 ```
 
 The search algorithm:
@@ -146,20 +149,18 @@ The search algorithm:
 1. **Iterate** all chunks in the specified pipe
 2. **Filter** by `source_app` (if `filter_app` is provided)
 3. **Score** each chunk:
-   - **Cosine similarity** between the query vector and chunk vector
-   - **Time decay** — Older memories lose 1% relevance per hour (clamped at 50% minimum): `decay = (1.0 - hours_old * 0.01).clamp(0.5, 1.0)`
-   - **Final score** = `cosine_similarity × decay_factor`
-4. **Sort** descending by final score
-5. **Return** top-K text chunks
+   - **Fast Dot Product** between the query vector and chunk vector (since vectors are pre-normalized)
+   - **Time decay** - Older memories lose 1% relevance per hour (clamped at 50% minimum): `decay = (1.0 - hours_old * 0.01).clamp(0.5, 1.0)`
+   - **Final score** = `dot_product × decay_factor`
+4. **BinaryHeap (Top-K)** - Push into a max-heap of size K (`O(log K)` complexity) instead of sorting the whole pipe `O(N log N)`.
+5. **Return** top-K chunks sorted by score.
 
-### Cosine Similarity
+### Fast Dot Product (Normalized Cosine Similarity)
 
 ```rust
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 { 0.0 } else { dot / (norm_a * norm_b) }
+fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() { return 0.0; }
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 ```
 
@@ -168,13 +169,17 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 The cache maps `hash(text) → (embedding_vector, timestamp)`:
 
 ```rust
-pub fn get_cached_embedding(&self, text: &str) -> Option<Vec<f32>> {
+pub fn get_cached_embedding(&self, text: &str) -> Option<Arc<Vec<f32>>> {
     let hash = Self::hash_text(text);
-    self.embedding_cache.get(&hash).map(|v| v.0.clone())
+    if let Some(entry) = self.embedding_cache.get(&hash) {
+        // ... dynamically checks TTL
+        return Some(entry.0.clone());
+    }
+    None
 }
 ```
 
-If the same text is written twice, the embedding is served from cache instead of re-invoking the embedder. The hash uses Rust's `DefaultHasher` for speed.
+If the same text is written twice, the embedding is served from cache instead of re-invoking the embedder. For pure querying (which shouldn't be added to a pipe), the handlers call `cache_only()` to ensure the generated embedding query is cached for speed without adding it to the readable `VecDeque` memory space.
 
 ### Pipe Permissions
 
@@ -195,12 +200,12 @@ The kernel runs a background task that wakes every hour and sweeps stale data:
 
 ```rust
 pub fn run_garbage_collection(&self) {
-    // 1. Sweep the embedding cache — evict entries older than cache_ttl_secs
+    // 1. Sweep the embedding cache - evict entries older than cache_ttl_secs
     self.embedding_cache.retain(|_, (_, timestamp)| {
         current_time.saturating_sub(*timestamp) < self.cache_ttl_secs
     });
 
-    // 2. Sweep each pipe — evict chunks older than pipe_ttl_secs
+    // 2. Sweep each pipe - evict chunks older than pipe_ttl_secs
     for mut pipe_ref in self.memory_pipes.iter_mut() {
         pipe_contents.retain(|chunk| {
             current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
@@ -260,10 +265,11 @@ The quota comes from the agent's manifest: `[resources].max_tokens_per_minute`.
 
 ## Design Decisions
 
-- **`DashMap` everywhere** — All three components need concurrent access from multiple async tasks. `DashMap` provides lock-free read/write without wrapping everything in `Arc<Mutex<HashMap>>`, reducing contention.
-- **`broadcast` not `mpsc`** — The Message Bus uses `broadcast` so multiple listeners can subscribe to the same channel. This enables future multi-consumer patterns (e.g., logging agents observing conversations).
-- **Time decay, not FIFO** — Search results favor recent memories with a 1%/hour decay. This naturally surfaces fresh knowledge without explicit "forget" operations, while clamping at 50% ensures old memories aren't completely lost.
-- **Hash-based embedding cache** — Uses `DefaultHasher` (not cryptographic) for speed. The cache is a performance optimization, not a security boundary — hash collisions would cause a cache hit on different text, which is harmless.
+- **`DashMap` everywhere** - All three components need concurrent access from multiple async tasks. `DashMap` provides lock-free read/write without wrapping everything in `Arc<Mutex<HashMap>>`, reducing contention.
+- **Vectors are Zero-Copied** - Using `Arc<Vec<f32>>` and `Arc<MemoryChunk>` ensures that large knowledge documents don't duplicate memory during pipe transitions and memory queries. 
+- **Time decay, not FIFO** - Search results favor recent memories with a 1%/hour decay. This naturally surfaces fresh knowledge without explicit "forget" operations, while clamping at 50% ensures old memories aren't completely lost.
+- **Fast Dot-Product replacing Cosine Similarity** - By strictly normalizing embed tensors at insertion point, the expensive search-time `sqrt()` normalization is removed, resulting in purely arithmetic inner `dot_product` mappings. Max-heap (`BinaryHeap`) guarantees immediate O(log K) extraction.
+- **`mpsc` instead of `broadcast`** - The Message Bus transitioned to `mpsc::unbounded_channel` to allow agent-only non-blocking delivery avoiding broadcast lag.
 
 ---
 

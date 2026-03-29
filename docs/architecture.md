@@ -197,15 +197,15 @@ ore-system/
 
 ## Design Principles
 
-1. **Security First** — Every prompt is firewalled. Every request is authenticated. Every agent is sandboxed by its manifest. The kernel assumes agents are adversarial.
+1. **Security First** - Every prompt is firewalled. Every request is authenticated. Every agent is sandboxed by its manifest. The kernel assumes agents are adversarial.
 
-2. **Zero-Copy Scheduling** — The GPU scheduler detects when the requested model is already loaded (hot-swap) and shares the instance instead of reloading. RAII-based `GpuLease` ensures the semaphore is always released, even on panics.
+2. **Zero-Copy Scheduling** - The GPU scheduler detects when the requested model is already loaded (hot-swap) and shares the instance instead of reloading. RAII-based `GpuLease` ensures the semaphore is always released, even on panics.
 
-3. **OS-Style Memory Management** — Idle agent context is paged to SSD (`swap/` directory) and restored on demand, just like an OS page file. The `SemanticBus` runs hourly garbage collection to evict stale embeddings and pipe data.
+3. **OS-Style Memory Management** - Idle agent context is paged to SSD (`swap/` directory) and restored on demand, just like an OS page file. The `SemanticBus` runs hourly garbage collection to evict stale embeddings and pipe data.
 
-4. **Driver Abstraction** — The `InferenceDriver` trait decouples all kernel logic from the physical inference engine. Swap between Native Candle and Ollama with a single config change. Add new backends by implementing 9 trait methods.
+4. **Driver Abstraction** - The `InferenceDriver` trait decouples all kernel logic from the physical inference engine. Swap between Native Candle and Ollama with a single config change. Add new backends by implementing 9 trait methods.
 
-5. **Manifest-Driven Permissions** — Every agent declares its permissions in a TOML manifest. The kernel enforces these at the syscall level — not in the application. No manifest = no access.
+5. **Manifest-Driven Permissions** - Every agent declares its permissions in a TOML manifest. The kernel enforces these at the syscall level - not in the application. No manifest = no access.
 
 ---
 

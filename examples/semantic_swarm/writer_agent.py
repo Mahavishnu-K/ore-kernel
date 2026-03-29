@@ -1,5 +1,5 @@
 """
-semantic_swarm/writer_agent.py — The knowledge consumer.
+semantic_swarm/writer_agent.py - The knowledge consumer.
 
 This agent searches ORE's Semantic Bus for relevant context,
 then asks the LLM to write a response grounded in that knowledge.

@@ -1,14 +1,14 @@
-# 06 — Multi-Agent Pipeline
+# 06 - Multi-Agent Pipeline
 
-> The full swarm showcase. Three agents chained together via the Semantic Bus — researcher → analyst → reporter.
+> The full swarm showcase. Three agents chained together via the Semantic Bus - researcher → analyst → reporter.
 
 ## What It Does
 
 A three-stage AI pipeline where each agent has a specialized role:
 
-1. **Researcher** (`researcher.py`) — Gathers raw knowledge about a topic and pushes it to the `pipeline_data` semantic pipe
-2. **Analyst** (`analyst.py`) — Searches the `pipeline_data` pipe, asks the LLM to extract key insights, and pushes the analysis to the `pipeline_analysis` pipe
-3. **Reporter** (`reporter.py`) — Searches the `pipeline_analysis` pipe and generates a final executive summary
+1. **Researcher** (`researcher.py`) - Gathers raw knowledge about a topic and pushes it to the `pipeline_data` semantic pipe
+2. **Analyst** (`analyst.py`) - Searches the `pipeline_data` pipe, asks the LLM to extract key insights, and pushes the analysis to the `pipeline_analysis` pipe
+3. **Reporter** (`reporter.py`) - Searches the `pipeline_analysis` pipe and generates a final executive summary
 
 Each agent only has access to the pipes it needs. The researcher can't read the analysis. The reporter can't write raw data. This is **manifest-enforced separation of concerns**.
 
@@ -56,9 +56,9 @@ Each agent has carefully scoped pipe access:
 
 | Agent | Read Pipes | Write Pipes |
 |---|---|---|
-| `pipeline_researcher` | — | `pipeline_data` |
+| `pipeline_researcher` | - | `pipeline_data` |
 | `pipeline_analyst` | `pipeline_data` | `pipeline_analysis` |
-| `pipeline_reporter` | `pipeline_analysis` | — |
+| `pipeline_reporter` | `pipeline_analysis` | - |
 
 The researcher **cannot** read analysis results. The reporter **cannot** inject raw data. ORE enforces this at the kernel level.
 
@@ -77,6 +77,6 @@ The researcher **cannot** read analysis results. The reporter **cannot** inject 
 
 This demonstrates three ORE differentiators simultaneously:
 
-1. **Built-in vector memory** — No Pinecone, no Chroma, no Weaviate
-2. **Manifest-enforced data isolation** — Agents can only touch their designated pipes
-3. **Agent chaining** — Complex pipelines from simple Python scripts
+1. **Built-in vector memory** - No Pinecone, no Chroma, no Weaviate
+2. **Manifest-enforced data isolation** - Agents can only touch their designated pipes
+3. **Agent chaining** - Complex pipelines from simple Python scripts

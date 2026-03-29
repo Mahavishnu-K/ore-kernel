@@ -1,5 +1,5 @@
 app_id = "pipeline_researcher"
-description = "Pipeline Stage 1 — Gathers raw knowledge"
+description = "Pipeline Stage 1 - Gathers raw knowledge"
 version = "1.0.0"
 
 [privacy]

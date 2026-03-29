@@ -15,11 +15,11 @@
 
 Each document follows the same structure:
 
-1. **What it does** — One-paragraph overview
-2. **Data Structures** — The key structs and enums
-3. **How it works** — Step-by-step code walkthrough
-4. **Design decisions** — Why it was built this way
-5. **Extension points** — How to add to it
+1. **What it does** - One-paragraph overview
+2. **Data Structures** - The key structs and enums
+3. **How it works** - Step-by-step code walkthrough
+4. **Design decisions** - Why it was built this way
+5. **Extension points** - How to add to it
 
 ---
 

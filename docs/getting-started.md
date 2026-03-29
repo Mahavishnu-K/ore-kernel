@@ -28,13 +28,17 @@ Run the interactive setup wizard to choose your inference engine and configure m
 ore init
 ```
 
-```
+```text
 ==================================================
  ORE KERNEL :: SYSTEM INITIALIZATION
 ==================================================
 > Select your primary AI Execution Engine
   Ollama (Background daemon, easiest setup)
   Native (Bare-metal Rust execution, maximum control)
+
+> Select your Semantic Bus Embedder
+  all-minilm (Fast & Lightweight, 90MB - Best for laptops)
+  system-embedder (Nomic v1.5, High Accuracy, 500MB - Best for desktops)
 
 >>> CONFIGURING: RAM GARBAGE COLLECTION (GC)
     (How long should the OS keep idle Agent data in RAM?)
@@ -47,7 +51,7 @@ This generates your `ore.toml` configuration file. See [Configuration Reference]
 ## 3. Boot the Kernel Daemon
 
 ```bash
-# Terminal 1 — start the daemon
+# Terminal 1 - start the daemon
 cargo run -p ore-server
 ```
 
@@ -65,7 +69,7 @@ Expected output:
 Listening on http://127.0.0.1:3000
 ```
 
-> **⚡ Performance Tip:** Use `cargo run --release -p ore-server` for production workloads. The release profile enables `opt-level = 3`, LTO, and single codegen unit — making Native Candle inference **5–10x faster** than debug builds.
+> **⚡ Performance Tip:** Use `cargo run --release -p ore-server` for production workloads. The release profile enables `opt-level = 3`, LTO, and single codegen unit - making Native Candle inference **5–10x faster** than debug builds.
 
 ## 4. Download Models (Native Engine)
 
@@ -111,11 +115,11 @@ ore ls --agents     # All registered agents + security status
 
 ## What's Next?
 
-- **[Architecture](./architecture.md)** — Understand the full request lifecycle and how the subsystems connect
-- **[CLI Reference](./cli-reference.md)** — Every command with examples
-- **[API Reference](./api-reference.md)** — Build your own client against the HTTP API
-- **[Security Model](./security-model.md)** — How ORE protects you from your own agents
-- **[Kernel Internals](./kernel-internals/)** — Deep-dive into each subsystem
+- **[Architecture](./architecture.md)** - Understand the full request lifecycle and how the subsystems connect
+- **[CLI Reference](./cli-reference.md)** - Every command with examples
+- **[API Reference](./api-reference.md)** - Build your own client against the HTTP API
+- **[Security Model](./security-model.md)** - How ORE protects you from your own agents
+- **[Kernel Internals](./kernel-internals/)** - Deep-dive into each subsystem
 
 ---
 

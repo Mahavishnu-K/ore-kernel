@@ -5,10 +5,10 @@
 
 ## Prerequisites
 
-1. **ORE Kernel running** — `cargo run --release -p ore-server` in a separate terminal
+1. **ORE Kernel running** - `cargo run --release -p ore-server` in a separate terminal
 2. **Python 3.8+** with `requests` installed: `pip install requests`
-3. **A model pulled** — `ore pull llama3.2:1b` (or `qwen2.5:0.5b`)
-4. **System embedder** (for IPC examples) — `ore pull system-embedder`
+3. **A model pulled** - `ore pull llama3.2:1b` (or `qwen2.5:0.5b`)
+4. **System embedder** (for IPC examples) - `ore pull system-embedder`
 
 ## Examples
 
@@ -34,7 +34,7 @@ python bot.py
 
 ## Shared Utility
 
-All examples import [`ore_client.py`](./ore_client.py) — a lightweight Python wrapper around ORE's HTTP API. It handles token authentication, error formatting, and streaming automatically.
+All examples import [`ore_client.py`](./ore_client.py) - a lightweight Python wrapper around ORE's HTTP API. It handles token authentication, error formatting, and streaming automatically.
 
 ## Manifest Installation
 

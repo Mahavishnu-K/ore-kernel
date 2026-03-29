@@ -43,9 +43,9 @@ It sits between your user-facing applications (OpenClaw, AutoGPT, custom termina
 | **Shared Memory** | Agents duplicate context independently | Semantic Bus with cosine similarity vector search |
 | **Authentication** | Open API, anyone can call it | Token-based auth middleware on every request |
 | **Rate Limiting** | Agents can spam inference indefinitely | Per-agent token rate limiting enforced by manifest |
-| **Native Inference** | Requires external runtime (Ollama, etc.) | Built-in GGUF execution via Candle — zero dependencies |
+| **Native Inference** | Requires external runtime (Ollama, etc.) | Built-in GGUF execution via Candle - zero dependencies |
 | **Context Persistence** | Agent memory lost on restart | SSD Pager freezes/restores chat history automatically |
-| **Native Embeddings** | Requires external embedding service | Built-in BERT embedder (Safetensors) — zero external dependencies |
+| **Native Embeddings** | Requires external embedding service | Built-in BERT embedder (Safetensors) - zero external dependencies |
 | **Memory Management** | Stale agent data accumulates forever | TTL-based garbage collection with configurable sweep intervals |
 
 ---
@@ -116,7 +116,7 @@ A bare-metal inference engine powered by Hugging Face's [Candle](https://github.
 - **3-Tier Tokenizer Resolution** - Searches for a local model-specific tokenizer → falls back to the global `tokenizers/` directory → extracts directly from GGUF metadata as a last resort (JIT-cached to disk for future loads).
 - **Hardware Auto-Detection** - Probes for CUDA, Metal, and CPU at boot and selects the optimal compute device.
 - **Streaming Token Generation** - Generates tokens one-at-a-time via `tokio::sync::mpsc`, enabling real-time streaming to the CLI.
-- **Native BERT Embedder** - A built-in `SystemEmbedder` (`ore-core/src/native/models/bert.rs`) that loads BERT-architecture models from Safetensors for embedding generation. Implements masked mean pooling and L2 normalization entirely in Rust. The embedder is memory-safe by design — when the embedding thread completes, Rust's ownership model automatically drops the model and frees all RAM to 0MB idle.
+- **Native BERT Embedder** - A built-in `SystemEmbedder` (`ore-core/src/native/models/bert.rs`) that loads BERT-architecture models from Safetensors for embedding generation. Implements masked mean pooling and L2 normalization entirely in Rust. The embedder is memory-safe by design - when the embedding thread completes, Rust's ownership model automatically drops the model and frees all RAM to 0MB idle.
 
 **SSD Pager** (`ore-core/src/swap.rs`)
 An OS-style page file system for agent conversation history:
@@ -133,7 +133,7 @@ A trait-based driver system (`InferenceDriver`) that decouples application logic
 - **`OllamaDriver`** (`ore-core/src/external/ollama.rs`) - HTTP proxy to Ollama with health checks, model listing, VRAM process monitoring, inference generation, model lifecycle management, and embedding generation via `/api/embed`.
 - **`NativeDriver`** (`ore-core/src/native/mod.rs`) - Pure-Rust Candle-based inference with GGUF model loading, streaming generation, hardware auto-detection, and native BERT embeddings via Safetensors.
 
-Swap engines or add new backends (vLLM, LM Studio, llamafile) by implementing the `InferenceDriver` trait — zero app code changes required.
+Swap engines or add new backends (vLLM, LM Studio, llamafile) by implementing the `InferenceDriver` trait - zero app code changes required.
 
 **IPC & Semantic Memory** (`ore-core/src/ipc.rs`)
 A dual-layer inter-process communication system for agent collaboration:
@@ -357,7 +357,7 @@ cargo run -p ore-server
 
 > [!IMPORTANT]
 > **Use `cargo run --release -p ore-server` for maximum speed in LLM execution.**
-> The release build enables aggressive compiler optimizations (`opt-level = 3`, LTO, single codegen unit) that dramatically improve inference throughput — especially critical for the Native Candle engine where token generation runs entirely in Rust. Debug builds can be **5–10x slower** for inference workloads.
+> The release build enables aggressive compiler optimizations (`opt-level = 3`, LTO, single codegen unit) that dramatically improve inference throughput - especially critical for the Native Candle engine where token generation runs entirely in Rust. Debug builds can be **5–10x slower** for inference workloads.
 
 ### Download Models (Native Engine)
 
@@ -597,7 +597,7 @@ v1.0  ░░░░░░░░░░░░░░░░░░░░  [PLAN]  ORE 
 ```
 
 **v0.3 - Memory Management & Native Embeddings** ✅
-TTL-based garbage collection for embedding cache and semantic pipes. Native BERT embedder (`SystemEmbedder`) via Safetensors with masked mean pooling and L2 normalization — zero external dependencies for embeddings. Server restructured into modular handler architecture. Embedding cache with hash-based deduplication. Time-decay search scoring. Configurable sliding window chunking. `ore init` now configures memory GC TTLs.
+TTL-based garbage collection for embedding cache and semantic pipes. Native BERT embedder (`SystemEmbedder`) via Safetensors with masked mean pooling and L2 normalization - zero external dependencies for embeddings. Server restructured into modular handler architecture. Embedding cache with hash-based deduplication. Time-decay search scoring. Configurable sliding window chunking. `ore init` now configures memory GC TTLs.
 
 **v0.4 - Semantic File System (SFS)**
 A shared, persistent vector memory space accessible by all registered apps. Agents can read and write embeddings without duplicating context.

@@ -10,7 +10,7 @@
 
 The `Pager` provides an operating system-style page file mechanism for agent conversation context. When an agent finishes an inference request, its chat history is serialized to JSON on the SSD. On the next request, the history is restored from disk, enabling multi-turn conversations across kernel restarts.
 
-This mirrors how an OS pages idle processes to disk — agents that aren't actively running don't consume RAM.
+This mirrors how an OS pages idle processes to disk - agents that aren't actively running don't consume RAM.
 
 ---
 
@@ -113,16 +113,16 @@ Agents must explicitly enable SSD paging in their manifest:
 stateful_paging = true
 ```
 
-When `stateful_paging = false` (default), the handler skips the page-in/page-out calls — the agent starts every request with a clean context.
+When `stateful_paging = false` (default), the handler skips the page-in/page-out calls - the agent starts every request with a clean context.
 
 ---
 
 ## Design Decisions
 
-- **JSON, not binary** — Swap files are human-readable on purpose. This makes debugging agent memory trivial (`cat swap/openclaw.json`) and keeps the format cross-platform.
-- **Synchronous I/O** — The pager uses `std::fs` (sync) rather than `tokio::fs` (async). Swap files are small (kilobytes), and adding async here would complicate the code path for negligible latency savings.
-- **Eager writes** — History is paged out after every response, not batched. This means agent context survives even if the kernel crashes unexpectedly.
-- **No size limits (yet)** — Swap files grow unbounded. Future versions will add a configurable max history depth to prevent disk bloat from long-lived agents.
+- **JSON, not binary** - Swap files are human-readable on purpose. This makes debugging agent memory trivial (`cat swap/openclaw.json`) and keeps the format cross-platform.
+- **Synchronous I/O** - The pager uses `std::fs` (sync) rather than `tokio::fs` (async). Swap files are small (kilobytes), and adding async here would complicate the code path for negligible latency savings.
+- **Eager writes** - History is paged out after every response, not batched. This means agent context survives even if the kernel crashes unexpectedly.
+- **No size limits (yet)** - Swap files grow unbounded. Future versions will add a configurable max history depth to prevent disk bloat from long-lived agents.
 
 ---
 

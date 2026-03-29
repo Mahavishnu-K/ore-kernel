@@ -52,11 +52,11 @@ The CLI reads the token file automatically. External clients must include `Autho
 
 Before any inference or IPC request executes, the handler looks up the calling agent's manifest from the `AppRegistry`:
 
-- **Model access** — Is the requested model in `allowed_models`?
-- **Rate limit** — Has the agent exceeded `max_tokens_per_minute`?
-- **IPC targets** — Is the message target in `allowed_agent_targets`?
-- **Semantic pipes** — Is the pipe in `allowed_semantic_pipes`?
-- **Unregistered apps** — Requests from unknown `app_id` values are rejected
+- **Model access** - Is the requested model in `allowed_models`?
+- **Rate limit** - Has the agent exceeded `max_tokens_per_minute`?
+- **IPC targets** - Is the message target in `allowed_agent_targets`?
+- **Semantic pipes** - Is the pipe in `allowed_semantic_pipes`?
+- **Unregistered apps** - Requests from unknown `app_id` values are rejected
 
 ---
 
@@ -84,7 +84,7 @@ Raw Prompt
              ▼
 ┌─────────────────────────┐
 │ 2. PII REDACTOR         │  Compiled regex patterns
-│    Emails → [REDACTED]  │  (OnceLock cached —
+│    Emails → [REDACTED]  │  (OnceLock cached -
 │    CCs    → [REDACTED]  │   zero recompilation)
 └────────────┬────────────┘
              ▼
@@ -136,13 +136,13 @@ What is 2+2?
 </user_input_a3b8f1c2>
 ```
 
-The tag suffix is derived from a `Uuid::new_v4()` — an attacker cannot guess and pre-close the tag in their input.
+The tag suffix is derived from a `Uuid::new_v4()` - an attacker cannot guess and pre-close the tag in their input.
 
 ---
 
 ### Layer 4: Rate Limiting
 
-**Source:** [`ore-core/src/ipc.rs` — `RateLimiter`](../ore-core/src/ipc.rs)
+**Source:** [`ore-core/src/ipc.rs` - `RateLimiter`](../ore-core/src/ipc.rs)
 
 A `DashMap`-backed per-agent token counter:
 

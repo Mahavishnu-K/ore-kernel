@@ -8,7 +8,7 @@
 
 ## Overview
 
-The `GpuScheduler` is a single-permit semaphore-based mutex that ensures only one inference request accesses the GPU at a time. It tracks VRAM state and uses RAII-based `GpuLease` objects to guarantee automatic cleanup — even on panics.
+The `GpuScheduler` is a single-permit semaphore-based mutex that ensures only one inference request accesses the GPU at a time. It tracks VRAM state and uses RAII-based `GpuLease` objects to guarantee automatic cleanup - even on panics.
 
 ---
 
@@ -37,7 +37,7 @@ pub struct GpuLease {
 }
 ```
 
-When a `GpuLease` goes out of scope, Rust's drop semantics automatically release the semaphore permit. This is the same pattern used by `std::sync::MutexGuard` — the GPU is guaranteed to be unlocked even if the inference task panics.
+When a `GpuLease` goes out of scope, Rust's drop semantics automatically release the semaphore permit. This is the same pattern used by `std::sync::MutexGuard` - the GPU is guaranteed to be unlocked even if the inference task panics.
 
 ---
 
@@ -57,10 +57,10 @@ pub async fn request_gpu(&self, requested_model: &str) -> GpuLease {
     let is_hot_swap = state.active_model.as_ref() == Some(&requested_model.to_string());
 
     if is_hot_swap {
-        // Same model already loaded — share the instance
+        // Same model already loaded - share the instance
         state.active_users += 1;
     } else {
-        // Different model — evict the old one, load the new one
+        // Different model - evict the old one, load the new one
         state.active_model = Some(requested_model.to_string());
         state.active_users = 1;
     }
@@ -109,14 +109,14 @@ Agent A requests "qwen2.5:0.5b"
 
 ### Why a Semaphore Instead of a Mutex?
 
-Tokio's `Semaphore` supports `acquire_owned()`, which returns an `OwnedSemaphorePermit` that can be moved into a struct. A regular `Mutex` would require holding the lock for the entire inference duration — `Semaphore` decouples "right to run" from "data access."
+Tokio's `Semaphore` supports `acquire_owned()`, which returns an `OwnedSemaphorePermit` that can be moved into a struct. A regular `Mutex` would require holding the lock for the entire inference duration - `Semaphore` decouples "right to run" from "data access."
 
 ### Why RAII?
 
 The `GpuLease` struct holds the `OwnedSemaphorePermit`. When the lease drops:
 1. The permit is returned to the semaphore
 2. The next queued `acquire_owned()` call unblocks
-3. This happens automatically — no manual `.release()` calls, no cleanup code, no risk of deadlocks from error paths
+3. This happens automatically - no manual `.release()` calls, no cleanup code, no risk of deadlocks from error paths
 
 ### Why Hot-Swap Detection?
 

@@ -41,4 +41,4 @@ ore-system/
 
 ## Contributing
 
-Read [CONTRIBUTING.md](../CONTRIBUTING.md) for the code of conduct and PR process. Join us on [Discord](https://discord.com/channels/1477053099494342755/1477053558879686737) — we hang out in `#dev-core`.
+Read [CONTRIBUTING.md](../CONTRIBUTING.md) for the code of conduct and PR process. Join us on [Discord](https://discord.com/channels/1477053099494342755/1477053558879686737) - we hang out in `#dev-core`.
