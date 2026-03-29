@@ -646,7 +646,7 @@ Special thanks to:
 Released under the **MIT License** - see [`LICENSE-MIT`](./LICENSE-MIT) for full text.
 
 ```
-Copyright © 2026 Mahavishnu-K
+Copyright © 2026 ORE Contributors
 ```
 
 ---
