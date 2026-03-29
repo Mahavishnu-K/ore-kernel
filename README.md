@@ -591,27 +591,6 @@ All routes are protected by Bearer token authentication middleware.
 
 ---
 
-## Roadmap
-
-```
-v0.1  ████████████████████  [DONE]  Scheduler · PII Redaction · Manifest System
-v0.2  ████████████████████  [DONE]  Native Candle Engine · SSD Pager · HF Model Pulls
-v0.3  ████████████████████  [DONE]  Memory GC · Native Embedder · Server Modularization
-v0.4  ░░░░░░░░░░░░░░░░░░░░  [PLAN]  Semantic File System - shared vector memory
-v1.0  ░░░░░░░░░░░░░░░░░░░░  [PLAN]  ORE Mesh - distributed inference over LAN
-```
-
-**v0.3 - Memory Management & Native Embeddings** ✅
-TTL-based garbage collection for embedding cache and semantic pipes. Native BERT embedder (`SystemEmbedder`) via Safetensors with masked mean pooling and L2 normalization - zero external dependencies for embeddings. Server restructured into modular handler architecture. Embedding cache with hash-based deduplication. Time-decay search scoring. Configurable sliding window chunking. `ore init` now configures memory GC TTLs.
-
-**v0.4 - Semantic File System (SFS)**
-A shared, persistent vector memory space accessible by all registered apps. Agents can read and write embeddings without duplicating context.
-
-**v1.0 - ORE Mesh**
-Distribute inference load across devices on your local network. Offload heavy compute from a laptop to a desktop tower over Wi-Fi. One kernel, many GPUs.
-
----
-
 ## Contributing
 
 ORE is early-stage infrastructure. The best time to shape its design is now.
