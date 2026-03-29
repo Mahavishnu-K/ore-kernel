@@ -40,12 +40,12 @@ It sits between your user-facing applications (OpenClaw, AutoGPT, custom termina
 | **Model Sharing** | Each app downloads its own 4GB weights | Single model instance, shared across apps |
 | **PII Protection** | Raw user data forwarded to model | Automatic regex-based redaction before inference |
 | **Injection Defense** | Prompts pass through unfiltered | Heuristic detection + structural boundary enforcement |
-| **Shared Memory** | Agents duplicate context independently | Semantic Bus with cosine similarity vector search |
+| **Shared Memory** | Agents duplicate context independently | Semantic Bus with fast dot-product vector search |
 | **Authentication** | Open API, anyone can call it | Token-based auth middleware on every request |
 | **Rate Limiting** | Agents can spam inference indefinitely | Per-agent token rate limiting enforced by manifest |
 | **Native Inference** | Requires external runtime (Ollama, etc.) | Built-in GGUF execution via Candle - zero dependencies |
 | **Context Persistence** | Agent memory lost on restart | SSD Pager freezes/restores chat history automatically |
-| **Native Embeddings** | Requires external embedding service | Built-in BERT embedder (Safetensors) - zero external dependencies |
+| **Native Embeddings** | Requires external embedding service | Built-in BERT & Nomic architectures (Safetensors) - zero external dependencies |
 | **Memory Management** | Stale agent data accumulates forever | TTL-based garbage collection with configurable sweep intervals |
 
 ---
@@ -116,7 +116,7 @@ A bare-metal inference engine powered by Hugging Face's [Candle](https://github.
 - **3-Tier Tokenizer Resolution** - Searches for a local model-specific tokenizer → falls back to the global `tokenizers/` directory → extracts directly from GGUF metadata as a last resort (JIT-cached to disk for future loads).
 - **Hardware Auto-Detection** - Probes for CUDA, Metal, and CPU at boot and selects the optimal compute device.
 - **Streaming Token Generation** - Generates tokens one-at-a-time via `tokio::sync::mpsc`, enabling real-time streaming to the CLI.
-- **Native BERT Embedder** - A built-in `SystemEmbedder` (`ore-core/src/native/models/bert.rs`) that loads BERT-architecture models from Safetensors for embedding generation. Implements masked mean pooling and L2 normalization entirely in Rust. The embedder is memory-safe by design - when the embedding thread completes, Rust's ownership model automatically drops the model and frees all RAM to 0MB idle.
+- **Native System Embedders** - A built-in `SystemEmbedder` (`ore-core/src/native/models/bert.rs` and `nomic.rs`) that loads architectures like BERT and Nomic v1.5 from Safetensors for embedding generation. Implements masked mean pooling and L2 normalization entirely in Rust. The embedder is serialized via a strict `embedder_lock` mutex to prevent multi-agent OOM crashes. When the embedding thread completes, Rust's ownership model automatically drops the model and frees all RAM to 0MB idle.
 
 **SSD Pager** (`ore-core/src/swap.rs`)
 An OS-style page file system for agent conversation history:
@@ -137,10 +137,10 @@ Swap engines or add new backends (vLLM, LM Studio, llamafile) by implementing th
 
 **IPC & Semantic Memory** (`ore-core/src/ipc.rs`)
 A dual-layer inter-process communication system for agent collaboration:
-- **Message Bus** - Real-time agent-to-agent messaging using `tokio::sync::broadcast` channels. Agents register listeners and send typed `AgentMessage` payloads, with IPC targets enforced by the manifest.
-- **Semantic Bus** - An in-memory vector database powered by cosine similarity search with intelligent optimizations:
-  - **Embedding Cache** - A hash-based `DashMap` cache that deduplicates embedding computations. Repeated text chunks are served from cache instead of re-invoking the embedder, eliminating redundant CPU/GPU work.
-  - **Sliding Window Chunking** - Configurable word-based chunking with overlap (`chunk_size` and `chunk_overlap` parameters) that maintains context coherence across boundaries.
+- **Message Bus** - Real-time agent-to-agent messaging using `mpsc::unbounded_channel` queues with non-blocking reads. Agents poll for typed `AgentMessage` payloads, with IPC targets enforced by the manifest.
+- **Semantic Bus** - An in-memory vector database powered by fast dot-product similarity search (`O(log K)` extraction) with intelligent optimizations:
+  - **Zero-Copy Embedding Cache** - An `Arc`-backed `DashMap` cache that deduplicates embedding computations. Repeated text chunks are served from cache, eliminating redundant CPU/GPU work without wasting RAM.
+  - **Dynamic Chunking Strategies** - Support for "sliding_window" (with configurable overlap), "sentence_aware", "paragraph", and "exact_match" chunking formats.
   - **Time-Decay Scoring** - Search results factor in recency: older memories lose 1% relevance per hour (clamped at 50% minimum), naturally surfacing fresh knowledge.
   - **Source Filtering** - Queries accept an optional `filter_app` parameter to scope search results to a specific agent's contributions.
   - **TTL-Based Garbage Collection** - The kernel runs an hourly sweep that evicts stale embedding cache entries and expired pipe data based on configurable TTLs (`cache_ttl_hours`, `pipe_ttl_hours` in `ore.toml`). Empty pipes are automatically pruned.
@@ -191,9 +191,9 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
 ║   │  IPC Layer                                   │   ║
-║   │  · Message Bus  (Agent <-> Agent broadcast)  │   ║
-║   │  · Semantic Bus (Vector memory + cosine sim) │   ║
-║   │  · Embedding Cache (Hash-based dedup)        │   ║
+║   │  · Message Bus  (Agent <-> Agent direct msg) │   ║
+║   │  · Semantic Bus (Vector memory + dot prod)   │   ║
+║   │  · Embedding Cache (Zero-Copy Arc)           │   ║
 ║   │  · Memory GC  (Hourly TTL-based sweep)       │   ║
 ║   └──────────────────────────────────────────────┘   ║
 ╚══════════════════════════╤═══════════════════════════╝
@@ -208,7 +208,7 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║     └───────┬───────┘    └───────────────────┘       ║
 ║             │                                        ║
 ║     ┌───────▼───────┐                                ║
-║     │  BERT Embedder│                                ║
+║     │Native Embedder│                                ║
 ║     │ (Safetensors) │                                ║
 ║     │ (Zero-RAM     │                                ║
 ║     │  Idle Design) │                                ║
@@ -246,7 +246,8 @@ ore-system/
 │       └── models/          #       └── Architecture-specific model loaders
 │           ├── llama.rs     #           ├── Llama family loader
 │           ├── qwen.rs      #           ├── Qwen2 family loader
-│           └── bert.rs      #           └── BERT embedder (Safetensors, mean pooling, L2 norm)
+│           ├── bert.rs      #           ├── BERT embedder (all-MiniLM)
+│           └── nomic.rs     #           └── Nomic v1.5 embedder
 ├── ore-server/              # Axum HTTP daemon (modular handler architecture)
 │   ├── main.rs              #   ├── Boot sequence, router setup, GC scheduler
 │   ├── state.rs             #   ├── KernelState + OreConfig (shared app state)
@@ -331,6 +332,10 @@ ore init
 #   Ollama (Background daemon, easiest setup)
 #   Native (Bare-metal Rust execution, maximum control)
 #
+# > Select your Semantic Bus Embedder
+#   all-minilm (Fast & Lightweight, 90MB - Best for laptops)
+#   system-embedder (Nomic v1.5, High Accuracy, 500MB - Best for desktops)
+#
 # >>> CONFIGURING: RAM GARBAGE COLLECTION (GC)
 #     (How long should the OS keep idle Agent data in RAM?)
 # Mathematical Cache TTL in hours [0 = Infinite]: 24
@@ -366,7 +371,7 @@ cargo run -p ore-server
 ore pull qwen2.5:0.5b
 ore pull llama3.2:1b
 
-# Pull the system embedder (BERT Safetensors for Semantic Bus)
+# Pull the system embedder (BERT or Nomic Safetensors for Semantic Bus)
 ore pull system-embedder
 
 # Output includes:
