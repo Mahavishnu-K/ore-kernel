@@ -31,7 +31,7 @@
 
 It sits between your user-facing applications (OpenClaw, AutoGPT, custom terminals) and raw hardware inference engines (Ollama, vLLM, or ORE's own **Native Candle Engine**), providing the critical abstraction layer.
 
-**Multi-agent swarms on consumer hardware?** Yes. ORE doesn't require a data-center GPU to run multiple agents. It time-slices a single GPU across agents using semaphore-based scheduling, shares loaded model weights so two agents using the same model don't consume double the VRAM, and pages idle agent context to the NVMe SSD so only the active agent occupies memory. 10 agents can coexist on an 8GB laptop - ORE handles the orchestration.
+**Multi-agent swarms on consumer hardware?** Yes. ORE doesn't require a data-center GPU to run multiple agents. It time-slices a single GPU across agents using semaphore-based scheduling, shares loaded model weights so two agents using the same model don't consume double the VRAM, and pages idle agent context to the NVMe SSD so only the active agent occupies memory. 10+ agents can coexist on an 8GB laptop - ORE handles the orchestration.
 
 | Capability | Without ORE | With ORE |
 |---|---|---|
