@@ -13,6 +13,8 @@ use engine::ActiveEngine;
 use gguf_tokenizer::TokenizerFromGguf;
 use std::fs;
 use std::fs::File;
+use std::io::Cursor;
+use memmap2::Mmap;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use time::OffsetDateTime;
@@ -59,10 +61,13 @@ impl NativeDriver {
                 model_name
             )));
         }
+        
+        println!("-> [CANDLE] Allocating Virtual Memory Pointer via mmap...");
+        let file = File::open(&gguf_path)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        let mut cursor = Cursor::new(&mmap[..]);
 
-        println!("-> [CANDLE] Reading GGUF Headers...");
-        let mut file = File::open(&gguf_path)?;
-        let model_content = gguf_file::Content::read(&mut file).map_err(E::msg)?;
+        let model_content = gguf_file::Content::read(&mut cursor).map_err(E::msg)?;
 
         let arch_name = match model_content.metadata.get("general.architecture") {
             Some(gguf_file::Value::String(arch)) => arch.clone(),
@@ -136,10 +141,10 @@ impl NativeDriver {
         // architecture router
         let (model, config) = match arch_name.as_str() {
             "llama" => {
-                models::llama::load(model_name, model_content, &mut file, device, &tokenizer)?
+                models::llama::load(model_name, model_content, &mut cursor, device, &tokenizer)?
             }
             "qwen2" => {
-                models::qwen::load(model_name, model_content, &mut file, device, &tokenizer)?
+                models::qwen::load(model_name, model_content, &mut cursor, device, &tokenizer)?
             }
             _ => {
                 return Err(E::msg(format!(
@@ -157,6 +162,7 @@ impl NativeDriver {
             logits_processor,
             model_name: model_name.to_string(),
             config,
+            _mmap: mmap,
         })
     }
 }

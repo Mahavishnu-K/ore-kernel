@@ -33,4 +33,5 @@ pub struct ActiveEngine {
     pub logits_processor: LogitsProcessor,
     pub model_name: String,
     pub config: ModelConfig,
+    pub _mmap: memmap2::Mmap,
 }

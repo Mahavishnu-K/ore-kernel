@@ -122,11 +122,11 @@ pub async fn sys_share_context(
         }
     }
 
-    for (chunk, vector) in cached_chunks {
-        state.semantic_bus.write_chunk(
+    for (chunk, arc_vector) in cached_chunks {
+        state.semantic_bus.write_cached_chunk(
             &payload.target_pipe,
             chunk,
-            vector.to_vec(),
+            arc_vector,
             &manifest.app_id,
         );
     }
@@ -222,7 +222,7 @@ pub async fn sys_search_context(
             }
         };
 
-    let k = payload.top_k.unwrap_or(3);
+    let k = payload.top_k.unwrap_or(5);
     let filter_ref = payload.filter_app.as_deref();
 
     println!(

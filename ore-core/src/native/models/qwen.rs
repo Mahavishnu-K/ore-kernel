@@ -3,17 +3,17 @@ use anyhow::Result;
 use candle_core::Device;
 use candle_core::quantized::gguf_file;
 use candle_transformers::models::quantized_qwen2::ModelWeights as QwenModel;
-use std::fs::File;
+use std::io::{Read, Seek};
 use tokenizers::Tokenizer;
 
-pub fn load(
+pub fn load<R: Read + Seek>(
     model_name: &str,
     model_content: gguf_file::Content,
-    file: &mut File,
+    reader: &mut R,
     device: &Device,
     tokenizer: &Tokenizer,
 ) -> Result<(OreEngine, ModelConfig)> {
-    let m = QwenModel::from_gguf(model_content, file, device)?;
+    let m = QwenModel::from_gguf(model_content, reader, device)?;
 
     let mut stop_tokens = vec![151645, 151643];
     if let Some(id) = tokenizer.token_to_id("<|im_end|>") {

@@ -145,8 +145,8 @@ impl SemanticBus {
         if let Some(entry) = self.embedding_cache.get(&hash) {
             let (vector, timestamp) = entry.value();
 
-            let current_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let current_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
 
@@ -200,7 +200,28 @@ impl SemanticBus {
         pipe.push_back(arc_chunk);
 
         if pipe.len() > 10_000 {
-            pipe.remove(0);
+            pipe.pop_front();
+        }
+    }
+
+    pub fn write_cached_chunk(&self, pipe_name: &str, text: String, arc_vector: Arc<Vec<f32>>, source_app: &str) {
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let arc_text = Arc::new(text);
+        
+        let arc_chunk = Arc::new(MemoryChunk {
+            text: arc_text,
+            vector: arc_vector, // ZERO COPY! We just pass the pointer.
+            source_app: source_app.to_string(),
+            timestamp,
+        });
+
+        // We skip `self.embedding_cache.insert` because it's already in the cache!
+
+        let mut pipe = self.memory_pipes.entry(pipe_name.to_string()).or_default();
+        pipe.push_back(arc_chunk);
+
+        if pipe.len() > 10_000 {
+            pipe.pop_front();
         }
     }
 
@@ -317,8 +338,8 @@ impl SemanticBus {
 
     /// Garbage Collector wipes cached math and unused temporary pipes
     pub fn run_garbage_collection(&self) {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
 

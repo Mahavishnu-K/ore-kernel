@@ -2009,6 +2009,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "dashmap",
+ "memmap2",
  "ore-common",
  "regex",
  "reqwest 0.13.2",
