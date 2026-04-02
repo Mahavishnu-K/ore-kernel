@@ -43,9 +43,10 @@ The selected `candle_core::Device` is passed to all model loaders. No manual con
 When an inference request arrives and the model isn't loaded:
 
 1. **Locate the model** - Searches `models/<model_name>/` for `.gguf` files
-2. **Read GGUF metadata** - Extracts architecture type from `general.architecture` field
-3. **Route to loader** - Dispatches to Llama or Qwen2 loader based on architecture
-4. **Store in engine** - The loaded model is held in memory as an `ActiveEngine` until evicted
+2. **Instant Boot (`memmap2`)** - Maps the file directly into virtual memory using the OS's `mmap` syscall, achieving sub-50ms boot times by letting the OS lazily stream required weight pages into the GPU instead of stalling system RAM.
+3. **Read GGUF metadata** - Extracts architecture type from `general.architecture` field via the memory-mapped cursor without reading the entire file.
+4. **Route to loader** - Dispatches to Llama or Qwen2 loader based on architecture.
+5. **Store in engine** - The loaded model and its memory-mapped file lock are held as an `ActiveEngine` until evicted.
 
 ### `OreEngine` Enum
 

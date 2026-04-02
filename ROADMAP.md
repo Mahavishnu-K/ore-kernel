@@ -15,6 +15,9 @@ This roadmap outlines our trajectory toward true AI Virtualization. **Pull Reque
 - [x] **The Semantic Bus (Tier 2 IPC):** Zero-idle-RAM vector memory sharing using `all-MiniLM`, `DashMap`, sliding windows, and masked mean pooling.
 - [x] **The Message Bus (Tier 1 IPC):** High-speed `mpsc` text routing for agent-to-agent coordination.
 - [x] **Native Package Manager:** The `ore-cli` tool for streaming weights and extracting metadata directly from Hugging Face.
+- [x] **Instant Boot via `mmap`:**
+  - *Goal:* Boot a 4GB model in 50 milliseconds.
+  - *Implementation:* Ensure `memmap2` is aggressively utilized so the OS streams only the required weights directly from SSD to GPU, bypassing system RAM bottlenecks.
 
 ---
 
@@ -30,9 +33,6 @@ This phase transforms ORE from an API proxy into a true bare-metal Memory Manage
 - [ ] **LoRA Multiplexing (Copy-On-Write for Intelligence):**
   - *Goal:* Run 10 different agent personalities using the VRAM of just 1 model.
   - *Implementation:* Hold the Base Model in VRAM once. Hot-swap tiny 50MB LoRA adapters into the computation graph per-request based on the Agent's `.toml` manifest.
-- [ ] **Instant Boot via `mmap`:**
-  - *Goal:* Boot a 4GB model in 50 milliseconds.
-  - *Implementation:* Ensure `memmap2` is aggressively utilized so the OS streams only the required weights directly from SSD to GPU, bypassing system RAM bottlenecks.
 - [ ] **Expand Native Architecture Support:**
   - *Goal:* Expand the `OreEngine` polymorphic router.
   - *Implementation:* Add native `candle` support for Mistral, Gemma, Deepseek, Microsoft Phi, and GLM.

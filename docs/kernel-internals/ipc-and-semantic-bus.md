@@ -117,7 +117,13 @@ pub fn write_chunk(&self, pipe_name: &str, text: String, vector: Vec<f32>, sourc
 
     // 2. Append the chunk to the named pipe
     let mut pipe = self.memory_pipes.entry(pipe_name.to_string()).or_default();
-    pipe.push(MemoryChunk { text, vector, source_app: source_app.to_string(), timestamp });
+    // ... constructs MemoryChunk and pushes to pipe
+}
+
+/// Bypasses cache insertion to directly write an existing cached pointer to a new pipe
+pub fn write_cached_chunk(&self, pipe_name: &str, text: String, arc_vector: Arc<Vec<f32>>, source_app: &str) {
+    // ZERO COPY - We just pass the memory pointer!
+    // ... constructs MemoryChunk using the Arc pointer and pushes to pipe
 }
 ```
 
@@ -179,7 +185,7 @@ pub fn get_cached_embedding(&self, text: &str) -> Option<Arc<Vec<f32>>> {
 }
 ```
 
-If the same text is written twice, the embedding is served from cache instead of re-invoking the embedder. For pure querying (which shouldn't be added to a pipe), the handlers call `cache_only()` to ensure the generated embedding query is cached for speed without adding it to the readable `VecDeque` memory space.
+If the same text is written twice, the embedding is served directly from the cache buffer instead of re-invoking the embedder. Fast IPC caching utilizes `write_cached_chunk()` allowing identical embedding nodes to share the same `Arc<Vec<f32>>` pointer across countless memory chunks without duplicating bytes in RAM. For pure querying (which shouldn't be added to a pipe), the handlers call `cache_only()` to ensure the generated embedding query is cached for speed without adding it to the readable `VecDeque` memory space.
 
 ### Pipe Permissions
 

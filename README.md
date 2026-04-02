@@ -89,6 +89,7 @@ Switch engines with a single config change:
 # ore.toml
 [system]
 engine = "native"   # or "ollama"
+embedder = "system-embedder"
 
 [native]
 default_model = "llama3.2:1b"
@@ -391,6 +392,7 @@ ore status               # Check if the kernel is online
 ore top                  # View kernel telemetry (driver, scheduler, firewall)
 ore ps                   # Show models currently loaded in GPU VRAM
 ore ls                   # List all installed models on disk
+ore ls --models          # Explicitly list all installed models on disk
 ore ls --agents          # List all registered agents with security status
 ore ls --manifests       # View raw permission matrix for all manifests
 ore run <model> <prompt> # Execute a secured inference request (streamed output)
