@@ -83,12 +83,12 @@ Agent A requests "qwen2.5:0.5b"
 ┌──────────────────────────────────────┐
 │ Check GpuState.active_model          │
 │                                      │
-│  "qwen2.5:0.5b" == "qwen2.5:0.5b"? │
+│  "qwen2.5:0.5b" == "qwen2.5:0.5b"?   │
 │                                      │
 │  YES → Hot Swap! Skip reload.        │
 │         active_users += 1            │
 │                                      │
-│  NO  → Context Switch.              │
+│  NO  → Context Switch.               │
 │         Log eviction.                │
 │         active_model = new model     │
 │         active_users = 1             │

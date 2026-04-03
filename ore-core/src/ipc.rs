@@ -210,12 +210,12 @@ impl SemanticBus {
         
         let arc_chunk = Arc::new(MemoryChunk {
             text: arc_text,
-            vector: arc_vector, // ZERO COPY! We just pass the pointer.
+            vector: arc_vector, 
             source_app: source_app.to_string(),
             timestamp,
         });
 
-        // We skip `self.embedding_cache.insert` because it's already in the cache!
+        // We skip `self.embedding_cache.insert` because it's already in the cache
 
         let mut pipe = self.memory_pipes.entry(pipe_name.to_string()).or_default();
         pipe.push_back(arc_chunk);
@@ -225,7 +225,7 @@ impl SemanticBus {
         }
     }
 
-    /// Optimized Similarity: Since vectors are normalized, Cosine Similarity is just a Dot Product!
+    /// Optimized Similarity: Since vectors are normalized, Cosine Similarity is just a Dot Product
     fn dot_product(a: &[f32], b: &[f32]) -> f32 {
         if a.len() != b.len() {
             return 0.0;

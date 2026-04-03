@@ -46,7 +46,7 @@ Applications never talk to the GPU directly. They talk to ORE. ORE enforces the 
 ║   │  · Message Bus  (Agent <-> Agent broadcast)  │   ║
 ║   │  · Semantic Bus (Vector memory + cosine sim) │   ║
 ║   │  · Embedding Cache (Hash-based dedup +       │   ║
-║               Zero-copy pointers)                │   ║
+║   │           Zero-copy pointers)                │   ║
 ║   │  · Memory GC  (Hourly TTL-based sweep)       │   ║
 ║   └──────────────────────────────────────────────┘   ║
 ╚══════════════════════════╤═══════════════════════════╝
