@@ -1,2 +1,8 @@
-/target
-/models
+/target/
+Cargo.lock
+
+*.gguf
+*.safetensors
+
+/models/
+/tokenizers/
