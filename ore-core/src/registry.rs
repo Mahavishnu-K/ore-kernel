@@ -24,6 +24,8 @@ pub struct AppManifest {
     #[serde(default)]
     pub resources: Resources,
     #[serde(default)]
+    pub memory_limits: MemoryLimits,
+    #[serde(default)]
     pub file_system: FileSystem,
     #[serde(default)]
     pub network: Network,
@@ -44,8 +46,28 @@ pub struct Resources {
     pub max_tokens_per_minute: u32,
     pub gpu_priority: String,
 
+    #[serde(default = "default_false")] 
+    pub json_history: bool,  
+
     #[serde(default)]
     pub stateful_paging: bool,
+}
+
+fn default_false() -> bool { false }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MemoryLimits {
+    pub max_chat_history_messages: usize,
+    pub auto_summarize_on_cap: bool,
+}
+
+impl Default for MemoryLimits {
+    fn default() -> Self {
+        Self {
+            max_chat_history_messages: 20, 
+            auto_summarize_on_cap: true,   
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -111,6 +133,12 @@ impl AppRegistry {
                     RegistryError::ParseError(file_path.display().to_string(), e.to_string())
                 })?;
 
+                if let Err(e) = manifest.validate() {
+                    println!("-> [SECURITY ALERT] Failed to load manifest for '{}'.", manifest.app_id);
+                    println!("   KERNEL ERROR: {}", e);
+                    continue; 
+                }
+
                 println!("-> [REGISTRY] Verified & Loaded App: {}", manifest.app_id);
                 apps.insert(manifest.app_id.clone(), manifest);
             }
@@ -126,5 +154,27 @@ impl AppRegistry {
 
     pub fn list_apps(&self) -> Vec<AppManifest> {
         self.apps.values().cloned().collect()
+    }
+}
+
+impl AppManifest {
+    fn validate(&self) -> Result<(), String> {
+        // RULE 1: The Immutable Anchor
+        if self.resources.stateful_paging && !self.resources.json_history {
+            return Err("FATAL: 'stateful_paging' cannot be true if 'json_history' is false. \
+                        ORE requires JSON fallbacks to prevent KV-Cache corruption and to perform memory compaction.".to_string());
+        }
+
+        // RULE 2: Non-Zero Budgets
+        if self.resources.max_tokens_per_minute == 0 {
+            return Err("FATAL: 'max_tokens_per_minute' cannot be 0. Agent would be permanently frozen.".to_string());
+        }
+
+        // RULE 3: Compaction Limit Sanity Check
+        if self.memory_limits.max_chat_history_messages < 2 {
+            return Err("FATAL: 'max_chat_history_messages' must be at least 2 to maintain conversation context.".to_string());
+        }
+
+        Ok(())
     }
 }
