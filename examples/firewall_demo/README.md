@@ -1,6 +1,6 @@
 # 05 - Firewall Demo
 
-> See ORE's Context Firewall in action - injection blocking, PII redaction, and boundary enforcement.
+> See ORE's Context Firewall in action - injection blocking and PII redaction.
 
 ## What It Does
 
@@ -8,7 +8,7 @@ A test harness that fires a series of adversarial and sensitive prompts at the O
 
 1. **Prompt Injection** - Jailbreak attempts, system probes, override commands → **BLOCKED**
 2. **PII Redaction** - Emails and credit cards are scrubbed before the model sees them
-3. **Boundary Enforcement** - Every prompt is wrapped in UUID-tagged XML to prevent escape
+
 
 ## Setup
 

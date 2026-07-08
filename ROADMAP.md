@@ -10,7 +10,7 @@ This roadmap outlines our trajectory toward true AI Virtualization. **Pull Reque
 
 ## Phase 1: The Foundation (Completed)
 - [x] **Universal Driver Abstraction:** Pluggable HAL supporting `Ollama` (HTTP) and `Candle` (Native Rust).
-- [x] **Context Firewall:** Ingress prompt inspection, PII redaction, and structural boundary enclosure to prevent prompt injections at the API layer.
+- [x] **Context Firewall:** Ingress prompt inspection and PII redaction to prevent prompt injections at the API layer.
 - [x] **Zero-Trust App Registry:** Strict `.toml` manifest enforcement for agent permissions (File I/O, Network, IPC targeting).
 - [x] **The Semantic Bus (Tier 2 IPC):** Zero-idle-RAM vector memory sharing using `all-MiniLM`, `DashMap`, sliding windows, and masked mean pooling.
 - [x] **The Message Bus (Tier 1 IPC):** High-speed `mpsc` text routing for agent-to-agent coordination.
@@ -68,6 +68,6 @@ Making hardware limits obsolete.
 ## 🤝 Contributing
 If you are a Systems Engineer, Rustacean, or ML Infrastructure enthusiast, pick any unchecked item above! 
 
-*Specifically looking for critiques and PRs on heavily optimizing `mmap` tensor deserialization for the SSD Pager, and mapping complex architectures (SwiGLU/RoPE) in the native `candle` engine.*
+*Specifically looking for critiques and PRs on heavily optimizing `mmap` tensor deserialization for Memory Management, and mapping complex architectures (SwiGLU/RoPE) in the native `candle` engine.*
 
 Please open an Issue first to discuss the architecture before submitting a massive PR.

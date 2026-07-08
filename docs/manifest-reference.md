@@ -93,7 +93,7 @@ semantic_persistence = false                 # Freeze semantic pipes to SSD
 | `max_tokens_per_minute` | u32 | `0` | Token rate limit per 60-second window. `0` = unlimited |
 | `gpu_priority` | string | `""` | Scheduling priority: `"low"`, `"normal"`, `"high"` |
 | `json_history` | bool | `false` | When `true`, retains chat history as JSON text to prevent KV-cache corruption |
-| `stateful_paging` | bool | `false` | When `true`, the SSD Pager freezes and restores chat history across requests |
+| `stateful_paging` | bool | `false` | When `true`, Memory Management freezes and restores chat history across requests |
 
 ### `[memory_limits]`
 

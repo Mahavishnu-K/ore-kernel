@@ -1,6 +1,6 @@
 # 03 - Stateful Chat
 
-> Multi-turn conversations that survive kernel restarts. ORE's SSD Pager remembers context automatically.
+> Multi-turn conversations that survive kernel restarts. ORE's Memory Management remembers context automatically.
 
 ## What It Does
 

@@ -16,7 +16,7 @@
 |---|---|---|
 | 01 | [**Simple Bot**](./simple_bot/) | Basic inference via `POST /run` |
 | 02 | [**Semantic Swarm**](./semantic_swarm/) | Semantic Bus: `/ipc/share` + `/ipc/search` |
-| 03 | [**Stateful Chat**](./stateful_chat/) | SSD Pager: multi-turn conversations via `GET /ask` |
+| 03 | [**Stateful Chat**](./stateful_chat/) | Memory Management: multi-turn conversations via `GET /ask` |
 | 04 | [**Agent Messaging**](./agent_messaging/) | Direct agent IPC: `/ipc/send` + `/ipc/listen` |
 | 05 | [**Firewall Demo**](./firewall_demo/) | Context Firewall: injection blocking + PII redaction |
 | 06 | [**Multi-Agent Pipeline**](./multi_agent_pipeline/) | Full swarm: 3 agents chained via Semantic Bus |

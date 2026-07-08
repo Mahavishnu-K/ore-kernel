@@ -6,7 +6,7 @@
 |---|---|---|
 | [Context Firewall](./context-firewall.md) | `ore-core/src/firewall.rs` | 3-stage prompt security pipeline |
 | [GPU Scheduler](./gpu-scheduler.md) | `ore-core/src/scheduler.rs` | Semaphore-based scheduling with RAII leases |
-| [SSD Pager](./ssd-pager.md) | `ore-core/src/memory.rs` | OS-style context persistence to disk |
+| [Memory Management](./memory-management.md) | `ore-core/src/memory.rs` | OS-style context persistence to disk |
 | [IPC & Semantic Bus](./ipc-and-semantic-bus.md) | `ore-core/src/ipc.rs` | Agent messaging + vector memory database |
 | [Hardware Abstraction Layer](./hardware-abstraction-layer.md) | `ore-core/src/driver.rs` | Trait-based driver system for inference backends |
 | [Native Candle Engine](./native-candle-engine.md) | `ore-core/src/native/` | Pure-Rust GGUF inference + BERT embedder |

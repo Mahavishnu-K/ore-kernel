@@ -113,12 +113,12 @@ It sits between your user-facing applications (OpenClaw, AutoGPT, custom termina
 | **Scheduling** | Two models = GPU crash | Semaphore-based GPU lock with queue |
 | **Model Sharing** | Each app downloads its own 4GB weights | Single model instance, shared across apps |
 | **PII Protection** | Raw user data forwarded to model | Automatic regex-based redaction before inference |
-| **Injection Defense** | Prompts pass through unfiltered | Heuristic detection + structural boundary enforcement |
+| **Injection Defense** | Prompts pass through unfiltered | Heuristic detection and pattern analysis |
 | **Shared Memory** | Agents duplicate context independently | Semantic Bus with fast dot-product vector search |
 | **Authentication** | Open API, anyone can call it | Token-based auth middleware on every request |
 | **Rate Limiting** | Agents can spam inference indefinitely | Per-agent token rate limiting enforced by manifest |
 | **Native Inference** | Requires external runtime (Ollama, etc.) | Built-in GGUF execution via Candle - zero dependencies |
-| **Context Persistence** | Agent memory lost on restart | SSD Pager freezes/restores chat history & true KV-Cache paging automatically |
+| **Context Persistence** | Agent memory lost on restart | Memory Management freezes/restores chat history & true KV-Cache paging automatically |
 | **Native Embeddings** | Requires external embedding service | Built-in BERT & Nomic architectures (Safetensors) - zero external dependencies |
 | **Memory Management** | Stale agent data accumulates forever | TTL-based garbage collection with configurable sweep intervals |
 
@@ -177,9 +177,8 @@ pipe_ttl_hours = 32    # Semantic pipe data lifetime (0 = infinite)
 
 **Context Firewall** (`ore-core/src/firewall.rs`)
 A multi-layered security pipeline that processes every prompt before it reaches the model:
-- **Injection Blocker** - Heuristic analysis detecting jailbreaks (`"ignore previous"`), system probes (`"system prompt"`, `"root password"`), and override attempts (`"bypass"`, `"forget everything"`).
-- **PII Redactor** - Regex-powered scanner that strips emails and credit card numbers from prompts before inference. Uses `OnceLock`-cached compiled patterns for zero recompilation overhead.
-- **Boundary Enforcer** - Wraps user input in randomized XML-like tags with UUID-based boundaries, preventing attackers from escaping the data context. *(Note: Temporarily disabled for KV-Cache testing)*
+- **Injection Blocker** - Heuristic and pattern analysis detecting prompt injection threats using severity-based rules: Jailbreaks, Persona Hijack, System Probes, SQL Injection, Context Escapes, Code Execution, and Network Probes. Automatically bypasses code/network rules if authorized by `manifest.execution` or `manifest.network`. Critical threats are instantly blocked.
+- **PII Redactor** - Regex-powered scanner enforced by `manifest.privacy.enforce_pii_redaction`. Uses `DLP_RULES` to scrub AWS keys, API secrets, RSA/PEM private keys, internal IPs, emails, and credit card numbers from prompts. Provides SIEM-friendly telemetry summaries.
 
 **GPU Scheduler** (`ore-core/src/scheduler.rs`)
 A dedicated scheduling module built on `tokio::sync::Semaphore` with RAII-based `GpuLease` locks. The scheduler tracks VRAM state (`active_model`, `active_users`) and performs **hot-swap detection** - if the requested model is already loaded, it skips the reload and shares the existing instance. On a model mismatch, it performs a **context switch**, evicting the old model before loading the new one. When the `GpuLease` drops out of scope, the GPU lock is automatically released.
@@ -194,8 +193,8 @@ A modular bare-metal inference engine powered by Hugging Face's [Candle](https:/
 - **Streaming Token Generation** - Generates tokens one-at-a-time via `tokio::sync::mpsc`, enabling real-time streaming to the CLI.
 - **Native System Embedders** - A built-in `SystemEmbedder` (`ore-core/src/native/models/bert.rs` and `nomic.rs`) that loads architectures like BERT and Nomic v1.5 from Safetensors for embedding generation. Implements masked mean pooling and L2 normalization entirely in Rust. The embedder is serialized via a strict `embedder_lock` mutex to prevent multi-agent OOM crashes. When the embedding thread completes, Rust's ownership model automatically drops the model and frees all RAM to 0MB idle.
 
-**SSD Pager** (`ore-core/src/memory.rs`)
-An OS-style page file system for true KV-Cache paging and agent conversation context:
+**Memory Management** (`ore-core/src/memory.rs`)
+An OS-style memory management system for true KV-Cache paging and agent conversation context:
 - **Page Out** - Serializes an agent's full chat history (`Vec<ContextMessage>`) to JSON and freezes its true physical Attention Key-Value (KV) Cache directly to the SSD (`memory/` directory).
 - **Page In** - Restores frozen chat context and true physical KV-Cache back into RAM/VRAM on the next request, enabling multi-turn conversations across kernel restarts without latency-heavy prompt re-processing.
 - **Background Memory Compaction** - The kernel monitors memory limits and automatically performs lazy eviction of stale KV-caches to prevent VRAM/SSD bloat, safely falling back to JSON summarization when caps are reached.
@@ -263,7 +262,6 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║   │ Context Firewall│◀────────────┘                  ║
 ║   │  · Inj. Detect  │                                ║
 ║   │  · PII Redact   │                                ║
-║   │  · Boundary Tag │                                ║
 ║   └────────┬────────┘                                ║
 ║            │                                         ║
 ║   ┌────────▼──────────────────────────────────────┐  ║
@@ -271,7 +269,7 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║   └───────────────────────────────────────────────┘  ║
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
-║   │  SSD Pager  (Agent Context Swap)             │   ║
+║   │  Memory Management  (Agent Context Swap)     │   ║
 ║   │  · Page Out/In (RAM ↔ SSD JSON Freeze)       │   ║
 ║   │  · Page Out/In (KV-Cache .safetensors)       │   ║
 ║   └──────────────────────────────────────────────┘   ║
@@ -320,10 +318,10 @@ ORE is organized as a Rust workspace with four crates:
 ore-system/
 ├── ore-core/                # Kernel logic
 │   ├── driver.rs            #   ├── HAL trait (InferenceDriver) + shared types
-│   ├── firewall.rs          #   ├── Context firewall (PII, injection, boundary)
+│   ├── firewall.rs          #   ├── Context firewall (PII, injection)
 │   ├── ipc.rs               #   ├── MessageBus, SemanticBus (w/ cache + GC), RateLimiter
 │   ├── scheduler.rs         #   ├── GpuScheduler with RAII GpuLease + VRAM state
-│   ├── memory.rs              #   ├── SSD Pager (context freezing & restoration)
+│   ├── memory.rs            #   ├── Memory Management (context freezing & restoration)
 │   ├── registry.rs          #   ├── App manifest registry (TOML loader + cache)
 │   ├── external/            #   ├── External inference drivers
 │   │   └── ollama.rs        #   │   └── OllamaDriver (HTTP proxy to Ollama daemon)
@@ -379,7 +377,7 @@ ore-system/
 | `indicatif` + `futures-util` | Streaming progress bars for model downloads |
 | `regex` | PII pattern matching (emails, credit cards) |
 | `serde` + `toml` | Manifest & config serialization and deserialization |
-| `uuid` | Session tokens, boundary tags, request IDs |
+| `uuid` | Session tokens, request IDs |
 | `colored` | Terminal output formatting in the CLI |
 | `thiserror` + `anyhow` | Structured error types across the kernel |
 | `time` | Filesystem timestamp formatting with local timezone offset |
@@ -634,16 +632,6 @@ semantic_persistence = true                  # Freeze semantic pipes to SSD
                  card ending 4242 1234 5678 9012."
  Forwarded As : "My email is [EMAIL REDACTED],
                  card ending [CREDIT CARD REDACTED]."
-──────────────────────────────────────────────────
-
-──────────────────────────────────────────────────
- BOUNDARY ENFORCEMENT
-──────────────────────────────────────────────────
- Raw Prompt  : "What is 2+2?"
- Secured As  : <user_input_a3b8f1c2>
-               What is 2+2?
-               </user_input_a3b8f1c2>
- Note: UUID-based tags prevent attacker escape
 ──────────────────────────────────────────────────
 ```
 

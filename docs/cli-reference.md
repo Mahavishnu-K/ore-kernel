@@ -166,7 +166,7 @@ Execute a secured inference request with streamed output.
 ore run qwen2.5:0.5b "Explain what a semaphore is"
 ```
 
-The prompt passes through the full firewall pipeline (injection detection → PII redaction → boundary enforcement) before reaching the model.
+The prompt passes through the full firewall pipeline (injection detection → PII redaction) before reaching the model.
 
 ---
 

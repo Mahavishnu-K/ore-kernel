@@ -1,4 +1,4 @@
-# SSD Pager
+# Memory Management
 
 > OS-style page files for agent conversation history.
 

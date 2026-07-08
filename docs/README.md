@@ -24,7 +24,7 @@ Deep-dives into each subsystem for contributors who want to understand ORE's bra
 |---|---|---|
 | Context Firewall | `ore-core/src/firewall.rs` | [Deep Dive](./kernel-internals/context-firewall.md) |
 | GPU Scheduler | `ore-core/src/scheduler.rs` | [Deep Dive](./kernel-internals/gpu-scheduler.md) |
-| SSD Pager | `ore-core/src/memory.rs` | [Deep Dive](./kernel-internals/ssd-pager.md) |
+| Memory Management | `ore-core/src/memory.rs` | [Deep Dive](./kernel-internals/memory-management.md) |
 | IPC & Semantic Bus | `ore-core/src/ipc.rs` | [Deep Dive](./kernel-internals/ipc-and-semantic-bus.md) |
 | Hardware Abstraction Layer | `ore-core/src/driver.rs` | [Deep Dive](./kernel-internals/hardware-abstraction-layer.md) |
 | Native Candle Engine | `ore-core/src/native/` | [Deep Dive](./kernel-internals/native-candle-engine.md) |

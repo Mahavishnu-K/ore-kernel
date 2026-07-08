@@ -28,7 +28,6 @@ Applications never talk to the GPU directly. They talk to ORE. ORE enforces the 
 ║   │ Context Firewall│◀────────────┘                  ║
 ║   │  · Inj. Detect  │                                ║
 ║   │  · PII Redact   │                                ║
-║   │  · Boundary Tag │                                ║
 ║   └────────┬────────┘                                ║
 ║            │                                         ║
 ║   ┌────────▼──────────────────────────────────────┐  ║
@@ -36,7 +35,7 @@ Applications never talk to the GPU directly. They talk to ORE. ORE enforces the 
 ║   └───────────────────────────────────────────────┘  ║
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
-║   │  SSD Pager  (Agent Context Swap)             │   ║
+║   │  Memory Management  (Agent Context Swap)     │   ║
 ║   │  · Page Out/In (RAM ↔ SSD JSON Freeze)       │   ║
 ║   │  · Page Out/In (KV-Cache .safetensors)       │   ║
 ║   └──────────────────────────────────────────────┘   ║
@@ -101,11 +100,10 @@ Client (curl / CLI / App)
 │ 3. CONTEXT FIREWALL                 │  ore-core/src/firewall.rs
 │    InjectionBlocker::check()        │
 │    PiiRedactor::redact()            │
-│    BoundaryEnforcer::encapsulate()  │
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
-│ 4. SSD PAGER (if stateful)          │  ore-core/src/memory.rs
+│ 4. MEMORY MANAGER (if stateful)       │  ore-core/src/memory.rs
 │    Pager::page_in_history()         │
 │    Pager::page_in_kv_cache()        │
 │    Append new message to context    │
@@ -156,10 +154,10 @@ ore-cli             (standalone CLI binary, talks to ore-server via HTTP)
 ore-system/
 ├── ore-core/                Kernel logic
 │   ├── driver.rs            HAL trait (InferenceDriver)
-│   ├── firewall.rs          Context firewall (PII, injection, boundary)
+│   ├── firewall.rs          Context firewall (PII, injection)
 │   ├── ipc.rs               MessageBus, SemanticBus, RateLimiter
 │   ├── scheduler.rs         GpuScheduler with RAII GpuLease
-│   ├── memory.rs              SSD Pager (context persistence)
+│   ├── memory.rs            Memory Management (context persistence)
 │   ├── sandbox.rs           Zero-Trust WASM Sandbox (Console-Cartridge)
 │   ├── registry.rs          App manifest registry
 │   ├── external/            External inference drivers
