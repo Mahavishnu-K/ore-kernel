@@ -203,7 +203,6 @@ ore-system/
 
 3. **Sandboxed Tool Execution** - Agents can execute pre-compiled WebAssembly tools through a Zero-Trust WASM Sandbox. It uses deterministic CPU profiling (50M fuel limit) to prevent infinite loops, and a capability-based file system (`cap-std`) to restrict access to an isolated `/workspace`.
 
-
 3. **OS-Style Memory Management & Resource Limits** - Idle agent context is paged to SSD (`memory/` directory) and restored on demand. The kernel strictly enforces `memory_limits` to prevent OOM crashes (setting explicit caps on KV-cache VRAM and JSON context tokens) by triggering automatic background memory compaction. The `SemanticBus` can transparently freeze vector pipelines to SSD (`.pipe` files) and runs hourly garbage collection to evict stale embeddings.
 
 4. **Driver Abstraction** - The `InferenceDriver` trait decouples all kernel logic from the physical inference engine. Swap between Native Candle and Ollama with a single config change. Add new backends by implementing 9 trait methods.
