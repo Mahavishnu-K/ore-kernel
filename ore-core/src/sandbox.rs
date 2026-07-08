@@ -73,16 +73,15 @@ impl WasmSandbox {
 
         let wasi_ctx = wasi_builder.build();
 
-        // 4. Create the isolated State Store
+        // Create the isolated State Store
         let mut store = Store::new(&self.engine, wasi_ctx);
 
         // Fuel Injection! Sandbox will panic if it exceeds this CPU instruction limit.
         store.set_fuel(params.fuel_limit)?;
 
-        // 5. JIT Compilation (Near-Instantaneous)
+        // JIT Compilation (Near-Instantaneous)
         let module = Module::new(&self.engine, &params.wasm_binary)?;
 
-        // 6. Execution
         let instance = linker.instantiate(&mut store, &module)?;
         let start_func = instance.get_typed_func::<(), ()>(&mut store, "_start")?;
 
@@ -91,7 +90,6 @@ impl WasmSandbox {
             params.fuel_limit
         );
 
-        // Run it! If the AI writes an infinite loop, this safely traps the execution.
         match start_func.call(&mut store, ()) {
             Ok(_) => crate::kprintln!("-> [SANDBOX] Execution completed safely."),
             Err(e) => {
@@ -109,7 +107,7 @@ impl WasmSandbox {
             }
         }
 
-        // 7. Extraction & Destruction
+        // Extraction & Destruction
         // Drop the store explicitly so the WritePipes finish cleanly
         drop(store);
 
