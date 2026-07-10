@@ -4,7 +4,12 @@
 
 ## `ore.toml` - System Configuration
 
-The kernel reads `ore.toml` from the workspace root on boot. Generate it via `ore init` or edit manually.
+The kernel reads `ore.toml` from the ORE base directory on boot. The base directory is resolved in the following order:
+1. The `$ORE_DIR` environment variable, if set.
+2. The local `../` directory, if `../ore.toml` exists (for local development).
+3. The user's home directory (`~/.ore` on Linux/macOS, or `%USERPROFILE%\.ore` on Windows).
+
+Generate it via `ore init` or edit manually.
 
 ### Full Schema
 

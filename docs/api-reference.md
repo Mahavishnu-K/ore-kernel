@@ -186,7 +186,7 @@ SUCCESS: Memory for Agent 'my_agent' manually compacted.
 
 ### `POST /execute`
 
-Executes a pre-compiled `.wasm` tool in the Zero-Trust Sandbox.
+Executes a pre-compiled `.wasm` tool (Fixed Tool Mode / Console Cartridge) OR runs an autonomous script (Inception Mode) in the Zero-Trust Sandbox.
 
 ```bash
 curl -X POST \
@@ -205,15 +205,21 @@ curl -X POST \
 {
   "app_id": "openclaw",
   "tool_name": "file_search",
-  "args": ["--path", "/workspace"]
+  "args": ["--path", "/workspace"],
+  "language": "python",
+  "script": "print('Hello Autonomous Mode')"
 }
 ```
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `app_id` | string | ✅ | App manifest ID defining permissions (`can_execute_wasm`) |
-| `tool_name` | string | ✅ | Name of the tool in the `/tools` directory (must be in `allowed_tools`) |
-| `args` | string[] | ✅ | Command-line arguments to pass to the tool |
+| `tool_name` | string | ❌ | Name of the tool in the `/tools` directory (must be in `allowed_tools`) |
+| `args` | string[] | ❌ | Command-line arguments to pass to the tool |
+| `language` | string | ❌ | Script language (`"python"`, `"js"`, `"javascript"`). Defaults to `"python"`. |
+| `script` | string | ❌ | Raw script to execute autonomously via `system-py.wasm` or `system-js.wasm` |
+
+> **Note:** You must provide either `tool_name` (Fixed Tool Mode) or `script` (Autonomous Mode).
 
 **Response:** Captured stdout and stderr from the tool execution.
 

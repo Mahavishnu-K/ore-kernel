@@ -203,11 +203,11 @@ An OS-style memory management system for true KV-Cache paging and agent conversa
 - Agents opt-in to stateful paging via the `stateful_paging = true` flag in their manifest's `[resources]` section.
 
 **Zero-Trust WASM Sandbox** (`ore-core/src/sandbox.rs`)
-An execution environment allowing agents to safely run pre-compiled WebAssembly tools (Console-Cartridges) without compromising the host machine:
+An execution environment allowing agents to safely run pre-compiled WebAssembly tools (Console Cartridges) OR autonomous scripts (Inception Mode) without compromising the host machine:
 - **Deterministic CPU Profiling** - Injects a strict 50,000,000 instruction fuel limit via `wasmtime` to mathematically prevent infinite loops and host lockups.
 - **Capability-Based File System** - Integrates `cap-std` to safely map manifest-approved host directories to an isolated `/workspace` guest path, ensuring the sandbox is blind to the rest of the file system.
 - **I/O Trapping** - Captures all internal stdout/stderr using in-memory WritePipes, returning output directly to the API response.
-- **Execution Router** - Dynamically loads `.wasm` cartridges and executes them via `POST /execute` in `ore-server`.
+- **Execution Router** - Dynamically loads `.wasm` cartridges and executes them via `POST /execute` in `ore-server`. Can run fixed tools or autonomous scripts (`system-py.wasm` and `system-js.wasm`).
 - **Manifest Enforcement** - Verified by `can_execute_wasm` and tool whitelisting (`allowed_tools`) before JIT compilation.
 
 
@@ -361,6 +361,8 @@ ore-system/
 ├── CONTRIBUTING.md
 └── LICENSE-MIT
 ```
+
+> **Note on Directory Resolution:** System data directories (`manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`) and `ore.toml` are resolved relative to the **ORE Base Directory**, not necessarily the working directory. ORE determines this base path in the following order: 1) `$ORE_DIR` environment variable, 2) The `../` directory (if `ore.toml` exists there, for local dev), 3) The user's home directory (`~/.ore` on Linux/macOS, `%USERPROFILE%\.ore` on Windows).
 
 ### Key Dependencies
 

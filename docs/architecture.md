@@ -193,13 +193,15 @@ ore-system/
 └── rust-toolchain.toml      Pinned Rust 1.93.0
 ```
 
+> **Note on Directory Resolution:** System data directories (`manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`) and `ore.toml` are resolved relative to the **ORE Base Directory**. ORE resolves this as: 1) `$ORE_DIR`, 2) `../` (for local dev), or 3) `~/.ore` / `%USERPROFILE%\.ore`.
+
 ## Design Principles
 
 1. **Security First** - Every prompt is firewalled. Every request is authenticated. Every agent is sandboxed by its manifest. The kernel assumes agents are adversarial.
 
 2. **Zero-Copy Architecture** - The Native Engine achieves sub-50ms instant boot times by utilizing `memmap2` to stream weights directly from the SSD to the GPU, bypassing system RAM bottlenecks. Additionally, the GPU scheduler detects when the requested model is already loaded (hot-swap) and shares the instance instead of reloading. RAII-based `GpuLease` ensures the semaphore is always released, even on panics.
 
-3. **Sandboxed Tool Execution** - Agents can execute pre-compiled WebAssembly tools through a Zero-Trust WASM Sandbox. It uses deterministic CPU profiling (50M fuel limit) to prevent infinite loops, and a capability-based file system (`cap-std`) to restrict access to an isolated `/workspace`.
+3. **Sandboxed Tool Execution** - Agents can execute pre-compiled WebAssembly tools (Console Cartridges) or autonomous scripts (Inception Mode) through a Zero-Trust WASM Sandbox. It uses deterministic CPU profiling (50M fuel limit) to prevent infinite loops, and a capability-based file system (`cap-std`) to restrict access to an isolated `/workspace`.
 
 3. **OS-Style Memory Management & Resource Limits** - Idle agent context is paged to SSD (`memory/` directory) and restored on demand. The kernel strictly enforces `memory_limits` to prevent OOM crashes (setting explicit caps on KV-cache VRAM and JSON context tokens) by triggering automatic background memory compaction. The `SemanticBus` can transparently freeze vector pipelines to SSD (`.pipe` files) and runs hourly garbage collection to evict stale embeddings.
 

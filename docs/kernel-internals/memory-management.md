@@ -36,8 +36,8 @@ This is the universal message format used across **all** model architectures (Ll
 
 ```rust
 pub fn page_out_history(app_id: &str, history: &Vec<ContextMessage>) {
-    Self::ensure_swap_drive();
-    let path = format!("{}/{}.json", Self::MEMORY_DIR, app_id);
+    let swap_dir = Self::get_swap_dir();
+    let path = swap_dir.join(format!("{}.json", app_id));
 
     if let Ok(data) = serde_json::to_string_pretty(history) {
         let _ = fs::write(&path, data);
@@ -51,7 +51,8 @@ Serializes the agent's full chat history to `memory/<app_id>.json` as pretty-pri
 
 ```rust
 pub fn page_in_history(app_id: &str) -> Vec<ContextMessage> {
-    let path = format!("{}/{}.json", Self::MEMORY_DIR, app_id);
+    let swap_dir = Self::get_swap_dir();
+    let path = swap_dir.join(format!("{}.json", app_id));
 
     if Path::new(&path).exists()
         && let Ok(data) = fs::read_to_string(&path)
@@ -85,11 +86,12 @@ This prevents the LLM from having to re-process thousands of tokens to rebuild i
 
 ```rust
 pub fn clear_page(app_id: &str) {
-    let _ = fs::remove_file(format!("{}/{}.json", Self::MEMORY_DIR, app_id));
-    let _ = fs::remove_file(format!("{}/{}.pipe", Self::MEMORY_DIR, app_id));
+    let swap_dir = Self::get_swap_dir();
+    let _ = fs::remove_file(swap_dir.join(format!("{}.json", app_id)));
+    let _ = fs::remove_file(swap_dir.join(format!("{}.pipe", app_id)));
 
     // Sweep for any Model-Specific Safetensor KV-Caches
-    if let Ok(entries) = fs::read_dir(Self::MEMORY_DIR) {
+    if let Ok(entries) = fs::read_dir(&swap_dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name().to_string_lossy().to_string();
             if file_name.starts_with(&format!("{}_", app_id)) && file_name.ends_with(".safetensors") {
