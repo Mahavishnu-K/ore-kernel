@@ -7,6 +7,7 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::{cmp::min, fs, io::Write, path::Path, process::exit};
 
 #[derive(Deserialize)]
@@ -19,8 +20,27 @@ pub struct SystemConfig {
     engine: String,
 }
 
-pub fn get_ore_dir() -> String {
-    std::env::var("ORE_DIR").unwrap_or_else(|_| "..".to_string())
+pub fn get_ore_dir() -> PathBuf {
+    if let Ok(custom_dir) = std::env::var("ORE_DIR") {
+        return PathBuf::from(custom_dir);
+    }
+
+    let local_dev_path = PathBuf::from("..");
+    if local_dev_path.join("ore.toml").exists() {
+        return local_dev_path;
+    }
+
+    let home = std::env::var("USERPROFILE") // Windows
+        .or_else(|_| std::env::var("HOME")) // Linux/macOS
+        .expect("FATAL: Could not determine user home directory.");
+
+    let ore_path = PathBuf::from(home).join(".ore");
+
+    if !ore_path.exists() {
+        fs::create_dir_all(&ore_path).expect("FATAL: Failed to create ~/.ore directory.");
+    }
+
+    ore_path
 }
 
 fn visible_len(text: &str) -> usize {
@@ -134,7 +154,7 @@ pub fn get_system_engine() -> String {
     }
 }
 
-pub enum ModelAsset {
+pub enum OreAsset {
     Gguf {
         gguf_repo: &'static str,
         gguf_file: &'static str,
@@ -143,329 +163,334 @@ pub enum ModelAsset {
     Safetensors {
         repo: &'static str,
     },
+    Wasm {
+        url: &'static str,
+        folder: &'static str,
+        filename: &'static str,
+    },
 }
 
 /// Maps a simple user alias to Hugging Face repositories
-pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
+pub fn get_asset_map(alias: &str) -> Option<OreAsset> {
     match alias {
         // QWEN 2.5 INSTRUCT (For General Chat & Agent Swarms)
         // The Tiny Models (Ultra-fast, fits anywhere)
-        "qwen2.5:0.5b" => Some(ModelAsset::Gguf {
+        "qwen2.5:0.5b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
             gguf_file: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-0.5B-Instruct",
         }),
-        "qwen2.5:1.5b" => Some(ModelAsset::Gguf {
+        "qwen2.5:1.5b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
             gguf_file: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-1.5B-Instruct",
         }),
-        "qwen2.5:3b" => Some(ModelAsset::Gguf {
+        "qwen2.5:3b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-3B-Instruct-GGUF",
             gguf_file: "qwen2.5-3b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-3B-Instruct",
         }),
 
         // The Workhorses (8GB - 16GB VRAM)
-        "qwen2.5:7b" => Some(ModelAsset::Gguf {
+        "qwen2.5:7b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-7B-Instruct-GGUF",
             gguf_file: "qwen2.5-7b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-7B-Instruct",
         }),
-        "qwen2.5:7b-q8" => Some(ModelAsset::Gguf {
+        "qwen2.5:7b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-7B-Instruct-GGUF",
             gguf_file: "qwen2.5-7b-instruct-q8_0.gguf",
             base_repo: "Qwen/Qwen2.5-7B-Instruct",
         }),
-        "qwen2.5:14b" => Some(ModelAsset::Gguf {
+        "qwen2.5:14b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-14B-Instruct-GGUF",
             gguf_file: "qwen2.5-14b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-14B-Instruct",
         }),
-        "qwen2.5:14b-q8" => Some(ModelAsset::Gguf {
+        "qwen2.5:14b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-14B-Instruct-GGUF",
             gguf_file: "qwen2.5-14b-instruct-q8_0.gguf",
             base_repo: "Qwen/Qwen2.5-14B-Instruct",
         }),
 
         // The Heavyweights (24GB+ VRAM / Mac Studios)
-        "qwen2.5:32b" => Some(ModelAsset::Gguf {
+        "qwen2.5:32b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-32B-Instruct-GGUF",
             gguf_file: "qwen2.5-32b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-32B-Instruct",
         }),
-        "qwen2.5:72b" => Some(ModelAsset::Gguf {
+        "qwen2.5:72b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-72B-Instruct-GGUF",
             gguf_file: "qwen2.5-72b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-72B-Instruct",
         }),
 
         // 2. QWEN 2.5 CODER (For Strict Software Engineering Agents)
-        "qwen2.5-coder:0.5b" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:0.5b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-0.5B-Instruct",
         }),
-        "qwen2.5-coder:1.5b" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:1.5b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-1.5B-Instruct",
         }),
-        "qwen2.5-coder:3b" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:3b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-3B-Instruct",
         }),
-        "qwen2.5-coder:7b" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:7b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-7B-Instruct",
         }),
-        "qwen2.5-coder:7b-q8" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:7b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-7b-instruct-q8_0.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-7B-Instruct",
         }),
-        "qwen2.5-coder:14b" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:14b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-14B-Instruct",
         }),
-        "qwen2.5-coder:14b-q8" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:14b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-14b-instruct-q8_0.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-14B-Instruct",
         }),
-        "qwen2.5-coder:32b" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:32b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-32b-instruct-q4_k_m.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-32B-Instruct",
         }),
-        "qwen2.5-coder:32b-q8" => Some(ModelAsset::Gguf {
+        "qwen2.5-coder:32b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF",
             gguf_file: "qwen2.5-coder-32b-instruct-q8_0.gguf",
             base_repo: "Qwen/Qwen2.5-Coder-32B-Instruct",
         }),
 
         // Qwen's official QwQ Reasoning Model
-        "qwq:32b" => Some(ModelAsset::Gguf {
+        "qwq:32b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/QwQ-32B-Preview-GGUF",
             gguf_file: "QwQ-32B-Preview-Q4_K_M.gguf",
             base_repo: "unsloth/QwQ-32B-Preview",
         }),
-        "qwq:32b-q8" => Some(ModelAsset::Gguf {
+        "qwq:32b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/QwQ-32B-Preview-GGUF",
             gguf_file: "QwQ-32B-Preview-Q8_0.gguf",
             base_repo: "unsloth/QwQ-32B-Preview",
         }),
 
         // QWEN 3 INSTRUCT (The Next-Gen Chat & Agents)
-        "qwen3:0.6b" => Some(ModelAsset::Gguf {
+        "qwen3:0.6b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-0.6B-GGUF",
             gguf_file: "Qwen3-0.6B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-0.6B",
         }),
-        "qwen3:0.6b-q8" => Some(ModelAsset::Gguf {
+        "qwen3:0.6b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-0.6B-GGUF",
             gguf_file: "Qwen3-0.6B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-0.6B",
         }),
-        "qwen3:1.7b" => Some(ModelAsset::Gguf {
+        "qwen3:1.7b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-1.7B-GGUF",
             gguf_file: "Qwen3-1.7B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-1.7B",
         }),
-        "qwen3:1.7b-q8" => Some(ModelAsset::Gguf {
+        "qwen3:1.7b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-1.7B-GGUF",
             gguf_file: "Qwen3-1.7B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-1.7B",
         }),
-        "qwen3:4b" => Some(ModelAsset::Gguf {
+        "qwen3:4b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-4B-GGUF",
             gguf_file: "Qwen3-4B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-4B",
         }),
-        "qwen3:4b-q8" => Some(ModelAsset::Gguf {
+        "qwen3:4b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-4B-GGUF",
             gguf_file: "Qwen3-4B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-4B",
         }),
 
         // The Workhorses (8GB - 16GB VRAM)
-        "qwen3:8b" => Some(ModelAsset::Gguf {
+        "qwen3:8b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-8B-GGUF",
             gguf_file: "Qwen3-8B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-8B",
         }),
-        "qwen3:8b-q8" => Some(ModelAsset::Gguf {
+        "qwen3:8b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-8B-GGUF",
             gguf_file: "Qwen3-8B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-8B",
         }),
-        "qwen3:14b" => Some(ModelAsset::Gguf {
+        "qwen3:14b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-14B-GGUF",
             gguf_file: "Qwen3-14B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-14B",
         }),
-        "qwen3:14b-q8" => Some(ModelAsset::Gguf {
+        "qwen3:14b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-14B-GGUF",
             gguf_file: "Qwen3-14B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-14B",
         }),
 
         // The Heavyweights (24GB+ VRAM / Mac Studios)
-        "qwen3:32b" => Some(ModelAsset::Gguf {
+        "qwen3:32b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-32B-GGUF",
             gguf_file: "Qwen3-32B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-32B",
         }),
-        "qwen3:32b-q8" => Some(ModelAsset::Gguf {
+        "qwen3:32b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-32B-GGUF",
             gguf_file: "Qwen3-32B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-32B",
         }),
 
-        "qwen3:235b-a22b" => Some(ModelAsset::Gguf {
+        "qwen3:235b-a22b" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-235B-A22B-GGUF",
             gguf_file: "Qwen3-235B-A22B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-235B-A22B",
         }),
-        "qwen3:235b-a22b-q8" => Some(ModelAsset::Gguf {
+        "qwen3:235b-a22b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-235B-A22B-GGUF",
             gguf_file: "Qwen3-235B-A22B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-235B-A22B",
         }),
 
         // 2. QWEN 3 CODER (The Bleeding-Edge Software Agents)
-        "qwen3-coder:30b-a3b" => Some(ModelAsset::Gguf {
+        "qwen3-coder:30b-a3b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
             gguf_file: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         }),
-        "qwen3-coder:30b-a3b-q8" => Some(ModelAsset::Gguf {
+        "qwen3-coder:30b-a3b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
             gguf_file: "Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         }),
 
-        "qwen3-coder:480b-a35b" => Some(ModelAsset::Gguf {
+        "qwen3-coder:480b-a35b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF",
             gguf_file: "Qwen3-Coder-480B-A35B-Instruct-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-Coder-480B-A35B-Instruct",
         }),
-        "qwen3-coder:480b-a35b-q8" => Some(ModelAsset::Gguf {
+        "qwen3-coder:480b-a35b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF",
             gguf_file: "Qwen3-Coder-480B-A35B-Instruct-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-Coder-480B-A35B-Instruct",
         }),
 
         // QWEN 3.5 FAMILY (Instruct & Coder)
-        "qwen3.5:0.8b" => Some(ModelAsset::Gguf {
+        "qwen3.5:0.8b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-0.8B-GGUF",
             gguf_file: "Qwen3.5-0.8B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.5-0.8B",
         }),
-        "qwen3.5:0.8b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.5:0.8b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-0.8B-GGUF",
             gguf_file: "Qwen3.5-0.8B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.5-0.8B",
         }),
-        "qwen3.5:2b" => Some(ModelAsset::Gguf {
+        "qwen3.5:2b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-2B-GGUF",
             gguf_file: "Qwen3.5-2B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.5-2B",
         }),
-        "qwen3.5:2b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.5:2b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-2B-GGUF",
             gguf_file: "Qwen3.5-2B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.5-2B",
         }),
-        "qwen3.5:4b" => Some(ModelAsset::Gguf {
+        "qwen3.5:4b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-4B-GGUF",
             gguf_file: "Qwen3.5-4B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.5-4B",
         }),
-        "qwen3.5:4b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.5:4b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-4B-GGUF",
             gguf_file: "Qwen3.5-4B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.5-4B",
         }),
-        "qwen3.5:9b" => Some(ModelAsset::Gguf {
+        "qwen3.5:9b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-9B-GGUF",
             gguf_file: "Qwen3.5-9B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.5-9B",
         }),
-        "qwen3.5:9b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.5:9b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-9B-GGUF",
             gguf_file: "Qwen3.5-9B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.5-9B",
         }),
 
         // --- Medium (dense) ---
-        "qwen3.5:27b" => Some(ModelAsset::Gguf {
+        "qwen3.5:27b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-27B-GGUF",
             gguf_file: "Qwen3.5-27B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.5-27B",
         }),
-        "qwen3.5:27b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.5:27b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-27B-GGUF",
             gguf_file: "Qwen3.5-27B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.5-27B",
         }),
 
         // --- Medium (MoE) ---
-        "qwen3.5:35b-a3b" => Some(ModelAsset::Gguf {
+        "qwen3.5:35b-a3b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-35B-A3B-GGUF",
             gguf_file: "Qwen3.5-35B-A3B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.5-35B-A3B",
         }),
-        "qwen3.5:35b-a3b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.5:35b-a3b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-35B-A3B-GGUF",
             gguf_file: "Qwen3.5-35B-A3B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.5-35B-A3B",
         }),
-        "qwen3.5:122b-a10b" => Some(ModelAsset::Gguf {
+        "qwen3.5:122b-a10b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-122B-A10B-GGUF",
             gguf_file: "Qwen3.5-122B-A10B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.5-122B-A10B",
         }),
-        "qwen3.5:122b-a10b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.5:122b-a10b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.5-122B-A10B-GGUF",
             gguf_file: "Qwen3.5-122B-A10B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.5-122B-A10B",
         }),
 
         // QWEN3.6 FAMILY (Instruct & Coder)
-        "qwen3.6:27b" => Some(ModelAsset::Gguf {
+        "qwen3.6:27b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.6-27B-GGUF",
             gguf_file: "Qwen3.6-27B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.6-27B",
         }),
-        "qwen3.6:27b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.6:27b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.6-27B-GGUF",
             gguf_file: "Qwen3.6-27B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.6-27B",
         }),
 
         // "Qwen3.6-35B-A3B: Agentic Coding Power, Now Open to All"
-        "qwen3.6:35b-a3b" => Some(ModelAsset::Gguf {
+        "qwen3.6:35b-a3b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.6-35B-A3B-GGUF",
             gguf_file: "Qwen3.6-35B-A3B-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3.6-35B-A3B",
         }),
-        "qwen3.6:35b-a3b-q8" => Some(ModelAsset::Gguf {
+        "qwen3.6:35b-a3b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Qwen3.6-35B-A3B-GGUF",
             gguf_file: "Qwen3.6-35B-A3B-Q8_0.gguf",
             base_repo: "Qwen/Qwen3.6-35B-A3B",
         }),
 
-        "qwen3-coder-next" => Some(ModelAsset::Gguf {
+        "qwen3-coder-next" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-Coder-Next-GGUF",
             gguf_file: "Qwen3-Coder-Next-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-Coder-Next",
         }),
         // WARNING: Q8_0 here is ~85GB. Confirmed present on the official repo
-        "qwen3-coder-next-q8" => Some(ModelAsset::Gguf {
+        "qwen3-coder-next-q8" => Some(OreAsset::Gguf {
             gguf_repo: "Qwen/Qwen3-Coder-Next-GGUF",
             gguf_file: "Qwen3-Coder-Next-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-Coder-Next",
@@ -483,7 +508,7 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         //   Qwen3VL-8B-Instruct-Q8_0.gguf        (LLM,    8.71 GB)
         //   mmproj-Qwen3VL-8B-Instruct-F16.gguf  (vision, 1.16 GB)
         //   mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf (vision, 752 MB)
-        // The existing ModelAsset::Gguf variant used throughout this file only has
+        // The existing OreAsset::Gguf variant used throughout this file only has
         // a single `gguf_file` slot. As written below, every entry is INCOMPLETE
         // without its mmproj counterpart — a downloader using only `gguf_file` will
         // fetch the LLM but the model won't be able to see images. This needs a
@@ -508,25 +533,25 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         // an auto-downloader — same caveat as flagged for Qwen3-Coder-Next earlier.
 
         // --- 2B ---
-        "qwen3-vl:2b-instruct" => Some(ModelAsset::Gguf {
+        "qwen3-vl:2b-instruct" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-2B-Instruct-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-2B-Instruct-GGUF",
             gguf_file: "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-2B-Instruct",
         }),
-        "qwen3-vl:2b-instruct-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:2b-instruct-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-2B-Instruct-GGUF",
             gguf_file: "Qwen3VL-2B-Instruct-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-VL-2B-Instruct",
         }),
-        "qwen3-vl:2b-thinking" => Some(ModelAsset::Gguf {
+        "qwen3-vl:2b-thinking" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-2B-Thinking-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-2B-Thinking-GGUF",
             gguf_file: "Qwen3VL-2B-Thinking-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-2B-Thinking",
         }),
-        "qwen3-vl:2b-thinking-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:2b-thinking-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-2B-Thinking-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-2B-Thinking-GGUF",
             gguf_file: "Qwen3VL-2B-Thinking-Q8_0.gguf",
@@ -534,25 +559,25 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         }),
 
         // --- 4B ---
-        "qwen3-vl:4b-instruct" => Some(ModelAsset::Gguf {
+        "qwen3-vl:4b-instruct" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-4B-Instruct-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-4B-Instruct-GGUF",
             gguf_file: "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-4B-Instruct",
         }),
-        "qwen3-vl:4b-instruct-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:4b-instruct-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-4B-Instruct-GGUF",
             gguf_file: "Qwen3VL-4B-Instruct-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-VL-4B-Instruct",
         }),
-        "qwen3-vl:4b-thinking" => Some(ModelAsset::Gguf {
+        "qwen3-vl:4b-thinking" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-4B-Thinking-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-4B-Thinking-GGUF",
             gguf_file: "Qwen3VL-4B-Thinking-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-4B-Thinking",
         }),
-        "qwen3-vl:4b-thinking-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:4b-thinking-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-4B-Thinking-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-4B-Thinking-GGUF",
             gguf_file: "Qwen3VL-4B-Thinking-Q8_0.gguf",
@@ -561,25 +586,25 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
 
         // --- 8B ---
         // (filenames here directly confirmed against the live HF file tree)
-        "qwen3-vl:8b-instruct" => Some(ModelAsset::Gguf {
+        "qwen3-vl:8b-instruct" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-8B-Instruct-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-8B-Instruct-GGUF",
             gguf_file: "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-8B-Instruct",
         }),
-        "qwen3-vl:8b-instruct-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:8b-instruct-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-8B-Instruct-GGUF",
             gguf_file: "Qwen3VL-8B-Instruct-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-VL-8B-Instruct",
         }),
-        "qwen3-vl:8b-thinking" => Some(ModelAsset::Gguf {
+        "qwen3-vl:8b-thinking" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-8B-Thinking-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-8B-Thinking-GGUF",
             gguf_file: "Qwen3VL-8B-Thinking-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-8B-Thinking",
         }),
-        "qwen3-vl:8b-thinking-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:8b-thinking-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-8B-Thinking-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-8B-Thinking-GGUF",
             gguf_file: "Qwen3VL-8B-Thinking-Q8_0.gguf",
@@ -587,25 +612,25 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         }),
 
         // --- 32B ---
-        "qwen3-vl:32b-instruct" => Some(ModelAsset::Gguf {
+        "qwen3-vl:32b-instruct" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-32B-Instruct-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-32B-Instruct-GGUF",
             gguf_file: "Qwen3VL-32B-Instruct-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-32B-Instruct",
         }),
-        "qwen3-vl:32b-instruct-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:32b-instruct-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-32B-Instruct-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-32B-Instruct-GGUF",
             gguf_file: "Qwen3VL-32B-Instruct-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-VL-32B-Instruct",
         }),
-        "qwen3-vl:32b-thinking" => Some(ModelAsset::Gguf {
+        "qwen3-vl:32b-thinking" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-32B-Thinking-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-32B-Thinking-GGUF",
             gguf_file: "Qwen3VL-32B-Thinking-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-32B-Thinking",
         }),
-        "qwen3-vl:32b-thinking-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:32b-thinking-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-32B-Thinking-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-32B-Thinking-GGUF",
             gguf_file: "Qwen3VL-32B-Thinking-Q8_0.gguf",
@@ -613,25 +638,25 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         }),
 
         // --- 30B-A3B (MoE) ---
-        "qwen3-vl:30b-a3b-instruct" => Some(ModelAsset::Gguf {
+        "qwen3-vl:30b-a3b-instruct" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-30B-A3B-Instruct-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-30B-A3B-Instruct-GGUF",
             gguf_file: "Qwen3VL-30B-A3B-Instruct-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-30B-A3B-Instruct",
         }),
-        "qwen3-vl:30b-a3b-instruct-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:30b-a3b-instruct-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-30B-A3B-Instruct-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-30B-A3B-Instruct-GGUF",
             gguf_file: "Qwen3VL-30B-A3B-Instruct-Q8_0.gguf",
             base_repo: "Qwen/Qwen3-VL-30B-A3B-Instruct",
         }),
-        "qwen3-vl:30b-a3b-thinking" => Some(ModelAsset::Gguf {
+        "qwen3-vl:30b-a3b-thinking" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-30B-A3B-Thinking-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-30B-A3B-Thinking-GGUF",
             gguf_file: "Qwen3VL-30B-A3B-Thinking-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-30B-A3B-Thinking",
         }),
-        "qwen3-vl:30b-a3b-thinking-q8" => Some(ModelAsset::Gguf {
+        "qwen3-vl:30b-a3b-thinking-q8" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-30B-A3B-Thinking-Q8_0.gguf
             gguf_repo: "Qwen/Qwen3-VL-30B-A3B-Thinking-GGUF",
             gguf_file: "Qwen3VL-30B-A3B-Thinking-Q8_0.gguf",
@@ -639,13 +664,13 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         }),
 
         // Gate behind explicit user confirmation regardless.
-        "qwen3-vl:235b-a22b-instruct" => Some(ModelAsset::Gguf {
+        "qwen3-vl:235b-a22b-instruct" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-235B-A22B-Instruct-Q8_0.gguf (per official usage example)
             gguf_repo: "Qwen/Qwen3-VL-235B-A22B-Instruct-GGUF",
             gguf_file: "Qwen3VL-235B-A22B-Instruct-Q4_K_M.gguf",
             base_repo: "Qwen/Qwen3-VL-235B-A22B-Instruct",
         }),
-        "qwen3-vl:235b-a22b-thinking" => Some(ModelAsset::Gguf {
+        "qwen3-vl:235b-a22b-thinking" => Some(OreAsset::Gguf {
             // mmproj: mmproj-Qwen3VL-235B-A22B-Thinking-F16.gguf
             gguf_repo: "Qwen/Qwen3-VL-235B-A22B-Thinking-GGUF",
             gguf_file: "Qwen3VL-235B-A22B-Thinking-Q4_K_M.gguf",
@@ -655,17 +680,17 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         // DEEPSEEK-R1
         // 3. REASONING & THINKING MODELS (The <think> tag generators)
         // DeepSeek-R1 Distilled onto Qwen architecture (The most popular right now)
-        "deepseek-r1:7b" | "deepseek-r1-qwen:7b" => Some(ModelAsset::Gguf {
+        "deepseek-r1:7b" | "deepseek-r1-qwen:7b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF",
             gguf_file: "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
             base_repo: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
         }),
-        "deepseek-r1:14b" | "deepseek-r1-qwen:14b" => Some(ModelAsset::Gguf {
+        "deepseek-r1:14b" | "deepseek-r1-qwen:14b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF",
             gguf_file: "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
             base_repo: "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
         }),
-        "deepseek-r1:32b" | "deepseek-r1-qwen:32b" => Some(ModelAsset::Gguf {
+        "deepseek-r1:32b" | "deepseek-r1-qwen:32b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF",
             gguf_file: "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf",
             base_repo: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
@@ -673,22 +698,22 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
 
         // ==================== LLAMA FAMILY MODELS ====================
         // LLAMA 2 (The Classic)
-        "llama2:7b" => Some(ModelAsset::Gguf {
+        "llama2:7b" => Some(OreAsset::Gguf {
             gguf_repo: "TheBloke/Llama-2-7B-GGUF",
             gguf_file: "llama-2-7b.Q4_K_M.gguf",
             base_repo: "meta-llama/Llama-2-7b-hf",
         }),
-        "llama2:7b-q8" => Some(ModelAsset::Gguf {
+        "llama2:7b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "TheBloke/Llama-2-7B-GGUF",
             gguf_file: "llama-2-7b.Q8_0.gguf",
             base_repo: "meta-llama/Llama-2-7b-hf",
         }),
-        "llama2:13b" => Some(ModelAsset::Gguf {
+        "llama2:13b" => Some(OreAsset::Gguf {
             gguf_repo: "TheBloke/Llama-2-13B-GGUF",
             gguf_file: "llama-2-13b.Q4_K_M.gguf",
             base_repo: "meta-llama/Llama-2-13b-hf",
         }),
-        "llama2:13b-q8" => Some(ModelAsset::Gguf {
+        "llama2:13b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "TheBloke/Llama-2-13B-GGUF",
             gguf_file: "llama-2-13b.Q8_0.gguf",
             base_repo: "meta-llama/Llama-2-13b-hf",
@@ -696,17 +721,17 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
 
         // LLAMA 3 (Original - First Major Release)
         // The Workhorses (8GB - 16GB VRAM)
-        "llama3:8b" => Some(ModelAsset::Gguf {
+        "llama3:8b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/Meta-Llama-3-8B-Instruct-GGUF",
             gguf_file: "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
             base_repo: "meta-llama/Meta-Llama-3-8B-Instruct",
         }),
-        "llama3:8b-q8" => Some(ModelAsset::Gguf {
+        "llama3:8b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/Meta-Llama-3-8B-Instruct-GGUF",
             gguf_file: "Meta-Llama-3-8B-Instruct-Q8_0.gguf",
             base_repo: "meta-llama/Meta-Llama-3-8B-Instruct",
         }),
-        "llama3:70b" => Some(ModelAsset::Gguf {
+        "llama3:70b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/Meta-Llama-3-70B-Instruct-GGUF",
             gguf_file: "Meta-Llama-3-70B-Instruct-Q4_K_M.gguf",
             base_repo: "meta-llama/Meta-Llama-3-70B-Instruct",
@@ -715,17 +740,17 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
 
         // LLAMA 3.1 (Next-Gen with 128K Context)
         // The Workhorses (8GB - 16GB VRAM)
-        "llama3.1:8b" => Some(ModelAsset::Gguf {
+        "llama3.1:8b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
             gguf_file: "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
             base_repo: "meta-llama/Llama-3.1-8B-Instruct",
         }),
-        "llama3.1:8b-q8" => Some(ModelAsset::Gguf {
+        "llama3.1:8b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
             gguf_file: "Meta-Llama-3.1-8B-Instruct-Q8_0.gguf",
             base_repo: "meta-llama/Llama-3.1-8B-Instruct",
         }),
-        "llama3.1:70b" => Some(ModelAsset::Gguf {
+        "llama3.1:70b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF",
             gguf_file: "Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf",
             base_repo: "meta-llama/Llama-3.1-70B-Instruct",
@@ -734,22 +759,22 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
 
         // LLAMA 3.2 (Mobile/Optimized + Multilingual)
         // The Tiny Models (Ultra-fast, fits anywhere)
-        "llama3.2:1b" => Some(ModelAsset::Gguf {
+        "llama3.2:1b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Llama-3.2-1B-Instruct-GGUF",
             gguf_file: "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
             base_repo: "unsloth/Llama-3.2-1B-Instruct",
         }),
-        "llama3.2:1b-q8" => Some(ModelAsset::Gguf {
+        "llama3.2:1b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Llama-3.2-1B-Instruct-GGUF",
             gguf_file: "Llama-3.2-1B-Instruct-Q8_0.gguf",
             base_repo: "unsloth/Llama-3.2-1B-Instruct",
         }),
-        "llama3.2:3b" => Some(ModelAsset::Gguf {
+        "llama3.2:3b" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Llama-3.2-3B-Instruct-GGUF",
             gguf_file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
             base_repo: "unsloth/Llama-3.2-3B-Instruct",
         }),
-        "llama3.2:3b-q8" => Some(ModelAsset::Gguf {
+        "llama3.2:3b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "unsloth/Llama-3.2-3B-Instruct-GGUF",
             gguf_file: "Llama-3.2-3B-Instruct-Q8_0.gguf",
             base_repo: "unsloth/Llama-3.2-3B-Instruct",
@@ -764,7 +789,7 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         //      1. The LLM weights  → gguf_file below
         //      2. A vision encoder → "Llama-3.2-11B-Vision-Instruct-mmproj.f16.gguf"
         //    Without the mmproj file the model cannot process images at all.
-        //    ModelAsset::Gguf only has a single gguf_file slot; the same
+        //    OreAsset::Gguf only has a single gguf_file slot; the same
         //    mmproj_file fix needed for Qwen3-VL applies here too.
         //
         // B) mllama ARCHITECTURE: Llama 3.2 Vision uses `mllama` (cross-attention
@@ -776,13 +801,13 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         // FILENAME QUIRK: the leafspark repo uses dot-separated quant extensions
         // ("…-Instruct.Q4_K_M.gguf") unlike the hyphen style used by bartowski
         // ("…-Instruct-Q4_K_M.gguf"). Do not conflate the two patterns.
-        "llama3.2:11b-vision" => Some(ModelAsset::Gguf {
+        "llama3.2:11b-vision" => Some(OreAsset::Gguf {
             // mmproj: Llama-3.2-11B-Vision-Instruct-mmproj.f16.gguf
             gguf_repo: "leafspark/Llama-3.2-11B-Vision-Instruct-GGUF",
             gguf_file: "Llama-3.2-11B-Vision-Instruct.Q4_K_M.gguf",
             base_repo: "meta-llama/Llama-3.2-11B-Vision-Instruct",
         }),
-        "llama3.2:11b-vision-q8" => Some(ModelAsset::Gguf {
+        "llama3.2:11b-vision-q8" => Some(OreAsset::Gguf {
             // mmproj: Llama-3.2-11B-Vision-Instruct-mmproj.f16.gguf
             gguf_repo: "leafspark/Llama-3.2-11B-Vision-Instruct-GGUF",
             gguf_file: "Llama-3.2-11B-Vision-Instruct.Q8_0.gguf",
@@ -792,7 +817,7 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
 
         // LLAMA 3.3 (Latest with improved reasoning)
         // The Heavyweight (24GB+ VRAM) - Best 70B model overall
-        "llama3.3:70b" => Some(ModelAsset::Gguf {
+        "llama3.3:70b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/Llama-3.3-70B-Instruct-GGUF",
             gguf_file: "Llama-3.3-70B-Instruct-Q4_K_M.gguf",
             base_repo: "meta-llama/Llama-3.3-70B-Instruct",
@@ -800,12 +825,12 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         // "llama3.3:70b-q8" is sharded and not available in GGUF format. Will add support in future.
 
         // LLAMA GUARD 2 (Safety/Fine-tuning models)
-        "llama-guard:8b" => Some(ModelAsset::Gguf {
+        "llama-guard:8b" => Some(OreAsset::Gguf {
             gguf_repo: "QuantFactory/Meta-Llama-Guard-2-8B-GGUF",
             gguf_file: "Meta-Llama-Guard-2-8B.Q4_K_M.gguf",
             base_repo: "meta-llama/Meta-Llama-Guard-2-8B",
         }),
-        "llama-guard:8b-q8" => Some(ModelAsset::Gguf {
+        "llama-guard:8b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "QuantFactory/Meta-Llama-Guard-2-8B-GGUF",
             gguf_file: "Meta-Llama-Guard-2-8B.Q8_0.gguf",
             base_repo: "meta-llama/Meta-Llama-Guard-2-8B",
@@ -825,22 +850,36 @@ pub fn get_model_map(alias: &str) -> Option<ModelAsset> {
         // -------------------------------------------------------------
 
         // DEEPSEEK-R1 DISTILL LLAMA (Reasoning distilled into Llama architecture)
-        "deepseek-r1-llama:8b" => Some(ModelAsset::Gguf {
+        "deepseek-r1-llama:8b" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF",
             gguf_file: "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf",
             base_repo: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
         }),
-        "deepseek-r1-llama:8b-q8" => Some(ModelAsset::Gguf {
+        "deepseek-r1-llama:8b-q8" => Some(OreAsset::Gguf {
             gguf_repo: "bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF",
             gguf_file: "DeepSeek-R1-Distill-Llama-8B-Q8_0.gguf",
             base_repo: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
         }),
 
+        // --- WASM RUNTIMES (The Inception Interpreters) ---
+        "system-py" => Some(OreAsset::Wasm {
+            // Using a highly-optimized WASI Python 3.11 build
+            url: "https://github.com/astral-sh/python-wasm/releases/download/3.11.4/python-3.11.4-wasi_snapshot_preview1.wasm",
+            folder: "runtimes",
+            filename: "system-py.wasm",
+        }),
+        "system-js" => Some(OreAsset::Wasm {
+            // QuickJS compiled to WASI
+            url: "https://github.com/bytecodealliance/javy/releases/download/v0.1.0/javy.wasm",
+            folder: "runtimes",
+            filename: "system-js.wasm",
+        }),
+
         // --- SYSTEM EMBEDDERS (SAFETENSORS) ---
-        "system-embedder" => Some(ModelAsset::Safetensors {
+        "system-embedder" => Some(OreAsset::Safetensors {
             repo: "nomic-ai/nomic-embed-text-v1.5",
         }),
-        "all-minilm" => Some(ModelAsset::Safetensors {
+        "all-minilm" => Some(OreAsset::Safetensors {
             repo: "sentence-transformers/all-MiniLM-L6-v2",
         }),
         _ => None,

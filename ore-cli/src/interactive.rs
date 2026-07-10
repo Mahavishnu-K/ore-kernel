@@ -2,7 +2,6 @@ use colored::*;
 use inquire::{Confirm, CustomType, MultiSelect, Select, Text};
 use reqwest::Client;
 use std::fs;
-use std::path::Path;
 use std::process::exit;
 
 use crate::utils::{get_ore_dir, get_ore_theme, print_panel, print_section_divider};
@@ -10,12 +9,18 @@ use crate::utils::{get_ore_dir, get_ore_theme, print_panel, print_section_divide
 pub fn run_init_wizard() {
     // 1. ASCII Art Branding
     let logo = r#"
-  ██████╗ ██████╗ ███████╗
- ██╔═══██╗██╔══██╗██╔════╝
- ██║   ██║██████╔╝█████╗  
- ██║   ██║██╔══██╗██╔══╝  
- ╚██████╔╝██║  ██║███████╗
-  ╚═════╝ ╚═╝  ╚═╝╚══════╝"#;
+      ██████╗ ██████╗ ███████╗
+     ██╔═══██╗██╔══██╗██╔════╝
+     ██║   ██║██████╔╝█████╗  
+     ██║   ██║██╔══██╗██╔══╝  
+     ╚██████╔╝██║  ██║███████╗
+      ╚═════╝ ╚═╝  ╚═╝╚══════╝
+    ██╗  ██╗███████╗██████╗ ███╗   ██╗███████╗██╗     
+    ██║ ██╔╝██╔════╝██╔══██╗████╗  ██║██╔════╝██║     
+    █████╔╝ █████╗  ██████╔╝██╔██╗ ██║█████╗  ██║     
+    ██╔═██╗ ██╔══╝  ██╔══██╗██║╚██╗██║██╔══╝  ██║     
+    ██║  ██╗███████╗██║  ██║██║ ╚████║███████╗███████╗
+    ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝"#;
 
     println!("{}", logo.bright_cyan().bold());
     println!(
@@ -108,7 +113,8 @@ pub fn run_init_wizard() {
     toml_output.push_str(&format!("pipe_ttl_hours = {}\n", pipe_ttl));
 
     // Save to the root directory
-    let config_path = format!("{}/ore.toml", get_ore_dir());
+    let base_dir = get_ore_dir();
+    let config_path = base_dir.join("ore.toml");
     fs::write(&config_path, toml_output).expect("Failed to write config file");
 
     println!("\n{} ORE System configured successfully!", "[OK]".green());
@@ -417,11 +423,12 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
     }
 
     // Write to disk
-    let manifest_dir = format!("{}/manifests", get_ore_dir());
-    if !Path::new(&manifest_dir).exists() {
+    let base_dir = get_ore_dir();
+    let manifest_dir = base_dir.join("manifests");
+    if !manifest_dir.exists() {
         fs::create_dir_all(&manifest_dir).unwrap();
     }
-    let file_path = format!("{}/{}.toml", manifest_dir, app_id);
+    let file_path = manifest_dir.join(format!("{}.toml", app_id));
     fs::write(&file_path, &toml_output).expect("Failed to write manifest");
 
     print_panel("Manifest Preview", "");
@@ -470,7 +477,11 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
     );
 
     println!("\n{} Manifest forged successfully.", "✔".green());
-    println!("{} Path   :: {}", "ℹ".blue(), file_path.bright_black());
+    println!(
+        "{} Path   :: {}",
+        "ℹ".blue(),
+        file_path.display().to_string().bright_black()
+    );
     println!(
         "{} Status :: Awaiting Kernel Reboot for Enforcement.\n",
         "ℹ".blue()

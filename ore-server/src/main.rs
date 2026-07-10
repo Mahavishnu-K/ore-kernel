@@ -30,16 +30,20 @@ use crate::state::{KernelState, OreConfig};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     kprintln!("=== ORE SYSTEM KERNEL BOOTING ===");
 
+    let base_dir = ore_core::get_ore_dir();
+
     let session_token = Uuid::new_v4().to_string();
     fs::write("ore-kernel.token", &session_token).expect("Failed to write security token.");
     kprintln!("-> [SECURITY] Master Token generated and secured to disk.");
 
     kprintln!("-> Sweeping /manifests for installed Apps...");
-    let app_registry =
-        AppRegistry::boot_load("../manifests").expect("FATAL: Failed to initialize App Registry");
+    let manifests_dir = base_dir.join("manifests");
+    let app_registry = AppRegistry::boot_load(manifests_dir.to_str().unwrap())
+        .expect("FATAL: Failed to initialize App Registry");
 
+    let config_path = base_dir.join("ore.toml");
     let config_str =
-        fs::read_to_string("../ore.toml").expect("FATAL: ore.toml missing. Run 'ore init'");
+        fs::read_to_string(&config_path).expect("FATAL: ore.toml missing. Run 'ore init'");
     let config: OreConfig = toml::from_str(&config_str).unwrap();
 
     let driver: Arc<dyn InferenceDriver> = if config.system.engine == "native" {

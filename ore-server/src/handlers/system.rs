@@ -19,9 +19,8 @@ pub async fn execute_tool(
     Json(payload): Json<ExecuteRequest>,
 ) -> String {
     kprintln!(
-        "-> [EXECUTION] Agent '{}' requested to run tool '{}'",
+        "-> [EXECUTION] Agent '{}' requested to run a sandbox.",
         payload.app_id,
-        payload.tool_name
     );
 
     let manifest = match state.registry.get_app(&payload.app_id) {
@@ -43,40 +42,65 @@ pub async fn execute_tool(
             .to_string();
     }
 
-    if !manifest
-        .execution
-        .allowed_tools
-        .contains(&payload.tool_name)
-    {
-        kprintln!(
-            "-> [BLOCKED] Tool '{}' is not in allowed_tools list.",
-            payload.tool_name
-        );
+    let base_dir = ore_core::get_ore_dir();
+    let wasm_path: std::path::PathBuf;
+    let mut run_args = vec![];
+
+    if let Some(script) = &payload.script {
+        let lang = payload.language.as_deref().unwrap_or("python");
+        kprintln!("-> [EXECUTION] Mode: Autonomous Script ({})", lang);
+
+        if lang == "python" {
+            wasm_path = base_dir.join("runtimes").join("system-py.wasm");
+            run_args.push("python".to_string());
+            run_args.push("-c".to_string());
+            run_args.push(script.clone());
+        } else if lang == "js" || lang == "javascript" {
+            wasm_path = base_dir.join("runtimes").join("system-js.wasm");
+            run_args.push("js".to_string());
+            run_args.push("-e".to_string());
+            run_args.push(script.clone());
+        } else {
+            return format!("KERNEL ERROR: Unsupported language '{}'", lang);
+        }
+    } else if let Some(tool) = &payload.tool_name {
+        kprintln!("-> [EXECUTION] Mode: Fixed Tool ({}.wasm)", tool);
+
+        if !manifest.execution.allowed_tools.contains(tool) {
+            kprintln!("-> [BLOCKED] Tool '{}' is not in allowed_tools list.", tool);
+            return format!(
+                "KERNEL ALERT: Tool '{}' is not whitelisted in manifest.",
+                tool
+            );
+        }
+
+        // LOAD THE CARTRIDGE ("The Console-Cartridge Architecture")
+        // We look for the pre-compiled .wasm file in a local /tools directory
+        wasm_path = base_dir.join("tools").join(format!("{}.wasm", tool));
+        run_args.push(tool.clone()); // argv[0]
+        if let Some(args) = &payload.args {
+            run_args.extend(args.clone());
+        }
+    } else {
+        return "KERNEL ERROR: Must provide either 'script' or 'tool_name'.".to_string();
+    }
+
+    if !wasm_path.exists() {
         return format!(
-            "KERNEL ALERT: Tool '{}' is not whitelisted in manifest.",
-            payload.tool_name
+            "KERNEL ERROR: Tool binary '{}' not found. Run 'ore pull <tool>' or install the tool.",
+            wasm_path.display()
         );
     }
 
-    // LOAD THE CARTRIDGE ("The Console-Cartridge Architecture")
-    // We look for the pre-compiled .wasm file in a local /tools directory
-    let tool_path = format!("../tools/{}.wasm", payload.tool_name);
-    if !std::path::Path::new(&tool_path).exists() {
-        return format!(
-            "KERNEL ERROR: Tool binary '{}.wasm' not found on host.",
-            payload.tool_name
-        );
-    }
-
-    let wasm_binary = match fs::read(&tool_path) {
+    let wasm_binary = match fs::read(&wasm_path) {
         Ok(b) => b,
-        Err(e) => return format!("KERNEL ERROR: Failed to read tool binary: {}", e),
+        Err(e) => return format!("KERNEL ERROR: Failed to read WASM binary: {}", e),
     };
 
     let params = ExecuteParams {
         wasm_binary,
         fuel_limit: 50_000_000, // 50 Million CPU Instructions.
-        args: payload.args,
+        args: run_args,
         allowed_read_paths: manifest.file_system.allowed_read_paths.clone(),
     };
 

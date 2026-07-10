@@ -18,12 +18,12 @@ pub struct ContextMessage {
 pub struct Pager;
 
 impl Pager {
-    const SWAP_DIR: &'static str = "../memory";
-
-    pub fn ensure_swap_drive() {
-        if !Path::new(Self::SWAP_DIR).exists() {
-            fs::create_dir_all(Self::SWAP_DIR).expect("Failed to create SSD Swap directory");
+    pub fn get_swap_dir() -> std::path::PathBuf {
+        let path = crate::get_ore_dir().join("memory");
+        if !path.exists() {
+            std::fs::create_dir_all(&path).expect("Failed to create SSD Swap directory");
         }
+        path
     }
 
     /// Generates a mathematically stable SHA-256 fingerprint of the JSON history
@@ -42,8 +42,8 @@ impl Pager {
 
     /// Tier 1 Paging, Freeze the Agent's Chat History to the SSD
     pub fn page_out_history(app_id: &str, history: &Vec<ContextMessage>) {
-        Self::ensure_swap_drive();
-        let path = format!("{}/{}.json", Self::SWAP_DIR, app_id);
+        let swap_dir = Self::get_swap_dir();
+        let path = swap_dir.join(format!("{}.json", app_id));
 
         if let Ok(data) = serde_json::to_string_pretty(history) {
             let _ = fs::write(&path, data);
@@ -53,7 +53,8 @@ impl Pager {
 
     /// Stream the Agent's Chat History from the SSD back into RAM
     pub fn page_in_history(app_id: &str) -> Vec<ContextMessage> {
-        let path = format!("{}/{}.json", Self::SWAP_DIR, app_id);
+        let swap_dir = Self::get_swap_dir();
+        let path = swap_dir.join(format!("{}.json", app_id));
 
         if Path::new(&path).exists()
             && let Ok(data) = fs::read_to_string(&path)
@@ -66,8 +67,8 @@ impl Pager {
     }
 
     pub fn page_out_semantic(pipe_name: &str, chunks: &VecDeque<Arc<MemoryChunk>>) {
-        Self::ensure_swap_drive();
-        let path = format!("{}/{}.pipe", Self::SWAP_DIR, pipe_name);
+        let swap_dir = Self::get_swap_dir();
+        let path = swap_dir.join(format!("{}.pipe", pipe_name));
 
         // Bincode freezes the RAM structure into pure 1s and 0s instantly
         if let Ok(data) = bincode::serialize(chunks) {
@@ -80,7 +81,8 @@ impl Pager {
     }
 
     pub fn page_in_semantic(pipe_name: &str) -> Option<VecDeque<Arc<MemoryChunk>>> {
-        let path = format!("{}/{}.pipe", Self::SWAP_DIR, pipe_name);
+        let swap_dir = Self::get_swap_dir();
+        let path = swap_dir.join(format!("{}.pipe", pipe_name));
 
         if Path::new(&path).exists() {
             // Read raw bytes instead of strings
@@ -108,11 +110,11 @@ impl Pager {
         tensors: &HashMap<String, Tensor>,
         fingerprint: &str,
     ) {
-        Self::ensure_swap_drive();
+        let swap_dir = Self::get_swap_dir();
         let safe_model = model_name.replace(":", "-");
 
-        let tensor_path = format!("{}/{}_{}.safetensors", Self::SWAP_DIR, app_id, safe_model);
-        let hash_path = format!("{}/{}_{}.hash", Self::SWAP_DIR, app_id, safe_model);
+        let tensor_path = swap_dir.join(format!("{}_{}.safetensors", app_id, safe_model));
+        let hash_path = swap_dir.join(format!("{}_{}.hash", app_id, safe_model));
 
         // Save the raw math matrices directly to the SSD
         if let Err(e) = candle_core::safetensors::save(tensors, &tensor_path) {
@@ -134,8 +136,9 @@ impl Pager {
         current_fingerprint: &str,
     ) -> Option<HashMap<String, Tensor>> {
         let safe_model = model_name.replace(":", "-");
-        let tensor_path = format!("{}/{}_{}.safetensors", Self::SWAP_DIR, app_id, safe_model);
-        let hash_path = format!("{}/{}_{}.hash", Self::SWAP_DIR, app_id, safe_model);
+        let swap_dir = Self::get_swap_dir();
+        let tensor_path = swap_dir.join(format!("{}_{}.safetensors", app_id, safe_model));
+        let hash_path = swap_dir.join(format!("{}_{}.hash", app_id, safe_model));
 
         if Path::new(&hash_path).exists()
             && let Ok(saved_hash) = fs::read_to_string(&hash_path)
@@ -166,7 +169,8 @@ impl Pager {
 
     pub fn get_kv_cache_size_mb(app_id: &str, model_name: &str) -> u32 {
         let safe_model = model_name.replace(":", "-");
-        let path = format!("{}/{}_{}.safetensors", Self::SWAP_DIR, app_id, safe_model);
+        let swap_dir = Self::get_swap_dir();
+        let path = swap_dir.join(format!("{}_{}.safetensors", app_id, safe_model));
 
         if let Ok(metadata) = fs::metadata(&path) {
             (metadata.len() / (1024 * 1024)) as u32
@@ -177,11 +181,12 @@ impl Pager {
 
     /// Wipe the memory clean
     pub fn clear_page(app_id: &str) {
-        let _ = fs::remove_file(format!("{}/{}.json", Self::SWAP_DIR, app_id));
-        let _ = fs::remove_file(format!("{}/{}.pipe", Self::SWAP_DIR, app_id));
+        let swap_dir = Self::get_swap_dir();
+        let _ = fs::remove_file(swap_dir.join(format!("{}.json", app_id)));
+        let _ = fs::remove_file(swap_dir.join(format!("{}.pipe", app_id)));
 
         // Sweep for any Model-Specific Safetensor KV-Caches
-        if let Ok(entries) = fs::read_dir(Self::SWAP_DIR) {
+        if let Ok(entries) = fs::read_dir(&swap_dir) {
             for entry in entries.flatten() {
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 if file_name.starts_with(&format!("{}_", app_id))
@@ -199,7 +204,8 @@ impl Pager {
     }
 
     pub fn delete_kv_cache(app_id: &str) {
-        if let Ok(entries) = fs::read_dir(Self::SWAP_DIR) {
+        let swap_dir = Self::get_swap_dir();
+        if let Ok(entries) = fs::read_dir(&swap_dir) {
             for entry in entries.flatten() {
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 if file_name.starts_with(&format!("{}_", app_id))

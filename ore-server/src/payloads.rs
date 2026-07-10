@@ -47,6 +47,12 @@ pub struct SearchResult {
 #[derive(serde::Deserialize)]
 pub struct ExecuteRequest {
     pub app_id: String,
-    pub tool_name: String,
-    pub args: Vec<String>,
+
+    // Fixed Tool Mode ("Console Cartridge")
+    pub tool_name: Option<String>,
+    pub args: Option<Vec<String>>,
+
+    // Autonomous Mode ("Inception")
+    pub language: Option<String>,
+    pub script: Option<String>,
 }

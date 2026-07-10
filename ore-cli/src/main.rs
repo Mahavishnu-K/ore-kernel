@@ -7,9 +7,9 @@ use cli::{Cli, Commands};
 use colored::*;
 use futures_util::StreamExt;
 use hf_hub::{Repo, RepoType, api::tokio::Api};
-use std::{fs, path::Path, process::exit};
+use std::{fs, process::exit};
 use utils::{
-    ModelAsset, build_secure_client, download_with_progress, get_hf_token, get_model_map,
+    OreAsset, build_secure_client, download_with_progress, get_asset_map, get_hf_token,
     get_system_engine,
 };
 
@@ -178,7 +178,7 @@ async fn main() {
                     model_name.blue().bold()
                 );
 
-                let asset_spec = match get_model_map(model_name) {
+                let asset_spec = match get_asset_map(model_name) {
                     Some(map) => map,
                     None => {
                         println!(
@@ -195,13 +195,15 @@ async fn main() {
 
                 let safe_folder_name = model_name.replace(":", "-");
 
-                let ore_models_dir = Path::new("../models").join(&safe_folder_name);
+                let base_dir = crate::utils::get_ore_dir();
+                let ore_models_dir = base_dir.join("models").join(&safe_folder_name);
+
                 if !ore_models_dir.exists() {
                     fs::create_dir_all(&ore_models_dir).unwrap();
                 }
 
                 match asset_spec {
-                    ModelAsset::Gguf {
+                    OreAsset::Gguf {
                         gguf_repo,
                         gguf_file,
                         base_repo,
@@ -271,7 +273,7 @@ async fn main() {
                         println!("Tokenizer Path :: {}\n", tokenizer_path_display);
                     }
 
-                    ModelAsset::Safetensors { repo } => {
+                    OreAsset::Safetensors { repo } => {
                         println!(
                             "{} Architecture: Safetensors (Cloud Standard)",
                             "[i]".cyan()
@@ -318,6 +320,46 @@ async fn main() {
                             "[OK]".green(),
                             model_name.to_uppercase()
                         );
+                    }
+
+                    OreAsset::Wasm {
+                        url,
+                        folder,
+                        filename,
+                    } => {
+                        println!("{} Architecture: WebAssembly (WASM/WASI)", "[i]".cyan());
+
+                        let target_dir = crate::utils::get_ore_dir().join(folder);
+                        if !target_dir.exists() {
+                            fs::create_dir_all(&target_dir).unwrap();
+                        }
+
+                        let final_dest = target_dir.join(filename);
+
+                        println!(
+                            "{} Pulling {} into {}/...",
+                            "[~]".yellow(),
+                            filename,
+                            folder
+                        );
+
+                        // We use None for token since WASM runtimes are public GitHub releases
+                        if let Err(e) = download_with_progress(url, &final_dest, &None).await {
+                            println!(
+                                "{} FATAL: Failed to download WASM runtime: {}",
+                                "[-]".red(),
+                                e
+                            );
+                            std::process::exit(1);
+                        }
+
+                        println!("{} Binary secured.", "[+]".green());
+                        println!(
+                            "\n{} '{}' INSTALLED NATIVELY.",
+                            "[OK]".green(),
+                            model_name.to_uppercase()
+                        );
+                        println!("Path :: {}\n", final_dest.display());
                     }
                 }
             } else {

@@ -20,6 +20,31 @@ macro_rules! kprintln {
     }};
 }
 
+use std::path::PathBuf;
+
+pub fn get_ore_dir() -> PathBuf {
+    if let Ok(custom_dir) = std::env::var("ORE_DIR") {
+        return PathBuf::from(custom_dir);
+    }
+
+    let local_dev_path = PathBuf::from("..");
+    if local_dev_path.join("ore.toml").exists() {
+        return local_dev_path;
+    }
+
+    let home = std::env::var("USERPROFILE") // Windows
+        .or_else(|_| std::env::var("HOME")) // Linux/macOS
+        .expect("FATAL: Could not determine user home directory.");
+
+    let ore_path = PathBuf::from(home).join(".ore");
+
+    if !ore_path.exists() {
+        std::fs::create_dir_all(&ore_path).expect("FATAL: Failed to create ~/.ore directory.");
+    }
+
+    ore_path
+}
+
 pub mod driver;
 pub mod external;
 pub mod firewall;
