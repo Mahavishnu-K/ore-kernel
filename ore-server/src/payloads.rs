@@ -51,8 +51,11 @@ pub struct ExecuteRequest {
     // Fixed Tool Mode ("Console Cartridge")
     pub tool_name: Option<String>,
     pub args: Option<Vec<String>>,
+    pub input_data: Option<String>, // Allow passing complex JSON/Text into the tool via STDIN
 
     // Autonomous Mode ("Inception")
     pub language: Option<String>,
     pub script: Option<String>,
+
+    pub shell_command: Option<String>,
 }

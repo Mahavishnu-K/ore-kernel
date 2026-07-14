@@ -79,7 +79,7 @@ pub fn get_ore_theme() -> RenderConfig<'static> {
 /// Prints a sleek unicode border box
 pub fn print_panel(title: &str, subtitle: &str) {
     println!();
-    let width: usize = 65; // Fixed terminal width for the boxes
+    let width: usize = 75; // Fixed terminal width for the boxes
 
     // Top border
     let top_filler = "─".repeat(width.saturating_sub(title.len() + 5));
@@ -123,7 +123,7 @@ pub fn print_panel(title: &str, subtitle: &str) {
 
 /// Prints a section divider that aligns perfectly with the panel width
 pub fn print_section_divider(num: &str, title: &str) {
-    let width: usize = 65;
+    let width: usize = 75;
     let filler_len = width.saturating_sub(title.len() + num.len() + 7);
     let filler = "─".repeat(filler_len);
     println!(
@@ -863,14 +863,14 @@ pub fn get_asset_map(alias: &str) -> Option<OreAsset> {
 
         // --- WASM RUNTIMES (The Inception Interpreters) ---
         "system-py" => Some(OreAsset::Wasm {
-            // Using a highly-optimized WASI Python 3.11 build
-            url: "https://github.com/astral-sh/python-wasm/releases/download/3.11.4/python-3.11.4-wasi_snapshot_preview1.wasm",
+            // Official VMware Labs CPython 3.12 (Compiled to WASI)
+            url: "https://github.com/vmware-labs/webassembly-language-runtimes/releases/download/python%2F3.12.0%2B20231211-040d5a6/python-3.12.0.wasm",
             folder: "runtimes",
             filename: "system-py.wasm",
         }),
         "system-js" => Some(OreAsset::Wasm {
-            // QuickJS compiled to WASI
-            url: "https://github.com/bytecodealliance/javy/releases/download/v0.1.0/javy.wasm",
+            // WasmEdge QuickJS (A lightning-fast Javascript Engine compiled to WASI)
+            url: "https://github.com/second-state/wasmedge-quickjs/releases/download/v0.5.0-alpha/wasmedge_quickjs.wasm",
             folder: "runtimes",
             filename: "system-js.wasm",
         }),

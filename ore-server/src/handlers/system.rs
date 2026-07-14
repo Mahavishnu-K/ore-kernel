@@ -42,6 +42,65 @@ pub async fn execute_tool(
             .to_string();
     }
 
+    let has_wasm_tool =
+        payload.tool_name.is_some() || payload.args.is_some() || payload.input_data.is_some();
+    let has_wasm_script = payload.language.is_some() || payload.script.is_some();
+    let has_shell = payload.shell_command.is_some();
+
+    if (has_wasm_tool as u8 + has_wasm_script as u8 + has_shell as u8) > 1 {
+        kprintln!(
+            "-> [BLOCKED] Ambiguous execution payload from Agent '{}'.",
+            manifest.app_id
+        );
+        return "KERNEL ERROR: Ambiguous request. Choose one mode (tool, script, or shell)."
+            .to_string();
+    }
+
+    // Raw host shell execution mode
+    if let Some(cmd) = &payload.shell_command {
+        // STRICT MANIFEST ENFORCEMENT
+        if !manifest.execution.can_execute_shell {
+            kprintln!(
+                "-> [BLOCKED] Agent '{}' lacks raw SHELL execution permissions.",
+                manifest.app_id
+            );
+            return "KERNEL ALERT: Permission Denied. can_execute_shell is false.".to_string();
+        }
+
+        kprintln!(
+            "-> [DANGER] Agent '{}' executing RAW HOST SHELL command...",
+            manifest.app_id
+        );
+
+        // SPAWN THE HOST PROCESS (Bypasses Sandbox entirely)
+        // Automatically uses 'cmd.exe' for Windows, and 'sh' for Linux/macOS
+        let output = if cfg!(target_os = "windows") {
+            std::process::Command::new("cmd").args(["/C", cmd]).output()
+        } else {
+            std::process::Command::new("sh").arg("-c").arg(cmd).output()
+        };
+
+        // CAPTURE AND RETURN HOST OUTPUT
+        return match output {
+            Ok(out) => {
+                let mut final_output = String::from_utf8_lossy(&out.stdout).to_string();
+                let error_output = String::from_utf8_lossy(&out.stderr).to_string();
+
+                if !error_output.is_empty() {
+                    final_output.push_str("\n--- STDERR ---\n");
+                    final_output.push_str(&error_output);
+                }
+
+                kprintln!("-> [SHELL SUCCESS] Output returned to Agent.");
+                final_output
+            }
+            Err(e) => {
+                kprintln!("-> [SHELL FAILED] {}", e);
+                format!("KERNEL ERROR: Host Shell execution failed: {}", e)
+            }
+        };
+    }
+
     let base_dir = ore_core::get_ore_dir();
     let wasm_path: std::path::PathBuf;
     let mut run_args = vec![];
@@ -50,12 +109,31 @@ pub async fn execute_tool(
         let lang = payload.language.as_deref().unwrap_or("python");
         kprintln!("-> [EXECUTION] Mode: Autonomous Script ({})", lang);
 
-        if lang == "python" {
+        if !manifest
+            .execution
+            .allowed_language_runtimes
+            .contains(&lang.to_string())
+            && !manifest
+                .execution
+                .allowed_language_runtimes
+                .contains(&"*".to_string())
+        {
+            kprintln!(
+                "-> [BLOCKED] Runtime '{}' is not in allowed_language_runtimes list.",
+                lang
+            );
+            return format!(
+                "KERNEL ALERT: Autonomous scripting in '{}' is not whitelisted. Add it to allowed_language_runtimes.",
+                lang
+            );
+        }
+
+        if lang == "python" || lang == "py" {
             wasm_path = base_dir.join("runtimes").join("system-py.wasm");
             run_args.push("python".to_string());
             run_args.push("-c".to_string());
             run_args.push(script.clone());
-        } else if lang == "js" || lang == "javascript" {
+        } else if lang == "javascript" || lang == "js" {
             wasm_path = base_dir.join("runtimes").join("system-js.wasm");
             run_args.push("js".to_string());
             run_args.push("-e".to_string());
@@ -66,10 +144,12 @@ pub async fn execute_tool(
     } else if let Some(tool) = &payload.tool_name {
         kprintln!("-> [EXECUTION] Mode: Fixed Tool ({}.wasm)", tool);
 
-        if !manifest.execution.allowed_tools.contains(tool) {
+        if !manifest.execution.allowed_tools.contains(tool)
+            && !manifest.execution.allowed_tools.contains(&"*".to_string())
+        {
             kprintln!("-> [BLOCKED] Tool '{}' is not in allowed_tools list.", tool);
             return format!(
-                "KERNEL ALERT: Tool '{}' is not whitelisted in manifest.",
+                "KERNEL ALERT: Tool '{}' is not whitelisted in manifest. Add it to allowed_tools.",
                 tool
             );
         }
@@ -101,17 +181,30 @@ pub async fn execute_tool(
         wasm_binary,
         fuel_limit: 50_000_000, // 50 Million CPU Instructions.
         args: run_args,
+        stdin: payload.input_data.map(|s| s.into_bytes()),
         allowed_read_paths: manifest.file_system.allowed_read_paths.clone(),
+        allowed_write_paths: manifest.file_system.allowed_write_paths.clone(),
+        network_enabled: manifest.network.network_enabled,
+        allow_localhost_access: manifest.network.allow_localhost_access,
+        network_rules: manifest.network.rules.clone(),
     };
 
-    match state.sandbox.execute(params) {
-        Ok(output) => {
-            kprintln!("-> [EXECUTION SUCCESS] Output returned to Agent.");
+    let sandbox = state.sandbox.clone();
+
+    let exec_result = tokio::task::spawn_blocking(move || sandbox.execute(params)).await;
+
+    match exec_result {
+        Ok(Ok(output)) => {
+            ore_core::kprintln!("-> [EXECUTION SUCCESS] Output returned to Agent.");
             output
         }
-        Err(e) => {
-            kprintln!("-> [EXECUTION FAILED] {}", e);
+        Ok(Err(e)) => {
+            ore_core::kprintln!("-> [EXECUTION FAILED] {}", e);
             format!("KERNEL ERROR: {}", e)
+        }
+        Err(e) => {
+            ore_core::kprintln!("-> [KERNEL PANIC] Sandbox thread crashed: {}", e);
+            format!("KERNEL PANIC: {}", e)
         }
     }
 }
@@ -228,7 +321,7 @@ pub async fn list_agents(State(state): State<Arc<KernelState>>) -> String {
                 models
             };
 
-            // 2. Handle Empty Priority
+            // Handle Empty Priority
             // If the string is empty, show "-", otherwise UPPERCASE it.
             let priority = if app.resources.gpu_priority.trim().is_empty() {
                 "-".to_string()

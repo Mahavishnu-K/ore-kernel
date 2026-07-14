@@ -84,14 +84,21 @@ impl Default for MemoryLimits {
 pub struct FileSystem {
     pub allowed_read_paths: Vec<String>,
     pub allowed_write_paths: Vec<String>,
-    pub max_file_size_mb: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Network {
     pub network_enabled: bool,
-    pub allowed_domains: Vec<String>,
     pub allow_localhost_access: bool,
+    #[serde(default)]
+    pub rules: Vec<NetworkRule>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NetworkRule {
+    pub domain: String,
+    pub allowed_methods: Vec<String>,
+    pub allowed_paths: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -99,6 +106,9 @@ pub struct Execution {
     pub can_execute_shell: bool,
     pub can_execute_wasm: bool,
     pub allowed_tools: Vec<String>,
+
+    #[serde(default)]
+    pub allowed_language_runtimes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

@@ -9,12 +9,12 @@ use crate::utils::{get_ore_dir, get_ore_theme, print_panel, print_section_divide
 pub fn run_init_wizard() {
     // 1. ASCII Art Branding
     let logo = r#"
-      ██████╗ ██████╗ ███████╗
-     ██╔═══██╗██╔══██╗██╔════╝
-     ██║   ██║██████╔╝█████╗  
-     ██║   ██║██╔══██╗██╔══╝  
-     ╚██████╔╝██║  ██║███████╗
-      ╚═════╝ ╚═╝  ╚═╝╚══════╝
+     ██████╗ ██████╗ ███████╗
+    ██╔═══██╗██╔══██╗██╔════╝
+    ██║   ██║██████╔╝█████╗  
+    ██║   ██║██╔══██╗██╔══╝  
+    ╚██████╔╝██║  ██║███████╗
+     ╚═════╝ ╚═╝  ╚═╝╚══════╝
     ██╗  ██╗███████╗██████╗ ███╗   ██╗███████╗██╗     
     ██║ ██╔╝██╔════╝██╔══██╗████╗  ██║██╔════╝██║     
     █████╔╝ █████╗  ██████╔╝██╔██╗ ██║█████╗  ██║     
@@ -157,11 +157,6 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
     })
     .prompt()
     .unwrap_or_else(|_| exit(0));
-
-    // println!("\nSelected modules:");
-    // for i in &selections {
-    //     println!("{}", i);
-    // }
 
     if selections.is_empty() {
         println!(
@@ -330,11 +325,6 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
             .with_render_config(theme)
             .prompt()
             .unwrap_or_default();
-        let max_mb = CustomType::<u32>::new("Max file size allowed (MB):")
-            .with_default(5)
-            .with_render_config(theme)
-            .prompt()
-            .unwrap_or(5);
 
         toml_output.push_str("[file_system]\n");
         toml_output.push_str(&format!(
@@ -342,41 +332,84 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
             format_list(read_paths)
         ));
         toml_output.push_str(&format!(
-            "allowed_write_paths = {}\n",
+            "allowed_write_paths = {}\n\n",
             format_list(write_paths)
         ));
-        toml_output.push_str(&format!("max_file_size_mb = {}\n\n", max_mb));
     }
 
     // --- 4. NETWORK ---
     if selections.contains(&modules[3]) {
         print_section_divider("4", "Network");
-        let domains = Text::new("Allowed external domains (comma-separated):")
-            .with_default("github.com, wikipedia.org")
-            .with_render_config(theme)
-            .prompt()
-            .unwrap_or_default();
-        let localhost = Confirm::new("Allow LOCALHOST access? (High Risk for SSRF)")
+        let network_enabled = Confirm::new("Enable Network Access for this Agent?")
             .with_default(false)
             .with_render_config(theme)
             .prompt()
             .unwrap_or(false);
+        let localhost = Confirm::new(&format!(
+            "Allow LOCALHOST access? ({} {})",
+            "⚠ ".red(),
+            "High Risk for SSRF"
+        ))
+        .with_default(false)
+        .with_render_config(theme)
+        .prompt()
+        .unwrap_or(false);
+        let domains = Text::new("Allowed external domains (comma-separated):")
+            .with_render_config(theme)
+            .prompt()
+            .unwrap_or_default();
+
+        let read_only_net =
+            Confirm::new("Block data exfiltration? (Restricts AI to 'GET' requests only)")
+                .with_default(true)
+                .with_help_message(&format!(
+                    "{} {}",
+                    "⚠ ".yellow(),
+                    "If true, the AI can read websites but cannot POST/upload stolen data."
+                ))
+                .with_render_config(theme)
+                .prompt()
+                .unwrap_or(true);
 
         toml_output.push_str("[network]\n");
-        toml_output.push_str("network_enabled = true\n");
-        toml_output.push_str(&format!("allowed_domains = {}\n", format_list(domains)));
+        toml_output.push_str(&format!("network_enabled = {}\n", network_enabled));
         toml_output.push_str(&format!("allow_localhost_access = {}\n\n", localhost));
+        let parsed_domains: Vec<String> = domains
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let methods_array = if read_only_net {
+            "[\"GET\"]"
+        } else {
+            "[\"*\"]" // Allows GET, POST, PUT, DELETE, etc.
+        };
+
+        for domain in parsed_domains {
+            toml_output.push_str("[[network.rules]]\n");
+            toml_output.push_str(&format!("domain = \"{}\"\n", domain));
+            toml_output.push_str(&format!("allowed_methods = {}\n", methods_array));
+            toml_output.push_str("# Tip: Change '*' to specific endpoints (e.g., ['/api/v1/safe/*']) for strict API locking.\n");
+            toml_output.push_str("allowed_paths = [\"*\"]\n\n");
+        }
     }
 
     // --- 5. EXECUTION ---
     if selections.contains(&modules[4]) {
+        let runtime_languages = vec!["python", "javascript"];
+
         print_section_divider("5", "Execution");
-        println!("{} {}", "⚠".red(), "SECURITY WARNING".red().bold());
-        let shell = Confirm::new("Allow raw SHELL execution? (Extreme Risk)")
-            .with_default(false)
-            .with_render_config(theme)
-            .prompt()
-            .unwrap_or(false);
+        println!("{} {}", "⚠ ".yellow(), "SECURITY WARNING".bold());
+        let shell = Confirm::new(&format!(
+            "Allow raw SHELL execution? ({} {})",
+            "⚠ ".yellow(),
+            "Direct access to host shell. Allow only if required."
+        ))
+        .with_default(false)
+        .with_render_config(theme)
+        .prompt()
+        .unwrap_or(false);
         let wasm = Confirm::new("Allow WebAssembly (WASM) Sandbox execution?")
             .with_default(true)
             .with_render_config(theme)
@@ -386,11 +419,23 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
             .with_render_config(theme)
             .prompt()
             .unwrap_or_default();
+        let runtimes_selection = MultiSelect::new(
+            "Allowed Language Runtimes (comma-separated):",
+            runtime_languages.clone(),
+        )
+        .with_help_message("Space to toggle, Enter to confirm")
+        .with_render_config(theme)
+        .prompt()
+        .unwrap_or_default();
 
         toml_output.push_str("[execution]\n");
         toml_output.push_str(&format!("can_execute_shell = {}\n", shell));
         toml_output.push_str(&format!("can_execute_wasm = {}\n", wasm));
-        toml_output.push_str(&format!("allowed_tools = {}\n\n", format_list(tools)));
+        toml_output.push_str(&format!("allowed_tools = {}\n", format_list(tools)));
+        toml_output.push_str(&format!(
+            "allowed_language_runtimes = {}\n\n",
+            format_list(runtimes_selection.join(","))
+        ));
     }
 
     // --- 6. IPC ---
@@ -432,37 +477,44 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
     fs::write(&file_path, &toml_output).expect("Failed to write manifest");
 
     print_panel("Manifest Preview", "");
-    let width: usize = 65;
-    for line in toml_output.lines() {
-        let plain_len = line.chars().count();
-        // Calculate spaces needed to push the right border to exactly 75 chars
-        let padding = " ".repeat(width.saturating_sub(plain_len + 4));
+    let width: usize = 75;
+    let max_inner = width - 4;
 
-        // Micro Syntax-Highlighter for TOML
-        let styled_line = if line.starts_with('[') && line.ends_with(']') {
-            // Highlight [sections] in bold magenta
-            line.cyan().bold().to_string()
-        } else if let Some(idx) = line.find('=') {
-            // Highlight key = value pairs
-            let key = &line[..idx].trim_end();
-            let val = &line[idx + 1..].trim_start();
-            format!(
-                "{} {} {}",
-                key.bright_black(),
-                "=".bright_black(),
-                val.cyan()
-            )
+    for line in toml_output.lines() {
+        // 1. Gracefully truncate long lines so they don't break the box
+        let display_line = if line.chars().count() > max_inner {
+            // Find the exact byte index to slice safely at char boundaries
+            let safe_idx = line.char_indices().nth(max_inner - 3).map(|(i, _)| i).unwrap_or(line.len());
+            format!("{}...", &line[..safe_idx])
         } else {
-            // Blank lines or plain text
-            line.bright_black().to_string()
+            line.to_string()
         };
 
+        let plain_len = display_line.chars().count();
+        let padding = " ".repeat(max_inner.saturating_sub(plain_len));
+        
+        // 2. Micro Syntax-Highlighter for TOML
+        let styled_line = if display_line.trim_start().starts_with('#') {
+            // Comments in dim grey
+            display_line.black().to_string()
+        } else if display_line.starts_with('[') && display_line.contains(']') {
+            // Highlight [sections] or [[arrays]] in bold magenta
+            display_line.cyan().bold().to_string()
+        } else if let Some(idx) = display_line.find('=') {
+            // Highlight key = value pairs
+            let key = &display_line[..idx].trim_end();
+            let val = &display_line[idx+1..].trim_start();
+            format!("{} {} {}", key.bright_black(), "=".bright_black(), val.cyan())
+        } else {
+            // Blank lines or plain text
+            display_line.bright_black().to_string()
+        };
+        
         // Print left border, colored text, padding, right border
-        println!(
-            "{} {}{} {}",
-            "│".bright_black(),
-            styled_line,
-            padding,
+        println!("{} {}{} {}", 
+            "│".bright_black(), 
+            styled_line, 
+            padding, 
             "│".bright_black()
         );
     }

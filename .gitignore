@@ -7,3 +7,5 @@
 *.hash
 
 /models/
+/runtimes/
+/tools/

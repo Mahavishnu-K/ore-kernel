@@ -585,7 +585,6 @@ auto_summarize_on_cap = true       # Summarize history when limits hit
 [file_system]
 allowed_read_paths = ["/home/user/projects"]
 allowed_write_paths = []
-max_file_size_mb = 5
 
 [network]
 network_enabled = true
@@ -602,6 +601,10 @@ allowed_agent_targets = ["writer_agent"]     # Tier 1: Agent-to-Agent messaging
 allowed_semantic_pipes = ["rust_docs"]       # Tier 2: Semantic memory access
 semantic_persistence = true                  # Freeze semantic pipes to SSD
 ```
+
+> [!NOTE]
+> **`allowed_read_paths` and `allowed_write_paths` must be directories, not individual files.**
+> WebAssembly System Interface (`WASI`) does not support mounting individual files into the sandbox. You can only mount Directories.
 
 ### Manifest Permission Scopes
 

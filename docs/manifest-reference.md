@@ -46,7 +46,6 @@ auto_summarize_on_cap = true          # Summarize history when limits hit
 [file_system]
 allowed_read_paths = ["/home/user/projects"]
 allowed_write_paths = []
-max_file_size_mb = 5
 
 # ─── Network ─────────────────────────────────────
 [network]
@@ -109,7 +108,6 @@ semantic_persistence = false                 # Freeze semantic pipes to SSD
 |---|---|---|---|
 | `allowed_read_paths` | string[] | `[]` | File system paths the agent can read from |
 | `allowed_write_paths` | string[] | `[]` | File system paths the agent can write to |
-| `max_file_size_mb` | u32 | `0` | Maximum file size the agent may access |
 
 ### `[network]`
 
@@ -226,7 +224,6 @@ auto_summarize_on_cap = true
 [file_system]
 allowed_read_paths = ["/home/user/research"]
 allowed_write_paths = ["/home/user/research/output"]
-max_file_size_mb = 10
 
 [network]
 network_enabled = true
