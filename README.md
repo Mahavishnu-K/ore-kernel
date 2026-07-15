@@ -178,10 +178,10 @@ pipe_ttl_hours = 32    # Semantic pipe data lifetime (0 = infinite)
 **Context Firewall** (`ore-core/src/firewall.rs`)
 A multi-layered security pipeline that processes every prompt before it reaches the model:
 - **Injection Blocker** - Heuristic and pattern analysis detecting prompt injection threats using severity-based rules: Jailbreaks, Persona Hijack, System Probes, SQL Injection, Context Escapes, Code Execution, and Network Probes. Automatically bypasses code/network rules if authorized by `manifest.execution` or `manifest.network`. Critical threats are instantly blocked.
-- **PII Redactor** - Regex-powered scanner enforced by `manifest.privacy.enforce_pii_redaction`. Uses `DLP_RULES` to scrub AWS keys, API secrets, RSA/PEM private keys, internal IPs, emails, and credit card numbers from prompts. Provides SIEM-friendly telemetry summaries.
+- **PII Redactor** - Regex-powered scanner enforced by `manifest.privacy.enforce_pii_redaction`. Uses 10 compiled `DLP_RULES` to scrub SSNs, Phone Numbers, Emails, Credit Cards, IBANs, GitHub Tokens, AWS keys, API secrets, RSA/PEM private keys, and internal IPs from prompts. Provides SIEM-friendly telemetry summaries.
 
 **GPU Scheduler** (`ore-core/src/scheduler.rs`)
-A dedicated scheduling module built on `tokio::sync::Semaphore` with RAII-based `GpuLease` locks. The scheduler tracks VRAM state (`active_model`, `active_users`) and performs **hot-swap detection** - if the requested model is already loaded, it skips the reload and shares the existing instance. On a model mismatch, it performs a **context switch**, evicting the old model before loading the new one. When the `GpuLease` drops out of scope, the GPU lock is automatically released.
+A dedicated scheduling module built on `tokio::sync::Semaphore` with RAII-based `GpuLease` locks. The scheduler tracks VRAM state (`active_model`, `active_users`) and performs a 3-Tier optimization strategy: (1) **Perfect Hit**: Shares existing instance if model and agent match. (2) **Agent Swap**: If the model matches but the agent differs, it retains the massive model weights in VRAM but evicts the old KV-Cache to SSD. (3) **Cold Start**: On a model mismatch, it evicts the old weights and loads the new ones. When the `GpuLease` drops out of scope, the GPU lock is automatically released.
 
 **Native Candle Engine** (`ore-core/src/native/`)
 A modular bare-metal inference engine powered by Hugging Face's [Candle](https://github.com/huggingface/candle) framework:
@@ -190,7 +190,7 @@ A modular bare-metal inference engine powered by Hugging Face's [Candle](https:/
 - **Fused MoE** - Specialized native Rust implementations for Mixture of Experts (MoE) architectures, maximizing CPU/GPU efficiency.
 - **2-Tier Tokenizer Resolution** - Searches for a local model-specific tokenizer (`tokenizer.json`) → extracts directly from GGUF metadata as a fallback (JIT-cached to disk for future loads).
 - **Hardware Auto-Detection** - Probes for CUDA, Metal, and CPU at boot and selects the optimal compute device.
-- **Streaming Token Generation** - Generates tokens one-at-a-time via `tokio::sync::mpsc`, enabling real-time streaming to the CLI.
+- **Streaming Token Generation & TUI** - Generates tokens one-at-a-time via `tokio::sync::mpsc`, enabling real-time streaming to the CLI and an interactive TUI chat mode with `<think>` tag parsing for reasoning models (e.g., DeepSeek-R1).
 - **Native System Embedders** - A built-in `SystemEmbedder` (`ore-core/src/native/models/bert.rs` and `nomic.rs`) that loads architectures like BERT and Nomic v1.5 from Safetensors for embedding generation. Implements masked mean pooling and L2 normalization entirely in Rust. The embedder is serialized via a strict `embedder_lock` mutex to prevent multi-agent OOM crashes. When the embedding thread completes, Rust's ownership model automatically drops the model and frees all RAM to 0MB idle.
 
 **Memory Management** (`ore-core/src/memory.rs`)
@@ -202,13 +202,13 @@ An OS-style memory management system for true KV-Cache paging and agent conversa
 - **Manual Compaction** - Force a memory compaction cycle via `ore compact <app_id>`.
 - Agents opt-in to stateful paging via the `stateful_paging = true` flag in their manifest's `[resources]` section.
 
-**Zero-Trust WASM Sandbox** (`ore-core/src/sandbox.rs`)
-An execution environment allowing agents to safely run pre-compiled WebAssembly tools (Console Cartridges) OR autonomous scripts (Inception Mode) without compromising the host machine:
-- **Deterministic CPU Profiling** - Injects a strict 50,000,000 instruction fuel limit via `wasmtime` to mathematically prevent infinite loops and host lockups.
+**Execution Environments** (`ore-core/src/sandbox.rs`)
+An execution router allowing agents to safely run pre-compiled WebAssembly tools (Console Cartridges), autonomous scripts (Inception Mode), or raw host shell commands:
+- **Zero-Trust WASM Sandbox** - WebAssembly execution with deterministic CPU profiling (50,000,000 instruction fuel limit via `wasmtime`) to mathematically prevent infinite loops and host lockups.
 - **Capability-Based File System** - Integrates `cap-std` to safely map manifest-approved host directories to an isolated `/workspace` guest path, ensuring the sandbox is blind to the rest of the file system.
-- **I/O Trapping** - Captures all internal stdout/stderr using in-memory WritePipes, returning output directly to the API response.
-- **Execution Router** - Dynamically loads `.wasm` cartridges and executes them via `POST /execute` in `ore-server`. Can run fixed tools or autonomous scripts (`system-py.wasm` and `system-js.wasm`).
-- **Manifest Enforcement** - Verified by `can_execute_wasm` and tool whitelisting (`allowed_tools`) before JIT compilation.
+- **I/O Trapping & STDIN** - Captures all internal stdout/stderr using in-memory WritePipes, returning output directly to the API response. Allows passing complex input data via STDIN.
+- **Raw Host Shell Execution** - A direct bypass of the WASM sandbox to run raw shell commands on the host (e.g. `npm run dev`). Requires `can_execute_shell` to be true and flags the agent as UNSAFE.
+- **Manifest Enforcement** - Verified by `can_execute_wasm`, `allowed_tools` (supports `"*"` wildcards), and `allowed_language_runtimes` before JIT compilation. Runs in a dedicated blocking thread to protect the async runtime.
 
 
 **Rate Limiter** (`ore-core/src/ipc.rs`)
@@ -659,6 +659,10 @@ The kernel exposes 15 authenticated HTTP routes via Axum, organized into three h
 | `GET` | `/load/:model` | Pre-load a model into VRAM |
 | `GET` | `/expel/:model` | Force-evict a model from VRAM |
 | `GET` | `/clear/:app_id` | Wipe agent's SSD swap memory |
+| `GET` | `/compact/:app_id` | Force background memory compaction for an agent |
+| `GET` | `/top` | Get system telemetry and subsystem status |
+| `GET` | `/kill/:app_id` | Kill an agent's context from GPU memory via SIGTERM |
+| `POST` | `/execute` | Execute a sandbox tool, script, or shell command |
 
 ### Inference Routes (`handlers/inference.rs`)
 

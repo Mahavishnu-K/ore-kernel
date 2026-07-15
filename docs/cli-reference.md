@@ -126,13 +126,17 @@ Download and install a model. Supports GGUF and Safetensors formats.
 ```bash
 # GGUF models (quantized weights + tokenizer)
 ore pull qwen2.5:0.5b
-ore pull llama3.2:1b
+ore pull deepseek-r1:7b
 
 # Safetensors (full-precision, for embeddings)
 ore pull system-embedder
+
+# WASM Runtimes (for Autonomous Scripts)
+ore pull system-py
+ore pull system-js
 ```
 
-All downloads stream directly to `models/` with zero RAM bloat. Supports HuggingFace token for gated models.
+All downloads stream directly to `models/` or `runtimes/` with zero RAM bloat. Supports HuggingFace token for gated models (requires `HF_TOKEN` environment variable).
 
 ---
 
@@ -158,13 +162,21 @@ ore expel qwen2.5:0.5b
 
 ## Inference
 
-### `ore run <model> <prompt>`
+### `ore run <model> [prompt]`
 
-Execute a secured inference request with streamed output.
+Execute a secured inference request. If `[prompt]` is provided, it streams the output and exits. If omitted, it launches an **Interactive TUI Chat Session**.
 
 ```bash
+# Single execution (streamed output)
 ore run qwen2.5:0.5b "Explain what a semaphore is"
+
+# Interactive Chat Session
+ore run deepseek-r1:7b
 ```
+
+**Interactive TUI Features:**
+- **`<think>` Tag Parsing:** Automatically intercepts reasoning blocks from models like DeepSeek-R1, rendering the internal monologue in dim italic text, and the final answer in bold blue.
+- Use `/e` or `/exit` to disconnect.
 
 The prompt passes through the full firewall pipeline (injection detection → PII redaction) before reaching the model.
 
@@ -180,18 +192,24 @@ Interactive wizard to generate a secure `.toml` manifest.
 ore manifest my_agent
 ```
 
+```text
+ ╭─ Secure Manifest Forage ───────────────────────────╮
+ │            Target Agent: my_agent                  │
+ ╰────────────────────────────────────────────────────╯
+ 
+ ? Select required sub-systems for this agent:
+   [ ] Privacy      (PII Redaction)
+   [ ] Resources    (GPU Quotas, Models, Paging)
+   [ ] File System  (File System Boundaries)
+   [ ] Network      (Egress Control)
+   [ ] Execution    (WASM/Shell Sandbox)
+   [ ] IPC          (Agent-to-Agent Swarm)
 ```
- ORE KERNEL :: SECURE MANIFEST FORGE
- Target agent :: my_agent
 
- Select all the required sub-systems:
-  [ ] Privacy      [ PII Redaction ]
-  [ ] Resources    [ GPU Quotas & Models ]
-  [ ] File System  [ File System Boundaries ]
-  [ ] Network      [ Network Egress Control ]
-  [ ] Execution    [ WASM/Shell Sandbox ]
-  [ ] IPC          [ Agent-to-Agent Swarm ]
-```
+The wizard dynamically prompts based on selections:
+- **Resources**: Configures `max_tokens_per_minute`, Stateful Paging, and Memory Compaction limits (`max_json_tokens`).
+- **Network**: Prompts to block data exfiltration (forces `allowed_methods = ["GET"]`).
+- **Execution**: Configures WASM execution, `allowed_language_runtimes`, and Raw Host Shell access.
 
 Saves the manifest to `manifests/<app_id>.toml`. See [Manifest Reference](./manifest-reference.md).
 

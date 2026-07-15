@@ -112,7 +112,7 @@ Client (curl / CLI / App)
 ┌─────────────────────────────────────┐
 │ 5. GPU SCHEDULER                    │  ore-core/src/scheduler.rs
 │    Acquire semaphore permit         │
-│    Hot-swap check (skip reload?)    │
+│    3-Tier Agent Swap detection      │
 │    Return GpuLease (RAII)           │
 └──────────────┬──────────────────────┘
                ▼
@@ -201,7 +201,7 @@ ore-system/
 
 2. **Zero-Copy Architecture** - The Native Engine achieves sub-50ms instant boot times by utilizing `memmap2` to stream weights directly from the SSD to the GPU, bypassing system RAM bottlenecks. Additionally, the GPU scheduler detects when the requested model is already loaded (hot-swap) and shares the instance instead of reloading. RAII-based `GpuLease` ensures the semaphore is always released, even on panics.
 
-3. **Sandboxed Tool Execution** - Agents can execute pre-compiled WebAssembly tools (Console Cartridges) or autonomous scripts (Inception Mode) through a Zero-Trust WASM Sandbox. It uses deterministic CPU profiling (50M fuel limit) to prevent infinite loops, and a capability-based file system (`cap-std`) to restrict access to an isolated `/workspace`.
+3. **Sandboxed Tool Execution** - Agents can execute pre-compiled WebAssembly tools (Console Cartridges) or autonomous scripts (Inception Mode) through a Zero-Trust WASM Sandbox. It uses deterministic CPU profiling (50M fuel limit) to prevent infinite loops, and a capability-based file system (`cap-std`) to restrict access to an isolated `/workspace`. The sandbox execution runs inside a dedicated blocking thread to prevent starving the async runtime. Agents can also bypass the sandbox to run raw host shell commands if explicitly permitted by their manifest (flagged as UNSAFE).
 
 3. **OS-Style Memory Management & Resource Limits** - Idle agent context is paged to SSD (`memory/` directory) and restored on demand. The kernel strictly enforces `memory_limits` to prevent OOM crashes (setting explicit caps on KV-cache VRAM and JSON context tokens) by triggering automatic background memory compaction. The `SemanticBus` can transparently freeze vector pipelines to SSD (`.pipe` files) and runs hourly garbage collection to evict stale embeddings.
 

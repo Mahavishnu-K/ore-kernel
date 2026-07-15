@@ -52,12 +52,16 @@ allowed_write_paths = []
 network_enabled = true
 allowed_domains = ["github.com", "docs.rs"]
 allow_localhost_access = false
+rules = [
+  { domain = "api.github.com", allowed_methods = ["GET", "POST"], allowed_paths = ["/repos/*"] }
+]
 
 # ─── Execution ───────────────────────────────────
 [execution]
 can_execute_shell = false             # ⚠️ High risk - flagged as UNSAFE
 can_execute_wasm = true
-allowed_tools = ["file_search", "git_commit"]
+allowed_tools = ["file_search", "git_commit"] # Use ["*"] to allow all tools
+allowed_language_runtimes = ["python", "js"]  # Use ["*"] to allow all runtimes
 
 # ─── IPC ─────────────────────────────────────────
 [ipc]
@@ -116,6 +120,7 @@ semantic_persistence = false                 # Freeze semantic pipes to SSD
 | `network_enabled` | bool | `false` | Whether the agent has any network access |
 | `allowed_domains` | string[] | `[]` | Domain allowlist for outbound connections |
 | `allow_localhost_access` | bool | `false` | Whether the agent can reach `127.0.0.1` / `localhost` |
+| `rules` | NetworkRule[] | `[]` | List of `{ domain, allowed_methods, allowed_paths }` granular network rules |
 
 ### `[execution]`
 
@@ -123,7 +128,8 @@ semantic_persistence = false                 # Freeze semantic pipes to SSD
 |---|---|---|---|
 | `can_execute_shell` | bool | `false` | Whether shell execution is allowed. **⚠️ Flagged as UNSAFE** in `ore ls --agents` |
 | `can_execute_wasm` | bool | `false` | Whether WASM sandboxed execution is allowed |
-| `allowed_tools` | string[] | `[]` | Named tools this agent may invoke |
+| `allowed_tools` | string[] | `[]` | Named tools this agent may invoke. Use `["*"]` to allow all. |
+| `allowed_language_runtimes` | string[] | `[]` | Allowed script languages for Autonomous Mode. Use `["*"]` to allow all. |
 
 ### `[ipc]`
 

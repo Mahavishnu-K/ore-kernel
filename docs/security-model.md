@@ -111,9 +111,13 @@ Enforced only if `manifest.privacy.enforce_pii_redaction = true`. Uses compiled 
 | **Credential** | AWS Keys | `[AWS KEY REDACTED]` |
 | **Credential** | API Secrets | `[API SECRET REDACTED]` |
 | **Credential** | RSA/PEM Private Keys | `[RSA/PEM PRIVATE KEY REDACTED]` |
+| **Credential** | GitHub Tokens | `[GITHUB TOKEN REDACTED]` |
 | **Network** | Internal IPs (10.x, 192.168.x, 172.16.x) | `[INTERNAL IP REDACTED]` |
-| **General** | Email addresses | `[EMAIL REDACTED]` |
-| **General** | Credit card numbers | `[CREDIT CARD REDACTED]` |
+| **Pii** | Email addresses | `[EMAIL REDACTED]` |
+| **Pii** | SSN (Social Security Numbers) | `[SSN REDACTED]` |
+| **Pii** | Phone Numbers | `[PHONE REDACTED]` |
+| **Financial** | Credit card numbers | `[CREDIT CARD REDACTED]` |
+| **Financial** | IBAN (European Bank Accounts) | `[IBAN REDACTED]` |
 
 The redactor provides SIEM-friendly telemetry output logging the category, action, and summary count of redacted fields.
 
@@ -158,9 +162,17 @@ When agents need to interact with the host system (e.g., executing commands or r
 2. **Capability-Based File System (cap-std):**
    The sandbox is completely blind to the `C:/` drive. It uses `cap-std` to safely map only manifest-approved host directories to an isolated `/workspace` guest path. 
 3. **I/O Trapping:**
-   Stdout and Stderr are caught by in-memory `WritePipes`, preventing rogue tools from hijacking the terminal output. Output is safely extracted and returned in the HTTP API response.
+   Stdout and Stderr are caught by in-memory `WritePipes`, preventing rogue tools from hijacking the terminal output. Stdin can be passed programmatically. Output is safely extracted and returned in the HTTP API response.
 4. **Manifest Enforcement:**
-   Execution is structurally blocked unless the agent's manifest sets `can_execute_wasm = true` and the specific `.wasm` tool is listed in `allowed_tools`.
+   Execution is structurally blocked unless the agent's manifest sets `can_execute_wasm = true` and the specific `.wasm` tool is listed in `allowed_tools` (or allowed via wildcard `"*"`). For autonomous scripts, the language must be in `allowed_language_runtimes`.
+
+---
+
+### Layer 7: Raw Host Shell Execution (UNSAFE)
+
+If an agent requires direct access to the host machine bypassing the WASM sandbox (e.g. running `npm run dev` or `git commit`), ORE provides a raw shell execution mode via `payload.shell_command`.
+
+**This mode completely bypasses the WASM sandbox.** It is only allowed if `manifest.execution.can_execute_shell = true`. Due to the immense security risks, agents with this flag enabled are permanently marked as **UNSAFE** in the `ore ls --agents` dashboard.
 
 ---
 

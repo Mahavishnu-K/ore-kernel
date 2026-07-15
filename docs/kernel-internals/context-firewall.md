@@ -93,7 +93,7 @@ impl InjectionBlocker {
 
 ```rust
 #[derive(Debug)]
-pub enum DlpCategory { Credential, Network, General }
+pub enum DlpCategory { Pii, Financial, Credential, Network }
 
 pub struct PiiRedactor;
 
@@ -119,7 +119,7 @@ impl PiiRedactor {
 
 - **Manifest Opt-In/Opt-Out** - Redaction only runs if `manifest.privacy.enforce_pii_redaction` is true. Some internal agents may need to process sensitive logs safely.
 - **`OnceLock` caching** - Regex compilation is expensive. `OnceLock` compiles each pattern exactly once across all threads.
-- **DLP Categories** - Replaces sensitive data like AWS Keys, RSA Private Keys, and Internal IPs with explicit tags (e.g., `[AWS KEY REDACTED]`).
+- **DLP Categories** - Replaces 10 categories of sensitive data (Emails, SSNs, Phone Numbers, Credit Cards, IBANs, GitHub Tokens, AWS Keys, API Secrets, RSA/PEM Private Keys, and Internal IPs) with explicit tags (e.g., `[AWS KEY REDACTED]`).
 
 ---
 

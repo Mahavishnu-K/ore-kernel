@@ -76,10 +76,14 @@ Listening on http://127.0.0.1:6767
 ```bash
 # Pull a GGUF model (streams from HuggingFace)
 ore pull qwen2.5:0.5b
-ore pull llama3.2:1b
+ore pull deepseek-r1:7b
 
 # Pull the system embedder for the Semantic Bus
 ore pull system-embedder
+
+# Pull WASM Runtimes for Autonomous Scripts
+ore pull system-py
+ore pull system-js
 ```
 
 For Ollama engine users, pull models via `ollama pull <model>` instead.
@@ -89,14 +93,27 @@ For Ollama engine users, pull models via `ollama pull <model>` instead.
 ```bash
 # Streamed inference through the firewall + scheduler
 ore run qwen2.5:0.5b "Explain what a semaphore is in operating systems"
+
+# Interactive TUI Chat Session (Supports <think> tags for reasoning models)
+ore run deepseek-r1:7b
 ```
 
 ## 6. Register Your First Agent
 
 Every application that talks to ORE needs a manifest. Generate one interactively:
 
-```bash
-ore manifest my_agent
+```text
+ ╭─ Secure Manifest Forage ───────────────────────────╮
+ │            Target Agent: my_agent                  │
+ ╰────────────────────────────────────────────────────╯
+ 
+ ? Select required sub-systems for this agent:
+   [ ] Privacy      (PII Redaction)
+   [ ] Resources    (GPU Quotas, Models, Paging)
+   [ ] File System  (File System Boundaries)
+   [ ] Network      (Egress Control)
+   [ ] Execution    (WASM/Shell Sandbox)
+   [ ] IPC          (Agent-to-Agent Swarm)
 ```
 
 The wizard walks you through selecting subsystem permissions: privacy, resources, file system, network, execution, and IPC. The generated `.toml` file is saved to `manifests/my_agent.toml`.

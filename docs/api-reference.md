@@ -64,6 +64,44 @@ qwen2.5:0.5b              | 0.49 GB   | 2026-03-24 14:30:00
 
 ---
 
+### `GET /top`
+
+Get system telemetry and subsystem status.
+
+```bash
+curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     http://127.0.0.1:6767/top
+```
+
+**Response:**
+```text
+=== ORE KERNEL TELEMETRY ===
+Subsystem            | Status
+-------------------  | ------
+Driver (native)      | ACTIVE
+Scheduler (VRAM)     | IDLE (VRAM Empty)
+Context Firewall     | ENFORCING
+Connected Apps       | 3
+```
+
+---
+
+### `GET /kill/:app_id`
+
+Forcefully kill an agent's context from GPU memory via SIGTERM.
+
+```bash
+curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     http://127.0.0.1:6767/kill/cyber_spider
+```
+
+**Response:**
+```text
+SUCCESS: App 'cyber_spider' context wiped from GPU Memory.
+```
+
+---
+
 ### `GET /agents`
 
 Agent security dashboard - lists all registered agents with security assessment.
@@ -186,7 +224,7 @@ SUCCESS: Memory for Agent 'my_agent' manually compacted.
 
 ### `POST /execute`
 
-Executes a pre-compiled `.wasm` tool (Fixed Tool Mode / Console Cartridge) OR runs an autonomous script (Inception Mode) in the Zero-Trust Sandbox.
+Executes a pre-compiled `.wasm` tool (Fixed Tool Mode), runs an autonomous script (Inception Mode), OR executes a raw host shell command (Shell Mode) in the Zero-Trust Sandbox.
 
 ```bash
 curl -X POST \
@@ -195,7 +233,8 @@ curl -X POST \
      -d '{
        "app_id": "openclaw",
        "tool_name": "file_search",
-       "args": ["--path", "/workspace"]
+       "args": ["--path", "/workspace"],
+       "input_data": "complex JSON input here"
      }' \
      http://127.0.0.1:6767/execute
 ```
@@ -206,8 +245,10 @@ curl -X POST \
   "app_id": "openclaw",
   "tool_name": "file_search",
   "args": ["--path", "/workspace"],
+  "input_data": "complex JSON input here",
   "language": "python",
-  "script": "print('Hello Autonomous Mode')"
+  "script": "print('Hello Autonomous Mode')",
+  "shell_command": "echo 'Hello Host'"
 }
 ```
 
@@ -216,10 +257,12 @@ curl -X POST \
 | `app_id` | string | ✅ | App manifest ID defining permissions (`can_execute_wasm`) |
 | `tool_name` | string | ❌ | Name of the tool in the `/tools` directory (must be in `allowed_tools`) |
 | `args` | string[] | ❌ | Command-line arguments to pass to the tool |
-| `language` | string | ❌ | Script language (`"python"`, `"js"`, `"javascript"`). Defaults to `"python"`. |
+| `input_data` | string | ❌ | Optional complex JSON/Text to pass into the tool via STDIN |
+| `language` | string | ❌ | Script language (`"python"`, `"js"`, `"javascript"`). Must be in `allowed_language_runtimes` |
 | `script` | string | ❌ | Raw script to execute autonomously via `system-py.wasm` or `system-js.wasm` |
+| `shell_command` | string | ❌ | Raw host shell command to execute (requires `can_execute_shell` to be true) |
 
-> **Note:** You must provide either `tool_name` (Fixed Tool Mode) or `script` (Autonomous Mode).
+> **Note:** You must provide EXACTLY ONE execution mode payload. Do not mix `tool_name`/`args`/`input_data` (Tool Mode) with `language`/`script` (Script Mode) or `shell_command` (Shell Mode).
 
 **Response:** Captured stdout and stderr from the tool execution.
 
