@@ -33,15 +33,6 @@ pub async fn execute_tool(
         }
     };
 
-    if !manifest.execution.can_execute_wasm {
-        kprintln!(
-            "-> [BLOCKED] Agent '{}' lacks WASM execution permissions.",
-            manifest.app_id
-        );
-        return "KERNEL ALERT: Permission Denied. can_execute_wasm is false in manifest."
-            .to_string();
-    }
-
     let has_wasm_tool =
         payload.tool_name.is_some() || payload.args.is_some() || payload.input_data.is_some();
     let has_wasm_script = payload.language.is_some() || payload.script.is_some();
@@ -68,7 +59,7 @@ pub async fn execute_tool(
         }
 
         kprintln!(
-            "-> [DANGER] Agent '{}' executing RAW HOST SHELL command...",
+            "-> [WARN] Agent '{}' executing RAW HOST SHELL command...",
             manifest.app_id
         );
 
@@ -99,6 +90,15 @@ pub async fn execute_tool(
                 format!("KERNEL ERROR: Host Shell execution failed: {}", e)
             }
         };
+    }
+
+    if !manifest.execution.can_execute_wasm {
+        kprintln!(
+            "-> [BLOCKED] Agent '{}' lacks WASM execution permissions.",
+            manifest.app_id
+        );
+        return "KERNEL ALERT: Permission Denied. can_execute_wasm is false in manifest."
+            .to_string();
     }
 
     let base_dir = ore_core::get_ore_dir();
