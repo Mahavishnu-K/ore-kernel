@@ -248,12 +248,14 @@ ore kill my_agent
 
 ## Tool Management
 
-### `ore mktool <filepath>`
+### `ore mktool <filepath> --name <tool_name>`
 
 Compile a source file into a secure WASM Cartridge.
 
 ```bash
-ore mktool script.py
+ore mktool script.py  # Uses the filename as the tool name
+
+ore mktool tool.rs --name my_tool # optional custom name for the output tool
 ```
 
 Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).

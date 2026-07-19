@@ -473,23 +473,25 @@ ore pull system-embedder
 ### Control via CLI
 
 ```bash
-ore init                 # Initialize ORE system configurations
-ore status               # Check if the ORE Kernel is running and healthy
-ore top                  # View real-time Kernel metrics and telemetry
-ore ps                   # Shows the models currently loaded into VRAM
-ore ls                   # List all installed models on the local disk
-ore ls --models          # List all downloaded LLM models
-ore ls --agents          # List all agents currently under ORE control
-ore ls --manifests       # List all raw permission manifests created by the user
-ore run <model>          # Run an AI model with a specific prompt
-ore pull <model>         # Download and install a new AI Model to the local system
-ore load <model>         # Pre-load a model into GPU VRAM for zero-latency startups
-ore expel <model>        # Forcefully evict a model from the GPU VRAM
-ore clear <app_id>       # Wipes an Agent's frozen memory from the SSD
-ore compact <app_id>     # Force background memory compaction for an agent
-ore kill <app_id>        # Emergency kill-switch for runaway AI agents
-ore manifest <app_id>    # Interactive wizard to generate a secure Agent Manifest (.toml)
-ore mktool <filepath>    # Compile a source file (Rust, Go, Python, JS, TS, Zig, C, C++) into a secure WASM Cartridge
+ore init                             # Initialize ORE system configurations
+ore status                           # Check if the ORE Kernel is running and healthy
+ore top                              # View real-time Kernel metrics and telemetry
+ore ps                               # Shows the models currently loaded into VRAM
+ore ls                               # List all installed models on the local disk
+ore ls --models                      # List all downloaded LLM models
+ore ls --agents                      # List all agents currently under ORE control
+ore ls --manifests                   # List all raw permission manifests created by the user
+ore run <model>                      # Start an interactive AI chat session with a model
+ore run <model> <PROMPT>             # Single-shot prompt to a model (no interactive session)
+ore pull <model>                     # Download and install a new AI Model to the local system
+ore load <model                      # Pre-load a model into GPU VRAM for zero-latency startups
+ore expel <model>                    # Forcefully evict a model from the GPU VRAM
+ore clear <app_id>                   # Wipes an Agent's frozen memory from the SSD
+ore compact <app_id>                 # Force background memory compaction for an agent
+ore kill <app_id>                    # Emergency kill-switch for runaway AI agents
+ore manifest <app_id>                # Interactive wizard to generate a secure Agent Manifest (.toml)
+ore mktool <filepath>                # Compile a source file (Rust, Go, Python, JS, TS, Zig, C, C++) into a secure WASM Cartridge
+ore mktool <filepath> --name <NAME>  # Compile a source file to WASM Cartridge with a optional custom tool name
 ```
 
 ---
