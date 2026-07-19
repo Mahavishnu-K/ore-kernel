@@ -832,7 +832,7 @@ async fn main() {
                             "[i]".bright_black()
                         );
                         println!(
-                            "{} Note: Resulting cartridge will be ~15MB. Pure Python only.",
+                            "{} Note: Resulting cartridge will be ~25MB. Pure Python only.",
                             "[i]".bright_black()
                         );
 

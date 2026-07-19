@@ -248,7 +248,7 @@ ore kill my_agent
 
 ## Tool Management
 
-### `ore mktool <filepath> --name <tool_name>`
+### `ore mktool <filepath> --name <tool_name> --env <env>`
 
 Compile a source file into a secure WASM Cartridge.
 
@@ -256,9 +256,12 @@ Compile a source file into a secure WASM Cartridge.
 ore mktool script.py  # Uses the filename as the tool name
 
 ore mktool tool.rs --name my_tool # optional custom name for the output tool
+
+ore mktool data_script.py --env data # Python only: compiles with NumPy, Pandas, etc.
 ```
 
 Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).
+For Python scripts, the `--env` flag allows choosing between `pure` (RustPython AOT, ~25MB) and `data` (CPython 3.14 with Data Science libraries, ~110MB).
 The resulting `.wasm` file can be executed safely by any agent in the Zero-Trust WASM Sandbox.
 
 ---

@@ -495,6 +495,7 @@ ore pull system-embedder
 | `ore manifest <app_id>` | Interactive wizard to generate a secure Agent Manifest (.toml) |
 | `ore mktool <filepath>` | Compile a source file (Rust, Go, Python, JS, TS, Zig, C, C++) into a secure WASM Cartridge |
 | `ore mktool <filepath> --name <NAME>` | Compile a source file to WASM Cartridge with a optional custom tool name |
+| `ore mktool <filepath> --env <ENV>` | Python only: Set compilation environment (`pure` for 15MB pure Python, `data` for 110MB CPython with NumPy/Pandas) |
 
 ---
 
@@ -550,6 +551,7 @@ The `STATUS` column automatically flags agents as `SECURED`, `UNSAFE` (shell acc
 ### `ore mktool` - WASM Cartridge Compiler
 
 Compile a source file into a secure WASM Cartridge that can be executed safely by any agent in the Zero-Trust WASM Sandbox. Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).
+For Python scripts, you can specify `--env data` to bundle a CPython 3.14 environment with NumPy, Pandas, Matplotlib, and more (~110MB), or `--env pure` (default) for a lightweight RustPython AOT compilation (~25MB).
 
 ### `ore ls --manifests` - Permission Matrix
 

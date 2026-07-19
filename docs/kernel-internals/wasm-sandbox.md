@@ -78,7 +78,7 @@ Because tools are compiled to the `wasm32-wasi` target, developers can write ORE
 
 ### 2. Autonomous Scripts ("Inception Mode")
 
-Instead of relying on fixed tools, agents can write and execute dynamic scripts on the fly. ORE achieves this by booting pre-compiled interpreter WASM modules stored in the `/runtimes` directory (e.g., `system-py.wasm` for Python or `system-js.wasm` for JavaScript).
+Instead of relying on fixed tools, agents can write and execute dynamic scripts on the fly. ORE achieves this by booting pre-compiled interpreter WASM modules stored in the `/runtimes` directory (e.g., `system-py.wasm` for Python, `system-py-data.wasm` for Python with Data Science libraries, or `system-js.wasm` for JavaScript).
 
 **Example Payload:**
 ```json
