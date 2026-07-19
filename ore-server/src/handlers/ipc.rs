@@ -252,10 +252,13 @@ pub async fn sys_search_context(
         k
     );
 
-    let top_results =
-        state
-            .semantic_bus
-            .search_pipe(&payload.target_pipe, &query_vector, k, filter_ref);
+    let top_results = state.semantic_bus.search_pipe(
+        &payload.target_pipe,
+        &query_vector,
+        k,
+        filter_ref,
+        manifest.ipc.allow_time_decay,
+    );
 
     let _ = state.driver.unload_model(&state.system_embedder).await;
 

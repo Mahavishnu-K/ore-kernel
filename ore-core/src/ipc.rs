@@ -272,6 +272,7 @@ impl SemanticBus {
         query_vector: &[f32],
         top_k: usize,
         filter_app: Option<&str>,
+        allow_time_decay: bool,
     ) -> Vec<(f32, Arc<MemoryChunk>)> {
         // 1. PAGE FAULT (Safe because handler already verified manifest permissions)
         if !self.memory_pipes.contains_key(pipe_name)
@@ -300,9 +301,12 @@ impl SemanticBus {
                 let base_score = Self::dot_product(&chunk.vector, query_vector);
 
                 // 3. TIME DECAY
-                let hours_old = (current_time.saturating_sub(chunk.timestamp)) as f32 / 3600.0;
-                let decay_factor = (1.0 - (hours_old * 0.01)).clamp(0.5, 1.0);
-                let final_score = base_score * decay_factor;
+                let mut final_score = base_score;
+                if allow_time_decay {
+                    let hours_old = (current_time.saturating_sub(chunk.timestamp)) as f32 / 3600.0;
+                    let decay_factor = (1.0 - (hours_old * 0.01)).clamp(0.5, 1.0);
+                    final_score *= decay_factor;
+                }
 
                 // 4. HEAP INSERTION (O(log K) instead of O(log N))
                 if heap.len() < top_k {

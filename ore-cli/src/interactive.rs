@@ -454,6 +454,11 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
             .with_render_config(theme)
             .prompt()
             .unwrap_or(true);
+        let time_decay = Confirm::new("Allow 'Time Decay' for this agent (forget older memories)?")
+            .with_default(false)
+            .with_render_config(theme)
+            .prompt()
+            .unwrap_or(false);
 
         toml_output.push_str("[ipc]\n");
         toml_output.push_str(&format!(
@@ -464,7 +469,8 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
             "allowed_semantic_pipes = {}\n",
             format_list(pipes)
         ));
-        toml_output.push_str(&format!("semantic_persistence = {}\n\n", persistence));
+        toml_output.push_str(&format!("semantic_persistence = {}\n", persistence));
+        toml_output.push_str(&format!("allow_time_decay = {}\n\n", time_decay));
     }
 
     // Write to disk

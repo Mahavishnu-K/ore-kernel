@@ -46,15 +46,19 @@ pub struct Resources {
     pub max_tokens_per_minute: u32,
     pub gpu_priority: String,
 
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub json_history: bool,
 
-    #[serde(default)]
+    #[serde(default = "default_false")]
     pub stateful_paging: bool,
 }
 
 fn default_false() -> bool {
     false
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -119,8 +123,11 @@ pub struct Ipc {
     #[serde(default)]
     pub allowed_semantic_pipes: Vec<String>,
 
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub semantic_persistence: bool,
+
+    #[serde(default = "default_false")]
+    pub allow_time_decay: bool,
 }
 
 // the app registry (In-Memory Cache)

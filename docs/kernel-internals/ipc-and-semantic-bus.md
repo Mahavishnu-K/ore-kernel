@@ -147,6 +147,7 @@ pub fn search_pipe(
     query_vector: &[f32],
     top_k: usize,
     filter_app: Option<&str>,
+    allow_time_decay: bool,
 ) -> Vec<(f32, Arc<MemoryChunk>)>
 ```
 
@@ -156,8 +157,8 @@ The search algorithm:
 2. **Filter** by `source_app` (if `filter_app` is provided)
 3. **Score** each chunk:
    - **Fast Dot Product** between the query vector and chunk vector (since vectors are pre-normalized)
-   - **Time decay** - Older memories lose 1% relevance per hour (clamped at 50% minimum): `decay = (1.0 - hours_old * 0.01).clamp(0.5, 1.0)`
-   - **Final score** = `dot_product × decay_factor`
+   - **Time decay** (if `allow_time_decay` is true) - Older memories lose 1% relevance per hour (clamped at 50% minimum): `decay = (1.0 - hours_old * 0.01).clamp(0.5, 1.0)`
+   - **Final score** = `dot_product × decay_factor` (or just `dot_product` if time decay is disabled)
 4. **BinaryHeap (Top-K)** - Push into a max-heap of size K (`O(log K)` complexity) instead of sorting the whole pipe `O(N log N)`.
 5. **Return** top-K chunks sorted by score.
 
