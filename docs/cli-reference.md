@@ -210,6 +210,7 @@ The wizard dynamically prompts based on selections:
 - **Resources**: Configures `max_tokens_per_minute`, Stateful Paging, and Memory Compaction limits (`max_json_tokens`).
 - **Network**: Prompts to block data exfiltration (forces `allowed_methods = ["GET"]`).
 - **Execution**: Configures WASM execution, `allowed_language_runtimes`, and Raw Host Shell access.
+- **IPC**: Configures Agent-to-Agent Swarm, Semantic Pipes, Semantic Persistence, and Time Decay.
 
 Saves the manifest to `manifests/<app_id>.toml`. See [Manifest Reference](./manifest-reference.md).
 
@@ -247,12 +248,12 @@ ore kill my_agent
 
 ## Tool Management
 
-### `ore mk-tool <filepath>`
+### `ore mktool <filepath>`
 
 Compile a source file into a secure WASM Cartridge.
 
 ```bash
-ore mk-tool script.py
+ore mktool script.py
 ```
 
 Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).

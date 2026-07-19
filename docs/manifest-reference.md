@@ -33,7 +33,7 @@ enforce_pii_redaction = true          # Scrub emails + credit cards before infer
 allowed_models = ["llama3.2:1b", "qwen2.5:0.5b"]
 max_tokens_per_minute = 10000         # Rate limit enforced by the kernel
 gpu_priority = "normal"               # "low", "normal", "high"
-json_history = false                  # Use JSON text fallback for memory compaction
+json_history = true                   # Use JSON text fallback for memory compaction
 stateful_paging = true                # Enable SSD context swap for long conversations
 
 # ─── Memory Limits ───────────────────────────────
@@ -50,11 +50,12 @@ allowed_write_paths = []
 # ─── Network ─────────────────────────────────────
 [network]
 network_enabled = true
-allowed_domains = ["github.com", "docs.rs"]
 allow_localhost_access = false
-rules = [
-  { domain = "api.github.com", allowed_methods = ["GET", "POST"], allowed_paths = ["/repos/*"] }
-]
+
+[[network.rules]]
+domain = "api.github.com"
+allowed_methods = ["GET", "POST"]
+allowed_paths = ["/repos/*"]
 
 # ─── Execution ───────────────────────────────────
 [execution]
@@ -67,7 +68,8 @@ allowed_language_runtimes = ["python", "js"]  # Use ["*"] to allow all runtimes
 [ipc]
 allowed_agent_targets = ["writer_agent"]     # Tier 1: Direct messaging
 allowed_semantic_pipes = ["rust_docs"]       # Tier 2: Semantic memory access
-semantic_persistence = false                 # Freeze semantic pipes to SSD
+semantic_persistence = true                  # Freeze semantic pipes to SSD
+allow_time_decay = false                     # Allow older memories to lose relevance
 ```
 
 ---
@@ -95,7 +97,7 @@ semantic_persistence = false                 # Freeze semantic pipes to SSD
 | `allowed_models` | string[] | `[]` | Models this agent is permitted to use. Inference requests for unlisted models are rejected |
 | `max_tokens_per_minute` | u32 | `0` | Token rate limit per 60-second window. `0` = unlimited |
 | `gpu_priority` | string | `""` | Scheduling priority: `"low"`, `"normal"`, `"high"` |
-| `json_history` | bool | `false` | When `true`, retains chat history as JSON text to prevent KV-cache corruption |
+| `json_history` | bool | `true` | When `true`, retains chat history as JSON text to prevent KV-cache corruption |
 | `stateful_paging` | bool | `false` | When `true`, Memory Management freezes and restores chat history across requests |
 
 ### `[memory_limits]`
@@ -118,7 +120,6 @@ semantic_persistence = false                 # Freeze semantic pipes to SSD
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `network_enabled` | bool | `false` | Whether the agent has any network access |
-| `allowed_domains` | string[] | `[]` | Domain allowlist for outbound connections |
 | `allow_localhost_access` | bool | `false` | Whether the agent can reach `127.0.0.1` / `localhost` |
 | `rules` | NetworkRule[] | `[]` | List of `{ domain, allowed_methods, allowed_paths }` granular network rules |
 
@@ -137,7 +138,8 @@ semantic_persistence = false                 # Freeze semantic pipes to SSD
 |---|---|---|---|
 | `allowed_agent_targets` | string[] | `[]` | Agent IDs this agent can send direct messages to via the Message Bus |
 | `allowed_semantic_pipes` | string[] | `[]` | Named semantic pipes this agent can read from and write to |
-| `semantic_persistence` | bool | `false` | When `true`, the Pager will save semantic pipes to the SSD using Bincode serialization |
+| `semantic_persistence` | bool | `true` | When `true`, the Pager will save semantic pipes to the SSD using Bincode serialization |
+| `allow_time_decay` | bool | `false` | When `true`, older memories gradually lose relevance during semantic searches |
 
 ---
 
@@ -196,13 +198,14 @@ enforce_pii_redaction = true
 allowed_models = ["llama3.2:1b"]
 max_tokens_per_minute = 10000
 gpu_priority = "normal"
-json_history = false
+json_history = true
 stateful_paging = false
 
 [ipc]
 allowed_agent_targets = ["terminal_user"]
 allowed_semantic_pipes = ["rust_docs"]
-semantic_persistence = false
+semantic_persistence = true
+allow_time_decay = false
 ```
 
 ### Power User Agent (Network + File Access)
@@ -233,8 +236,22 @@ allowed_write_paths = ["/home/user/research/output"]
 
 [network]
 network_enabled = true
-allowed_domains = ["arxiv.org", "docs.rs", "github.com"]
 allow_localhost_access = false
+
+[[network.rules]]
+domain = "arxiv.org"
+allowed_methods = ["GET"]
+allowed_paths = ["*"]
+
+[[network.rules]]
+domain = "docs.rs"
+allowed_methods = ["GET"]
+allowed_paths = ["*"]
+
+[[network.rules]]
+domain = "github.com"
+allowed_methods = ["GET"]
+allowed_paths = ["*"]
 
 [execution]
 can_execute_shell = false
@@ -245,6 +262,7 @@ allowed_tools = ["file_search", "web_fetch"]
 allowed_agent_targets = ["writer_agent"]
 allowed_semantic_pipes = ["research_papers", "rust_docs"]
 semantic_persistence = true
+allow_time_decay = false
 ```
 
 ---

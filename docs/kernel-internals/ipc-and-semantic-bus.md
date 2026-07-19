@@ -199,13 +199,14 @@ allowed_semantic_pipes = ["rust_docs", "research_papers"]
 
 An agent can only access pipes that are explicitly listed. This prevents unauthorized cross-agent memory access.
 
-### Semantic Persistence
+### Semantic Persistence & Time Decay
 
-The Semantic Bus generally operates entirely in RAM for maximum speed. However, agents can opt into freezing their knowledge pipelines to the SSD using the `semantic_persistence` manifest flag:
+The Semantic Bus generally operates entirely in RAM for maximum speed. By default, agents freeze their knowledge pipelines to the SSD using the `semantic_persistence` manifest flag. Additionally, you can configure memories to decay over time:
 
 ```toml
 [ipc]
 semantic_persistence = true
+allow_time_decay = false
 ```
 
 When enabled, the IPC handler layer spawns an asynchronous Tokio thread upon any knowledge ingestion (`/ipc/share`), grabbing the updated vector pipeline from RAM and flushing it to the SSD (`memory/<pipe_name>.pipe`) via `Pager::page_out_semantic`. This enables persistence across kernel reboots without blocking the HTTP API.
