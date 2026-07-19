@@ -495,7 +495,7 @@ ore pull system-embedder
 | `ore manifest <app_id>` | Interactive wizard to generate a secure Agent Manifest (.toml) |
 | `ore mktool <filepath>` | Compile a source file (Rust, Go, Python, JS, TS, Zig, C, C++) into a secure WASM Cartridge |
 | `ore mktool <filepath> --name <NAME>` | Compile a source file to WASM Cartridge with a optional custom tool name |
-| `ore mktool <filepath> --env <ENV>` | Python only: Set compilation environment (`pure` for 15MB pure Python, `data` for 110MB CPython with NumPy/Pandas) |
+| `ore mktool <filepath> --env <ENV>` | Python only: Set compilation environment (`pure` for ~25MB pure Python, `data` for ~110MB CPython with NumPy/Pandas) |
 
 ---
 
