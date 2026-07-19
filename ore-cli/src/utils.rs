@@ -864,13 +864,19 @@ pub fn get_asset_map(alias: &str) -> Option<OreAsset> {
         // --- WASM RUNTIMES (The Inception Interpreters) ---
         "system-py" => Some(OreAsset::Wasm {
             // Official VMware Labs CPython 3.12 (Compiled to WASI)
-            url: "https://github.com/vmware-labs/webassembly-language-runtimes/releases/download/python%2F3.12.0%2B20231211-040d5a6/python-3.12.0.wasm",
+            url: "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/system-py.wasm",
             folder: "runtimes",
             filename: "system-py.wasm",
         }),
+        "system-py-data" => Some(OreAsset::Wasm {
+            // Statically Linked CPython + Numpy + Pandas compiled to WASI
+            url: "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/system-py-data.wasm",
+            folder: "runtimes",
+            filename: "system-py-data.wasm",
+        }),
         "system-js" => Some(OreAsset::Wasm {
             // WasmEdge QuickJS (A lightning-fast Javascript Engine compiled to WASI)
-            url: "https://github.com/second-state/wasmedge-quickjs/releases/download/v0.5.0-alpha/wasmedge_quickjs.wasm",
+            url: "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/system-js.wasm",
             folder: "runtimes",
             filename: "system-js.wasm",
         }),

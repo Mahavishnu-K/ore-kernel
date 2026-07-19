@@ -80,5 +80,8 @@ pub enum Commands {
         /// Optional: Name of the output tool (defaults to the filename)
         #[arg(short, long)]
         name: Option<String>,
+        /// Python only: The compilation environment ("pure" or "data")
+        #[arg(short, long, default_value = "pure")]
+        env: String,
     },
 }

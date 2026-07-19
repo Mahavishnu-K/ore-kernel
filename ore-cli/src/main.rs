@@ -623,7 +623,11 @@ async fn main() {
                 Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
             }
         }
-        Commands::MkTool { filepath, name } => {
+        Commands::MkTool {
+            filepath,
+            name,
+            env,
+        } => {
             let path = Path::new(filepath);
             if !path.exists() {
                 println!(
@@ -729,112 +733,204 @@ async fn main() {
                         "[i]".bright_black(),
                         "Python".yellow().bold()
                     );
-                    println!(
-                        "{} Initiating RustPython AOT Compilation...",
-                        "[~]".yellow()
-                    );
-                    println!(
-                        "{} Note: The first compilation will take 1-2 minutes to build the Python engine.",
-                        "[i]".bright_black()
-                    );
-                    println!(
-                        "{} Note: Resulting cartridge will be ~15MB. Pure Python only.",
-                        "[i]".bright_black()
-                    );
 
-                    let _ = std::process::Command::new("rustup")
-                        .args(["target", "add", "wasm32-wasip1"])
-                        .output()
-                        .expect("Failed to execute rustup. Is Rust installed?");
+                    if env == "data" {
+                        // MODE: Statically Linked CPython + Pandas/Numpy via Zip Append
+                        println!(
+                            "{} Environment: Data Science (Numpy/Pandas enabled)",
+                            "[*]".bright_blue()
+                        );
+                        println!(
+                            "{} Initiating VFS Zip-Append Compilation...",
+                            "[~]".yellow()
+                        );
 
-                    let build_dir = get_ore_dir().join("tmp_build").join(&tool_name);
-                    if build_dir.exists() {
-                        fs::remove_dir_all(&build_dir).unwrap();
-                    }
-                    fs::create_dir_all(build_dir.join("src")).unwrap();
+                        let base_wasm_path =
+                            get_ore_dir().join("runtimes").join("system-py-data.wasm");
 
-                    // Copy the developer's python script
-                    let build_filename = tool_name.clone();
-                    let py_code = fs::read_to_string(filepath).expect("Failed to read Python file");
-                    fs::write(build_dir.join("src").join(build_filename), py_code).unwrap();
+                        if !base_wasm_path.exists() {
+                            println!(
+                                "{} [WARN]: Data Science base engine not found.",
+                                "[!]".yellow()
+                            );
+                            println!(
+                                "{} Pulling 'system-py-data' wasm tool via ore-cli...",
+                                "[*]".bright_blue()
+                            );
+                            // DYNAMIC SELF-INVOCATION: Automatically runs itself (ore-cli)
+                            let current_exe = std::env::current_exe()
+                                .unwrap_or_else(|_| std::path::PathBuf::from("ore"));
 
-                    // Write the Cargo.toml for the RustPython wrapper
-                    let cargo_toml = format!(
-                        r#"
-[package]
-name = "{}"
-version = "0.1.0"
-edition = "2024"
+                            let install = std::process::Command::new(current_exe)
+                                .args(["pull", "system-py-data"])
+                                .output()
+                                .expect("Failed to run ore pull command.");
 
-[dependencies]
-rustpython-vm = {{ version = "0.3.1", default-features = false }}
-rustpython-stdlib = {{ version = "0.3.1", default-features = false }}
+                            if !install.status.success() {
+                                println!(
+                                    "{} Failed to auto-install system-py-data. Try running: ore pull system-py-data",
+                                    "[-]".red()
+                                );
+                                exit(1);
+                            }
+                        }
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
-"#,
-                        tool_name
-                    );
-                    fs::write(build_dir.join("Cargo.toml"), cargo_toml).unwrap();
+                        let py_code =
+                            fs::read_to_string(filepath).expect("Failed to read Python file");
 
-                    // Write the Rust Execution Wrapper
-                    let main_rs = format!(
-                        r#"
-fn main() {{
-    use rustpython_vm as vm;
+                        // Create a Zip Archive in memory
+                        let mut zip_buf = std::io::Cursor::new(Vec::new());
+                        {
+                            let mut zip = zip::ZipWriter::new(&mut zip_buf);
+                            let options = zip::write::SimpleFileOptions::default()
+                                .compression_method(zip::CompressionMethod::Stored); // Uncompressed for speed
 
-    vm::Interpreter::with_init(Default::default(), |vm| {{
-        vm.add_native_modules(rustpython_stdlib::get_module_inits());
-    }}).enter(|vm| {{
-        let scope = vm.new_scope_with_builtins();
-        
-        // Bake the developer's exact script directly into the binary!
-        let script = include_str!("{}");
-        
-        let code_obj = vm.compile(script, vm::compiler::Mode::Exec, "<embedded>")
-            .expect("Failed to compile Python syntax");
-        
-        if let Err(e) = vm.run_code_obj(code_obj, scope) {{
-            vm.print_exception(e);
-            std::process::exit(1);
-        }}
-    }});
-}}
-"#,
-                        tool_name
-                    );
-                    fs::write(build_dir.join("src").join("main.rs"), main_rs).unwrap();
+                            // Python WASI automatically executes __main__.py when appended!
+                            zip.start_file("__main__.py", options).unwrap();
+                            use std::io::Write;
+                            zip.write_all(py_code.as_bytes()).unwrap();
+                            zip.finish().unwrap();
+                        }
 
-                    // Compile the wrapped Python script to WASM!
-                    let build = std::process::Command::new("cargo")
-                        .current_dir(&build_dir)
-                        .args(["build", "--target", "wasm32-wasip1", "--release"])
-                        .output()
-                        .expect("Failed to execute cargo build.");
+                        // Read the Fat CPython WASM binary
+                        let mut final_wasm = fs::read(&base_wasm_path).unwrap_or_else(|e| {
+                            println!(
+                                "{} FATAL: Data Science base engine is missing or corrupted: {}",
+                                "[-]".red().bold(),
+                                e
+                            );
+                            println!(
+                                "    Run 'ore pull system-py-data' to restore the heavy runtime."
+                            );
+                            exit(1);
+                        });
 
-                    if build.status.success() {
-                        let cargo_out_name = tool_name.replace("-", "_");
-                        let compiled_wasm = build_dir
-                            .join("target")
-                            .join("wasm32-wasip1")
-                            .join("release")
-                            .join(format!("{}.wasm", cargo_out_name));
-                        fs::copy(&compiled_wasm, &dest_file)
-                            .expect("Failed to copy compiled WASM to tools folder");
-                        fs::remove_dir_all(&build_dir).unwrap(); // Clean up the temp build folder
+                        // Concatenate the Zip bytes to the absolute end of the WASM binary!
+                        final_wasm.extend(zip_buf.into_inner());
 
-                        println!("{} Python frozen into WASM successfully!", "[+]".green());
+                        // Save the new, unified Cartridge
+                        fs::write(&dest_file, final_wasm)
+                            .expect("Failed to forge heavy WASM cartridge");
+
+                        println!(
+                            "{} Python Data Tool frozen into WASM successfully!",
+                            "[+]".green()
+                        );
+                        println!(
+                            "{} Note: Cartridge size is ~110MB. It contains the C-Extensions.",
+                            "[i]".bright_black()
+                        );
                         println!("Path :: {}", dest_file.display().to_string().bright_black());
                     } else {
+                        // MODE: Pure Python via RustPython AOT Compilation
                         println!(
-                            "{} Compilation failed:\n{}",
-                            "[-]".red(),
-                            String::from_utf8_lossy(&build.stderr)
+                            "{} Initiating RustPython AOT Compilation...",
+                            "[~]".yellow()
                         );
-                        exit(1);
+                        println!(
+                            "{} Note: The first compilation will take 1-2 minutes to build the Python engine.",
+                            "[i]".bright_black()
+                        );
+                        println!(
+                            "{} Note: Resulting cartridge will be ~15MB. Pure Python only.",
+                            "[i]".bright_black()
+                        );
+
+                        let _ = std::process::Command::new("rustup")
+                            .args(["target", "add", "wasm32-wasip1"])
+                            .output()
+                            .expect("Failed to execute rustup. Is Rust installed?");
+
+                        let build_dir = get_ore_dir().join("tmp_build").join(&tool_name);
+                        if build_dir.exists() {
+                            fs::remove_dir_all(&build_dir).unwrap();
+                        }
+                        fs::create_dir_all(build_dir.join("src")).unwrap();
+
+                        // Copy the developer's python script
+                        let build_filename = tool_name.clone();
+                        let py_code =
+                            fs::read_to_string(filepath).expect("Failed to read Python file");
+                        fs::write(build_dir.join("src").join(build_filename), py_code).unwrap();
+
+                        // Write the Cargo.toml for the RustPython wrapper
+                        let cargo_toml = format!(
+                            r#"
+    [package]
+    name = "{}"
+    version = "0.1.0"
+    edition = "2024"
+
+    [dependencies]
+    rustpython-vm = {{ version = "0.3.1", default-features = false }}
+    rustpython-stdlib = {{ version = "0.3.1", default-features = false }}
+
+    [profile.release]
+    opt-level = 3
+    lto = true
+    codegen-units = 1
+    strip = true
+    "#,
+                            tool_name
+                        );
+                        fs::write(build_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+                        // Write the Rust Execution Wrapper
+                        let main_rs = format!(
+                            r#"
+    fn main() {{
+        use rustpython_vm as vm;
+
+        vm::Interpreter::with_init(Default::default(), |vm| {{
+            vm.add_native_modules(rustpython_stdlib::get_module_inits());
+        }}).enter(|vm| {{
+            let scope = vm.new_scope_with_builtins();
+            
+            // Bake the developer's exact script directly into the binary!
+            let script = include_str!("{}");
+            
+            let code_obj = vm.compile(script, vm::compiler::Mode::Exec, "<embedded>")
+                .expect("Failed to compile Python syntax");
+            
+            if let Err(e) = vm.run_code_obj(code_obj, scope) {{
+                vm.print_exception(e);
+                std::process::exit(1);
+            }}
+        }});
+    }}
+    "#,
+                            tool_name
+                        );
+                        fs::write(build_dir.join("src").join("main.rs"), main_rs).unwrap();
+
+                        // Compile the wrapped Python script to WASM!
+                        let build = std::process::Command::new("cargo")
+                            .current_dir(&build_dir)
+                            .args(["build", "--target", "wasm32-wasip1", "--release"])
+                            .output()
+                            .expect("Failed to execute cargo build.");
+
+                        if build.status.success() {
+                            let cargo_out_name = tool_name.replace("-", "_");
+                            let compiled_wasm = build_dir
+                                .join("target")
+                                .join("wasm32-wasip1")
+                                .join("release")
+                                .join(format!("{}.wasm", cargo_out_name));
+                            fs::copy(&compiled_wasm, &dest_file)
+                                .expect("Failed to copy compiled WASM to tools folder");
+                            fs::remove_dir_all(&build_dir).unwrap(); // Clean up the temp build folder
+
+                            println!("{} Python frozen into WASM successfully!", "[+]".green());
+                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        } else {
+                            println!(
+                                "{} Compilation failed:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&build.stderr)
+                            );
+                            exit(1);
+                        }
                     }
                 }
                 // JavaScript tools build
