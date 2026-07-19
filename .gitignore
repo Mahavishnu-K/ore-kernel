@@ -5,6 +5,7 @@
 *.xml
 *.json
 *.hash
+*.wasm
 
 /models/
 /runtimes/

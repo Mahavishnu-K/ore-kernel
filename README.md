@@ -489,6 +489,7 @@ ore clear <app_id>       # Wipe an agent's frozen SSD memory (swap page)
 ore compact <app_id>     # Force background memory compaction for an agent
 ore kill <app_id>        # Emergency kill-switch for runaway agents
 ore manifest <app_id>    # Interactive wizard to generate a secure manifest
+ore mk-tool <filepath>   # Compile a source file into a secure WASM Cartridge
 ```
 
 ---
@@ -541,6 +542,10 @@ cyber_spider         | 1.0.0      | qwen2.5:0.5b, lla... | NORMAL     | UNSAFE
 ```
 
 The `STATUS` column automatically flags agents as `SECURED`, `UNSAFE` (shell access or PII redaction disabled), or `DORMANT` (no models assigned).
+
+### `ore mk-tool` - WASM Cartridge Compiler
+
+Compile a source file into a secure WASM Cartridge that can be executed safely by any agent in the Zero-Trust WASM Sandbox. Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).
 
 ### `ore ls --manifests` - Permission Matrix
 

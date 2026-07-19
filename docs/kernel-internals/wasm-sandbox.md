@@ -64,7 +64,7 @@ ORE supports three distinct execution models. **Only one mode can be invoked per
 This mode allows agents to invoke pre-compiled `.wasm` binaries stored in the `/tools` directory. 
 
 **The Cross-Language Advantage:**
-Because tools are compiled to the `wasm32-wasi` target, developers can write ORE tools in **any language** (Rust, Go, C, C++, Zig). This eliminates the dependency bloat of requiring a specific language runtime on the host machine. The agent interacts with the tool via standard POSIX inputs (`args` and `STDIN`), making tool development universally accessible.
+Because tools are compiled to the `wasm32-wasi` target, developers can write ORE tools in **any language** (Rust, Go, Python, JavaScript, TypeScript, Zig, C, C++). This eliminates the dependency bloat of requiring a specific language runtime on the host machine. The agent interacts with the tool via standard POSIX inputs (`args` and `STDIN`), making tool development universally accessible.
 
 **Example Payload:**
 ```json

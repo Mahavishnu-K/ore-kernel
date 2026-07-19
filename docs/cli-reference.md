@@ -245,4 +245,19 @@ ore kill my_agent
 
 ---
 
+## Tool Management
+
+### `ore mk-tool <filepath>`
+
+Compile a source file into a secure WASM Cartridge.
+
+```bash
+ore mk-tool script.py
+```
+
+Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).
+The resulting `.wasm` file can be executed safely by any agent in the Zero-Trust WASM Sandbox.
+
+---
+
 **Next:** [API Reference →](./api-reference.md)
