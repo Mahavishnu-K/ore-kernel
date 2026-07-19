@@ -484,7 +484,11 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
         // 1. Gracefully truncate long lines so they don't break the box
         let display_line = if line.chars().count() > max_inner {
             // Find the exact byte index to slice safely at char boundaries
-            let safe_idx = line.char_indices().nth(max_inner - 3).map(|(i, _)| i).unwrap_or(line.len());
+            let safe_idx = line
+                .char_indices()
+                .nth(max_inner - 3)
+                .map(|(i, _)| i)
+                .unwrap_or(line.len());
             format!("{}...", &line[..safe_idx])
         } else {
             line.to_string()
@@ -492,7 +496,7 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
 
         let plain_len = display_line.chars().count();
         let padding = " ".repeat(max_inner.saturating_sub(plain_len));
-        
+
         // 2. Micro Syntax-Highlighter for TOML
         let styled_line = if display_line.trim_start().starts_with('#') {
             // Comments in dim grey
@@ -503,18 +507,24 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
         } else if let Some(idx) = display_line.find('=') {
             // Highlight key = value pairs
             let key = &display_line[..idx].trim_end();
-            let val = &display_line[idx+1..].trim_start();
-            format!("{} {} {}", key.bright_black(), "=".bright_black(), val.cyan())
+            let val = &display_line[idx + 1..].trim_start();
+            format!(
+                "{} {} {}",
+                key.bright_black(),
+                "=".bright_black(),
+                val.cyan()
+            )
         } else {
             // Blank lines or plain text
             display_line.bright_black().to_string()
         };
-        
+
         // Print left border, colored text, padding, right border
-        println!("{} {}{} {}", 
-            "│".bright_black(), 
-            styled_line, 
-            padding, 
+        println!(
+            "{} {}{} {}",
+            "│".bright_black(),
+            styled_line,
+            padding,
             "│".bright_black()
         );
     }

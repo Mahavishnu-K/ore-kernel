@@ -73,4 +73,12 @@ pub enum Commands {
         /// The App ID to terminate
         app_id: String,
     },
+    /// Compile a source file (Rust, Go, Python) into a secure WASM Cartridge
+    MkTool {
+        /// The file path to the source code (e.g., tool.rs, script.py, main.go)
+        filepath: String,
+        /// Optional: Name of the output tool (defaults to the filename)
+        #[arg(short, long)]
+        name: Option<String>,
+    },
 }
