@@ -355,6 +355,8 @@ ore-system/
 │   └── web_toolkit.toml
 ├── models/                  # Downloaded model weights (per-model directories)
 ├── memory/                  # Context history and SSD page files for agent context persistence
+├── runtimes/                # Language runtime binaries for WASM sandbox execution (inception mode)
+├── tools/                   # Pre-compiled WebAssembly tools (Console Cartridges)
 ├── ore.toml                 # System configuration (engine + memory GC settings)
 ├── rust-toolchain.toml      # Pinned Rust version (1.93.0)
 ├── Cargo.toml               # Workspace configuration + release profile
