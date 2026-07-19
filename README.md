@@ -484,7 +484,7 @@ ore ls --manifests                   # List all raw permission manifests created
 ore run <model>                      # Start an interactive AI chat session with a model
 ore run <model> <PROMPT>             # Single-shot prompt to a model (no interactive session)
 ore pull <model>                     # Download and install a new AI Model to the local system
-ore load <model                      # Pre-load a model into GPU VRAM for zero-latency startups
+ore load <model>                     # Pre-load a model into GPU VRAM for zero-latency startups
 ore expel <model>                    # Forcefully evict a model from the GPU VRAM
 ore clear <app_id>                   # Wipes an Agent's frozen memory from the SSD
 ore compact <app_id>                 # Force background memory compaction for an agent
