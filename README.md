@@ -30,7 +30,22 @@
 
 Modern local AI stacks are dangerously fragile. If you try to run multi-agent swarms (like OpenClaw, AutoGen, or CrewAI) on consumer hardware using basic Python wrappers, you hit physical hardware walls. ORE was built to bypass them.
 
-### 1. The VRAM Wall (Infinite Concurrency)
+### 1. The WebAssembly Kernel (Zero-Trust AI Execution)
+
+Currently, giving an AI agent the ability to execute code or use tools means giving it root access inside a heavy, slow Docker container. ORE fundamentally changes this by introducing a **WebAssembly (WASM) Sandbox Engine** directly at the kernel level.
+
+By decoupling the *tools* from the *agents*, ORE unlocks unprecedented capabilities for the Agentic AI ecosystem:
+- **Cross-Language Tooling:** Agents written in Python can seamlessly and securely execute tools written in Rust, Go, or C via pre-compiled `.wasm` cartridges. You no longer have to write tools in the same language as your agent.
+- **Strict CPU Fuel Limits:** ORE limits the exact number of CPU instructions an AI-generated script can execute, entirely eliminating "Runaway AI" or infinite loops without freezing the host.
+- **Zero-RAM Network Interception:** The sandbox has no raw socket access. Instead, network calls are intercepted, validated against domain whitelists in the Agent Manifest, and streamed directly to the SSD.
+- **Virtual File System (VFS):** Granular, manifest-driven permissions define exactly which host directories the AI can read (strictly Read-Only) or write to.
+- **Elimination of Cloud VMs:** Instead of spinning up an expensive, heavy EC2 instance or cloud container just to give an agent a safe environment to run code, ORE allows you to execute untrusted AI code securely and instantly on any server, on-prem or in the cloud, without the need for Docker or other containerization technologies.
+- **Absolute Tool Portability:** Tools compiled to WASM cartridges are universally portable. You can write a tool once, distribute it as a single `.wasm` file, and any ORE user on any OS (Windows, macOS, Linux) can run it instantly without worrying about Python environments, dependency trees, or CUDA driver conflicts.
+
+> [!IMPORTANT]
+> **Performance Note:** Because ORE utilizes WASM instead of Docker, spinning up a secure, isolated sandbox for an AI agent takes **less than 5 milliseconds**. This allows for massive swarms of autonomous agents to execute hundreds of tools concurrently with near-zero overhead.
+
+### 2. The VRAM Wall (Infinite Concurrency)
 ![GPU Leverage](docs/img/GPU%20leverage.png)
 
 If you have a 24GB GPU, speed isn't your problem. **Space is.** 
@@ -38,26 +53,26 @@ If you spin up 10 agents, each generating a 2GB KV-cache, you hit 20GB. Add the 
 
 **The Fix:** ORE acts as a Hypervisor. It forces agents to acquire a `GpuLease` (a Tokio Semaphore). Agent 1 pages into VRAM, thinks, pages out to the SSD, and releases the lock. Because a Gen4 PCIe slot can move a 1GB tensor state in **~0.15 seconds**, the context-switch is invisible to the user. ORE allows you to run a 50+ Agent swarm on a single consumer GPU without ever crashing.
 
-### 2. The Prefill Penalty (15.4x Latency Speedup)
+### 3. The Prefill Penalty (15.4x Latency Speedup)
 ![CPU Benchmark](docs/img/CPU%20Benchmark.png)
 
 If you ever tried running agents and inference on a CPU(Hope, you never do!), you will be bottlenecked by the ALU math of the "Prefill" phase. When Agent B interrupts Agent A, standard frameworks throw away Agent A's KV-cache. When Agent A returns, the CPU has to recalculate the entire history from scratch. 
 
 **The Benchmark:** On a Ryzen 7 (16GB RAM), an agent swap took **37.03 seconds** of pure tensor matrix multiplication. With ORE, we rip the physical tensors out of the engine, save them to the NVMe SSD, and map them back when needed. It took **2.41 seconds**. That is a 1,440% speedup just by respecting OS-level paging.
 
-### 3. Unix Pipes for Agents (Zero-Bloat IPC)
+### 4. Unix Pipes for Agents (Zero-Bloat IPC)
 ![Semantic Bus](docs/img/Semantic%20Bus.png)
 
 Right now, if you want Agent A to share knowledge with Agent B, you are forced to install a vector database like ChromaDB or FAISS. That adds **2+ Gigabytes of dependency bloat** (PyTorch, ONNX, etc.) and burns System RAM just to sit idle.
 
 **The ORE Way:** ORE provides the **Semantic Bus**. Agent A sends raw text to a kernel pipe. ORE briefly wakes up a Safetensors embedder, does the math, and kills the model (**0MB idle RAM**). Agent B searches it instantly. Because ORE uses `Arc<Vec<f32>>` pointers in Rust, the exact same memory address is shared between agents - **Zero-Copy Memory**. No Docker, no networking overhead.
 
-### 4. Neural State Persistence
+### 5. Neural State Persistence
 ![Neural State Persistence](docs/img/Neural%20State%20Persistence.png)
 
 By ripping the KV-Cache out of the inference engine and writing it to `.safetensors` on the NVMe SSD, you bypass the Prefill phase entirely. You can have a 10,000-token conversation, shut your computer down, boot it up a week later, and your agent will respond to the next prompt instantly without recalculating the past.
 
-### 5. Swarm Scaling: The Brutal Numbers
+### 6. Swarm Scaling: The Brutal Numbers
 Because ORE solves the VRAM "Out of Memory" problem via SSD Paging, the bottleneck fundamentally shifts. **You no longer run out of Space; you run out of Time.** Here are the mathematically honest numbers for exactly how many agents ORE can orchestrate on single machines today.
 
 #### 1. The "Normal User" Laptop ($800)
