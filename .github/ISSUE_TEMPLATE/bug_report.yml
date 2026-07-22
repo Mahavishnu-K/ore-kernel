@@ -1,0 +1,53 @@
+name: Bug Report
+description: Create a report to help us improve ore-kernel
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+        **If this is a security vulnerability, please refer to our SECURITY.md instead.**
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Run command '...'
+        2. Provide input '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Please provide your OS, ore-kernel version, and Rust version.
+      value: |
+        - OS: [e.g. Windows 11, macOS 14.5, Ubuntu 24.04]
+        - ore-kernel version: [e.g. 0.1.0]
+        - rustc version: [e.g. 1.79.0]
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add any other context about the problem here (e.g., logs, screenshots).
+    validations:
+      required: false
