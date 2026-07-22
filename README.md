@@ -8,7 +8,7 @@
 
 [![Build](https://img.shields.io/github/actions/workflow/status/Mahavishnu-K/ore-kernel/ci.yml?style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/Mahavishnu-K/ore-kernel/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.93+-orange?style=for-the-badge&logo=rust&logoColor=white)]()
-[![Version](https://img.shields.io/badge/version-v0.1.0-blue?style=for-the-badge)](https://github.com/Mahavishnu-K/ore-kernel/releases)
+[![Version](https://img.shields.io/badge/version-v0.1.0-4D8F91?style=for-the-badge)](https://github.com/Mahavishnu-K/ore-kernel/releases)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey?style=for-the-badge&logo=linux&logoColor=white)]()
 [![Status](https://img.shields.io/badge/status-alpha-red?style=for-the-badge)]()
