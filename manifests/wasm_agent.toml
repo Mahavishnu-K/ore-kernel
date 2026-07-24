@@ -1,0 +1,35 @@
+app_id = "wasm_agent"
+description = "QA Testing Agent"
+version = "1.0.0"
+
+[resources]
+allowed_models = ["llama3.2:1b"]
+max_tokens_per_minute = 10000
+gpu_priority = "normal"
+json_history = true
+stateful_paging = true
+
+[memory_limits]
+max_json_tokens = 4024
+max_kv_cache_mb = 1024
+auto_summarize_on_cap = true
+
+[file_system]
+allowed_read_paths = ["./test_path"] # Maps to /workspace/test_path (Read-Only)
+allowed_write_paths = ["./test_output"] # Will map to /workspace/test_output
+
+[network]
+network_enabled = true
+allow_localhost_access = false
+
+[[network.rules]]
+domain = "jsonplaceholder.typicode.com"
+allowed_methods = ["GET"]
+allowed_paths = ["*"]
+
+[execution]
+can_execute_shell = false
+can_execute_wasm = true
+allowed_tools = ["rust_cruncher", "ts_generator", "fibonacci_benchmark", "infinite_loop_trap", "network_interception", "vfs_security_check", "go_hasher"]
+allowed_language_runtimes = ["python", "js"]
+max_cpu_instructions = 5_000_000_000

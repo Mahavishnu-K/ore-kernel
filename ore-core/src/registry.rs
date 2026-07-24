@@ -105,14 +105,36 @@ pub struct NetworkRule {
     pub allowed_paths: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Execution {
+    #[serde(default)]
     pub can_execute_shell: bool,
+    #[serde(default)]
     pub can_execute_wasm: bool,
+    #[serde(default)]
     pub allowed_tools: Vec<String>,
-
     #[serde(default)]
     pub allowed_language_runtimes: Vec<String>,
+
+    #[serde(default = "default_cpu_instructions")]
+    pub max_cpu_instructions: u64,
+}
+
+// Manually implement Default so new empty structs get the 5 Billion baseline!
+impl Default for Execution {
+    fn default() -> Self {
+        Self {
+            can_execute_shell: false,
+            can_execute_wasm: true,
+            allowed_tools: Vec::new(),
+            allowed_language_runtimes: Vec::new(),
+            max_cpu_instructions: 5_000_000_000,
+        }
+    }
+}
+
+fn default_cpu_instructions() -> u64 {
+    5_000_000_000 // 5 Billion Instructions (roughly 2-3 seconds of raw compute)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

@@ -215,6 +215,21 @@ class OreClient:
         r.raise_for_status()
         return r.json()
 
+    def execute(self, app_id: str, tool_name: str = None, args: list = None, input_data: str = None, language: str = None, script: str = None):
+        """POST /execute - Runs code securely in the WASM Sandbox."""
+        payload = {"app_id": app_id}
+        if tool_name: payload["tool_name"] = tool_name
+        if args: payload["args"] = args
+        if input_data: payload["input_data"] = input_data
+        if language: payload["language"] = language
+        if script: payload["script"] = script
+
+        r = requests.post(
+            f"{self.base_url}/execute",
+            json=payload,
+            headers=self.headers,
+        )
+        return r.text
 
 # ─── CLI Quick Test ──────────────────────────────────────────────
 

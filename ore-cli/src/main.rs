@@ -7,7 +7,7 @@ use cli::{Cli, Commands};
 use colored::*;
 use futures_util::StreamExt;
 use hf_hub::{Repo, RepoType, api::tokio::Api};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, process::exit};
 use utils::{
     OreAsset, build_secure_client, download_with_progress, get_asset_map, get_hf_token,
@@ -638,7 +638,6 @@ async fn main() {
                 exit(1);
             }
 
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
             let tool_name = name
                 .clone()
                 .unwrap_or_else(|| path.file_stem().unwrap().to_str().unwrap().to_string());
@@ -655,65 +654,191 @@ async fn main() {
                 tool_name.cyan().bold()
             );
 
-            match ext {
-                // Rust tools build
-                "rs" => {
+            if path.is_dir() {
+                if path.join("Cargo.toml").exists() {
+                    // ------------------------- RUST PROJECT -------------------------
                     println!(
-                        "{} Detected Language: {}",
+                        "{} Detected Project: {}",
                         "[i]".bright_black(),
-                        "Rust".red().bold()
+                        "Rust (Cargo)".red().bold()
                     );
-                    println!("{} Initializing Cargo WASI compiler...", "[~]".yellow());
 
-                    // Check if the wasm32-wasip1 target is installed
                     let _ = std::process::Command::new("rustup")
                         .args(["target", "add", "wasm32-wasip1"])
-                        .output()
-                        .expect("Failed to execute rustup. Is Rust installed?");
+                        .output();
 
-                    // Compile using rustc directly to a standalone WASM file
-                    let build = std::process::Command::new("rustc")
+                    println!(
+                        "{} Building Cargo project (including all crates.io dependencies)...",
+                        "[~]".yellow()
+                    );
+                    let build = std::process::Command::new("cargo")
+                        .current_dir(path)
+                        .args(["build", "--target", "wasm32-wasip1", "--release"])
+                        .output()
+                        .expect("Failed to execute cargo build.");
+
+                    if build.status.success() {
+                        let cargo_str = fs::read_to_string(path.join("Cargo.toml")).unwrap();
+                        let cargo_val: toml::Value = toml::from_str(&cargo_str).unwrap();
+                        let pkg_name = cargo_val
+                            .get("package")
+                            .unwrap()
+                            .get("name")
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .replace("-", "_");
+
+                        let compiled_wasm = path
+                            .join("target")
+                            .join("wasm32-wasip1")
+                            .join("release")
+                            .join(format!("{}.wasm", pkg_name));
+                        fs::copy(&compiled_wasm, &dest_file).expect("Failed to copy WASM");
+
+                        println!("{} Cartridge forged successfully!", "[+]".green());
+                        println!("Path :: {}", dest_file.display().to_string().bright_black());
+                    } else {
+                        println!(
+                            "{} Compilation failed:\n{}",
+                            "[-]".red(),
+                            String::from_utf8_lossy(&build.stderr)
+                        );
+                        exit(1);
+                    }
+                } else if path.join("package.json").exists() {
+                    // ------------------------- NODE.JS PROJECT -------------------------
+                    println!(
+                        "{} Detected Project: {}",
+                        "[i]".bright_black(),
+                        "Node.js (NPM)".truecolor(247, 223, 30).bold()
+                    );
+
+                    let npx_cmd = if cfg!(target_os = "windows") {
+                        "npx.cmd"
+                    } else {
+                        "npx"
+                    };
+                    let npm_cmd = if cfg!(target_os = "windows") {
+                        "npm.cmd"
+                    } else {
+                        "npm"
+                    };
+                    let javy_cmd = if cfg!(target_os = "windows") {
+                        "javy.cmd"
+                    } else {
+                        "javy"
+                    };
+
+                    println!("{} Installing NPM dependencies...", "[~]".yellow());
+                    std::process::Command::new(npm_cmd)
+                        .current_dir(path)
+                        .args(["install"])
+                        .output()
+                        .unwrap();
+
+                    // Find the entry point automatically!
+                    let entry_points = [
+                        "index.ts",
+                        "index.js",
+                        "src/index.ts",
+                        "src/index.js",
+                        "main.ts",
+                        "main.js",
+                    ];
+                    let mut entry_file = None;
+                    for ep in entry_points {
+                        if path.join(ep).exists() {
+                            entry_file = Some(ep);
+                            break;
+                        }
+                    }
+
+                    if entry_file.is_none() {
+                        println!(
+                            "{} FATAL: Could not find entry point (index.ts, src/index.js, etc.)",
+                            "[-]".red().bold()
+                        );
+                        exit(1);
+                    }
+
+                    println!("{} Bundling project via esbuild...", "[~]".yellow());
+                    let tmp_js = get_ore_dir()
+                        .join(".tmp_build")
+                        .join(format!("{}.js", tool_name));
+                    fs::create_dir_all(tmp_js.parent().unwrap()).unwrap();
+
+                    let esbuild = std::process::Command::new(npx_cmd)
+                        .current_dir(path)
                         .args([
-                            filepath,
-                            "--target",
-                            "wasm32-wasip1",
-                            "-C",
-                            "opt-level=3", // Max optimization
+                            "esbuild",
+                            entry_file.unwrap(),
+                            "--bundle",
+                            "--format=esm",
+                            &format!("--outfile={}", tmp_js.to_str().unwrap()),
+                        ])
+                        .output()
+                        .unwrap();
+
+                    if !esbuild.status.success() {
+                        println!(
+                            "{} Bundling failed:\n{}",
+                            "[-]".red(),
+                            String::from_utf8_lossy(&esbuild.stderr)
+                        );
+                        exit(1);
+                    }
+
+                    if std::process::Command::new(javy_cmd)
+                        .arg("--version")
+                        .output()
+                        .is_err()
+                    {
+                        std::process::Command::new(npm_cmd)
+                            .args(["install", "-g", "javy-cli"])
+                            .output()
+                            .unwrap();
+                    }
+
+                    println!("{} Compiling bundled JS to WebAssembly...", "[~]".yellow());
+                    let javy = std::process::Command::new(javy_cmd)
+                        .args([
+                            "compile",
+                            tmp_js.to_str().unwrap(),
                             "-o",
                             dest_file.to_str().unwrap(),
                         ])
                         .output()
-                        .expect("Failed to execute rustc.");
+                        .unwrap();
 
-                    if build.status.success() {
+                    if javy.status.success() {
+                        fs::remove_file(tmp_js).unwrap();
                         println!("{} Cartridge forged successfully!", "[+]".green());
                         println!("Path :: {}", dest_file.display().to_string().bright_black());
                     } else {
                         println!(
                             "{} Compilation failed:\n{}",
                             "[-]".red(),
-                            String::from_utf8_lossy(&build.stderr)
+                            String::from_utf8_lossy(&javy.stderr)
                         );
+                        exit(1);
                     }
-                }
-                // Go tools build
-                "go" => {
+                } else if path.join("go.mod").exists() {
+                    // ------------------------- GO PROJECT -------------------------
                     println!(
-                        "{} Detected Language: {}",
+                        "{} Detected Project: {}",
                         "[i]".bright_black(),
-                        "Go".cyan().bold()
+                        "Go Modules".cyan().bold()
                     );
-                    println!(
-                        "{} Initializing TinyGo / Go WASI compiler...",
-                        "[~]".yellow()
-                    );
+                    println!("{} Initializing Go WASI compiler...", "[~]".yellow());
 
                     let build = std::process::Command::new("go")
+                        .current_dir(path)
                         .env("GOOS", "wasip1")
                         .env("GOARCH", "wasm")
-                        .args(["build", "-o", dest_file.to_str().unwrap(), filepath])
+                        .args(["build", "-o", dest_file.to_str().unwrap(), "."])
                         .output()
-                        .expect("Failed to execute Go compiler. Is Go installed?");
+                        .expect("Failed to execute Go compiler.");
 
                     if build.status.success() {
                         println!("{} Cartridge forged successfully!", "[+]".green());
@@ -724,204 +849,246 @@ async fn main() {
                             "[-]".red(),
                             String::from_utf8_lossy(&build.stderr)
                         );
+                        exit(1);
                     }
-                }
-                // Python tools build
-                "py" => {
+                } else if path.join("__main__.py").exists() {
+                    // ------------------------- PYTHON PROJECT -------------------------
                     println!(
-                        "{} Detected Language: {}",
+                        "{} Detected Project: {}",
                         "[i]".bright_black(),
-                        "Python".yellow().bold()
+                        "Python Directory".yellow().bold()
                     );
 
-                    if env == "data" {
-                        // MODE: Statically Linked CPython + Pandas/Numpy via Zip Append
+                    if env != "data" {
                         println!(
-                            "{} Environment: Data Science (Numpy/Pandas enabled)",
+                            "{} FATAL: Multi-file Python projects currently require the '--env data' flag.",
+                            "[-]".red().bold()
+                        );
+                        println!("    Please run: ore mktool {} --env data", filepath);
+                        exit(1);
+                    }
+
+                    let base_wasm_path = get_ore_dir().join("runtimes").join("system-py-data.wasm");
+                    if !base_wasm_path.exists() {
+                        println!(
+                            "{} Pulling 'system-py-data' wasm tool via ore-cli...",
                             "[*]".bright_blue()
                         );
+                        let current_exe =
+                            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ore"));
+                        let install = std::process::Command::new(current_exe)
+                            .args(["pull", "system-py-data"])
+                            .output()
+                            .unwrap();
+                        if !install.status.success() {
+                            println!("{} Failed to auto-install system-py-data.", "[-]".red());
+                            exit(1);
+                        }
+                    }
+
+                    // auto-vendor dependencies into a temporary directory
+                    let vendor_dir = get_ore_dir().join(".tmp_build").join("vendor");
+                    if vendor_dir.exists() {
+                        fs::remove_dir_all(&vendor_dir).unwrap();
+                    }
+
+                    if path.join("requirements.txt").exists() {
                         println!(
-                            "{} Initiating VFS Zip-Append Compilation...",
+                            "{} Found requirements.txt! Auto-vendoring dependencies...",
                             "[~]".yellow()
                         );
 
-                        let base_wasm_path =
-                            get_ore_dir().join("runtimes").join("system-py-data.wasm");
+                        let pip_install = std::process::Command::new("pip")
+                            .args([
+                                "install",
+                                "-r",
+                                path.join("requirements.txt").to_str().unwrap(),
+                                "--target",
+                                vendor_dir.to_str().unwrap(),
+                                "--upgrade", // Ensure fresh install
+                            ])
+                            .output()
+                            .expect("Failed to execute pip.");
 
-                        if !base_wasm_path.exists() {
+                        if !pip_install.status.success() {
                             println!(
-                                "{} [WARN]: Data Science base engine not found.",
-                                "[!]".yellow()
+                                "{} pip install failed:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&pip_install.stderr)
                             );
-                            println!(
-                                "{} Pulling 'system-py-data' wasm tool via ore-cli...",
-                                "[*]".bright_blue()
-                            );
-                            // DYNAMIC SELF-INVOCATION: Automatically runs itself (ore-cli)
-                            let current_exe = std::env::current_exe()
-                                .unwrap_or_else(|_| std::path::PathBuf::from("ore"));
+                            exit(1);
+                        }
 
-                            let install = std::process::Command::new(current_exe)
-                                .args(["pull", "system-py-data"])
-                                .output()
-                                .expect("Failed to run ore pull command.");
+                        // The C-extension scanner (Fail-Fast Security)
+                        println!(
+                            "{} Scanning dependencies for WASM compatibility...",
+                            "[~]".yellow()
+                        );
+                        for entry in walkdir::WalkDir::new(&vendor_dir) {
+                            let entry = entry.unwrap();
+                            if entry.path().is_file() {
+                                let ext = entry
+                                    .path()
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .unwrap_or("");
+                                if ["so", "pyd", "dylib", "dll"].contains(&ext) {
+                                    println!(
+                                        "{} FATAL: C-Extension detected in dependencies!",
+                                        "[-]".red().bold()
+                                    );
+                                    println!("    File: {}", entry.path().display());
+                                    println!(
+                                        "    WebAssembly (WASI) strictly requires Pure Python packages."
+                                    );
+                                    println!(
+                                        "    Please remove this package from requirements.txt."
+                                    );
+                                    fs::remove_dir_all(&vendor_dir).unwrap();
+                                    exit(1);
+                                }
+                            }
+                        }
+                        println!("{} Dependencies verified as Pure Python.", "[+]".green());
+                    }
 
-                            if !install.status.success() {
-                                println!(
-                                    "{} Failed to auto-install system-py-data. Try running: ore pull system-py-data",
-                                    "[-]".red()
-                                );
-                                exit(1);
+                    println!(
+                        "{} Zipping Python project into Fat Cartridge...",
+                        "[~]".yellow()
+                    );
+                    let mut zip_buf = std::io::Cursor::new(Vec::new());
+                    {
+                        let mut zip = zip::ZipWriter::new(&mut zip_buf);
+                        let options = zip::write::SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Stored);
+
+                        // Use WalkDir to Recursively grab all Python files in the directory to the ZIP
+                        for entry in walkdir::WalkDir::new(path) {
+                            let entry = entry.unwrap();
+                            let p = entry.path();
+
+                            if p.is_file() {
+                                // Get the relative path (so "utils/math.py" stays "utils/math.py" inside the zip)
+                                let relative_path = p.strip_prefix(path).unwrap().to_str().unwrap();
+
+                                // Convert Windows backslashes to Unix forward slashes for the Zip internal structure
+                                let zip_path = relative_path.replace("\\", "/");
+
+                                zip.start_file(zip_path, options).unwrap();
+                                let contents = fs::read(p).unwrap();
+                                use std::io::Write;
+                                zip.write_all(&contents).unwrap();
+                            }
+                        }
+                        zip.finish().unwrap();
+                    }
+
+                    let mut final_wasm = fs::read(&base_wasm_path).unwrap();
+                    final_wasm.extend(zip_buf.into_inner());
+                    fs::write(&dest_file, final_wasm).expect("Failed to write cartridge");
+
+                    println!(
+                        "{} Python Project frozen into WASM successfully!",
+                        "[+]".green()
+                    );
+                    println!("Path :: {}", dest_file.display().to_string().bright_black());
+                } else if path.join("build.zig").exists() {
+                    // ------------------------- ZIG PROJECT -------------------------
+                    println!(
+                        "{} Detected Project: {}",
+                        "[i]".bright_black(),
+                        "Zig (build.zig)".truecolor(247, 164, 29).bold()
+                    );
+                    println!("{} Initializing Zig WASI compiler...", "[~]".yellow());
+
+                    let build = std::process::Command::new("zig")
+                        .current_dir(path)
+                        .args(["build", "-Dtarget=wasm32-wasi", "-Doptimize=ReleaseFast"])
+                        .output()
+                        .expect("Failed to execute zig build. Is Zig installed?");
+
+                    if build.status.success() {
+                        // Zig outputs built binaries to zig-out/bin/
+                        let zig_out_bin = path.join("zig-out").join("bin");
+                        let mut compiled_wasm = None;
+
+                        // Intelligently scan the output directory for the compiled .wasm file
+                        if zig_out_bin.exists() {
+                            for entry in fs::read_dir(&zig_out_bin).unwrap() {
+                                let entry = entry.unwrap();
+                                let p = entry.path();
+                                if p.is_file()
+                                    && p.extension().and_then(|s| s.to_str()) == Some("wasm")
+                                {
+                                    compiled_wasm = Some(p);
+                                    break; // Grab the first .wasm file we find!
+                                }
                             }
                         }
 
-                        let py_code =
-                            fs::read_to_string(filepath).expect("Failed to read Python file");
+                        if let Some(wasm_file) = compiled_wasm {
+                            fs::copy(&wasm_file, &dest_file)
+                                .expect("Failed to copy compiled WASM to tools folder");
 
-                        // Create a Zip Archive in memory
-                        let mut zip_buf = std::io::Cursor::new(Vec::new());
-                        {
-                            let mut zip = zip::ZipWriter::new(&mut zip_buf);
-                            let options = zip::write::SimpleFileOptions::default()
-                                .compression_method(zip::CompressionMethod::Stored); // Uncompressed for speed
-
-                            // Python WASI automatically executes __main__.py when appended!
-                            zip.start_file("__main__.py", options).unwrap();
-                            use std::io::Write;
-                            zip.write_all(py_code.as_bytes()).unwrap();
-                            zip.finish().unwrap();
-                        }
-
-                        // Read the Fat CPython WASM binary
-                        let mut final_wasm = fs::read(&base_wasm_path).unwrap_or_else(|e| {
+                            println!("{} Cartridge forged successfully!", "[+]".green());
+                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        } else {
                             println!(
-                                "{} FATAL: Data Science base engine is missing or corrupted: {}",
-                                "[-]".red().bold(),
-                                e
-                            );
-                            println!(
-                                "    Run 'ore pull system-py-data' to restore the heavy runtime."
+                                "{} FATAL: Zig compilation succeeded, but no .wasm file was found in 'zig-out/bin/'.",
+                                "[-]".red().bold()
                             );
                             exit(1);
-                        });
-
-                        // Concatenate the Zip bytes to the absolute end of the WASM binary!
-                        final_wasm.extend(zip_buf.into_inner());
-
-                        // Save the new, unified Cartridge
-                        fs::write(&dest_file, final_wasm)
-                            .expect("Failed to forge heavy WASM cartridge");
-
-                        println!(
-                            "{} Python Data Tool frozen into WASM successfully!",
-                            "[+]".green()
-                        );
-                        println!(
-                            "{} Note: Cartridge size is ~110MB. It contains the C-Extensions.",
-                            "[i]".bright_black()
-                        );
-                        println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        }
                     } else {
-                        // MODE: Pure Python via RustPython AOT Compilation
                         println!(
-                            "{} Initiating RustPython AOT Compilation...",
-                            "[~]".yellow()
+                            "{} Compilation failed:\n{}",
+                            "[-]".red(),
+                            String::from_utf8_lossy(&build.stderr)
                         );
-                        println!(
-                            "{} Note: The first compilation will take 1-2 minutes to build the Python engine.",
-                            "[i]".bright_black()
-                        );
-                        println!(
-                            "{} Note: Resulting cartridge will be ~25MB. Pure Python only.",
-                            "[i]".bright_black()
-                        );
+                        exit(1);
+                    }
+                } else {
+                    println!("{} FATAL: Unrecognized project type.", "[-]".red().bold());
+                    println!(
+                        "    Could not find Cargo.toml, package.json, go.mod, build.zig, or __main__.py in the directory."
+                    );
+                    exit(1);
+                }
+            } else {
+                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
+                match ext {
+                    // Rust tools build
+                    "rs" => {
+                        println!(
+                            "{} Detected Language: {}",
+                            "[i]".bright_black(),
+                            "Rust".red().bold()
+                        );
+                        println!("{} Initializing Cargo WASI compiler...", "[~]".yellow());
+
+                        // Check if the wasm32-wasip1 target is installed
                         let _ = std::process::Command::new("rustup")
                             .args(["target", "add", "wasm32-wasip1"])
                             .output()
                             .expect("Failed to execute rustup. Is Rust installed?");
 
-                        let build_dir = get_ore_dir().join("tmp_build").join(&tool_name);
-                        if build_dir.exists() {
-                            fs::remove_dir_all(&build_dir).unwrap();
-                        }
-                        fs::create_dir_all(build_dir.join("src")).unwrap();
-
-                        // Copy the developer's python script
-                        let build_filename = tool_name.clone();
-                        let py_code =
-                            fs::read_to_string(filepath).expect("Failed to read Python file");
-                        fs::write(build_dir.join("src").join(build_filename), py_code).unwrap();
-
-                        // Write the Cargo.toml for the RustPython wrapper
-                        let cargo_toml = format!(
-                            r#"
-    [package]
-    name = "{}"
-    version = "0.1.0"
-    edition = "2024"
-
-    [dependencies]
-    rustpython-vm = {{ version = "0.3.1", default-features = false }}
-    rustpython-stdlib = {{ version = "0.3.1", default-features = false }}
-
-    [profile.release]
-    opt-level = 3
-    lto = true
-    codegen-units = 1
-    strip = true
-    "#,
-                            tool_name
-                        );
-                        fs::write(build_dir.join("Cargo.toml"), cargo_toml).unwrap();
-
-                        // Write the Rust Execution Wrapper
-                        let main_rs = format!(
-                            r#"
-    fn main() {{
-        use rustpython_vm as vm;
-
-        vm::Interpreter::with_init(Default::default(), |vm| {{
-            vm.add_native_modules(rustpython_stdlib::get_module_inits());
-        }}).enter(|vm| {{
-            let scope = vm.new_scope_with_builtins();
-            
-            // Bake the developer's exact script directly into the binary!
-            let script = include_str!("{}");
-            
-            let code_obj = vm.compile(script, vm::compiler::Mode::Exec, "<embedded>")
-                .expect("Failed to compile Python syntax");
-            
-            if let Err(e) = vm.run_code_obj(code_obj, scope) {{
-                vm.print_exception(e);
-                std::process::exit(1);
-            }}
-        }});
-    }}
-    "#,
-                            tool_name
-                        );
-                        fs::write(build_dir.join("src").join("main.rs"), main_rs).unwrap();
-
-                        // Compile the wrapped Python script to WASM!
-                        let build = std::process::Command::new("cargo")
-                            .current_dir(&build_dir)
-                            .args(["build", "--target", "wasm32-wasip1", "--release"])
+                        // Compile using rustc directly to a standalone WASM file
+                        let build = std::process::Command::new("rustc")
+                            .args([
+                                filepath,
+                                "--target",
+                                "wasm32-wasip1",
+                                "-C",
+                                "opt-level=3", // Max optimization
+                                "-o",
+                                dest_file.to_str().unwrap(),
+                            ])
                             .output()
-                            .expect("Failed to execute cargo build.");
+                            .expect("Failed to execute rustc.");
 
                         if build.status.success() {
-                            let cargo_out_name = tool_name.replace("-", "_");
-                            let compiled_wasm = build_dir
-                                .join("target")
-                                .join("wasm32-wasip1")
-                                .join("release")
-                                .join(format!("{}.wasm", cargo_out_name));
-                            fs::copy(&compiled_wasm, &dest_file)
-                                .expect("Failed to copy compiled WASM to tools folder");
-                            fs::remove_dir_all(&build_dir).unwrap(); // Clean up the temp build folder
-
-                            println!("{} Python frozen into WASM successfully!", "[+]".green());
+                            println!("{} Cartridge forged successfully!", "[+]".green());
                             println!("Path :: {}", dest_file.display().to_string().bright_black());
                         } else {
                             println!(
@@ -929,210 +1096,237 @@ async fn main() {
                                 "[-]".red(),
                                 String::from_utf8_lossy(&build.stderr)
                             );
-                            exit(1);
                         }
                     }
-                }
-                // JavaScript tools build
-                "js" => {
-                    println!(
-                        "{} Detected Language: {}",
-                        "[i]".bright_black(),
-                        "JavaScript".truecolor(247, 223, 30).bold()
-                    );
-                    println!("{} Initializing Javy compiler...", "[~]".yellow());
-
-                    // AUTO-INSTALLER: Check if Javy is installed
-                    if std::process::Command::new("javy")
-                        .arg("--version")
-                        .output()
-                        .is_err()
-                    {
+                    // Go tools build
+                    "go" => {
                         println!(
-                            "{} 'javy' compiler not found. Auto-installing via npm...",
-                            "[*]".bright_blue()
+                            "{} Detected Language: {}",
+                            "[i]".bright_black(),
+                            "Go".cyan().bold()
                         );
-                        let install = std::process::Command::new("npm")
-                            .args(["install", "-g", "javy-cli"])
+                        println!(
+                            "{} Initializing TinyGo / Go WASI compiler...",
+                            "[~]".yellow()
+                        );
+
+                        let build = std::process::Command::new("go")
+                            .env("GOOS", "wasip1")
+                            .env("GOARCH", "wasm")
+                            .args(["build", "-o", dest_file.to_str().unwrap(), filepath])
                             .output()
-                            .expect("Failed to run npm. Is Node.js installed?");
+                            .expect("Failed to execute Go compiler. Is Go installed?");
 
-                        if !install.status.success() {
+                        if build.status.success() {
+                            println!("{} Cartridge forged successfully!", "[+]".green());
+                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        } else {
                             println!(
-                                "{} Failed to auto-install javy. Try running: npm install -g javy-cli",
-                                "[-]".red()
+                                "{} Compilation failed:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&build.stderr)
                             );
-                            exit(1);
-                        }
-                        println!("{} Javy installed successfully!", "[+]".green());
-                    }
-
-                    // Javy takes a JS file and fuses it with QuickJS into a single WASM binary.
-                    let build = std::process::Command::new("javy")
-                        .args(["compile", filepath, "-o", dest_file.to_str().unwrap()])
-                        .output()
-                        .expect("Failed to execute javy. Ensure Javy is installed by running: npm install -g javy-cli");
-
-                    if build.status.success() {
-                        println!("{} Cartridge forged successfully!", "[+]".green());
-                        println!("Path :: {}", dest_file.display().to_string().bright_black());
-                    } else {
-                        println!(
-                            "{} Compilation failed:\n{}",
-                            "[-]".red(),
-                            String::from_utf8_lossy(&build.stderr)
-                        );
-                        exit(1);
-                    }
-                }
-                // Typescript tools build
-                "ts" => {
-                    println!(
-                        "{} Detected Language: {}",
-                        "[i]".bright_black(),
-                        "TypeScript".blue().bold()
-                    );
-                    println!(
-                        "{} Transpiling to JavaScript via esbuild...",
-                        "[~]".yellow()
-                    );
-
-                    let build_dir = get_ore_dir().join("tmp_build").join(&tool_name);
-                    if build_dir.exists() {
-                        fs::remove_dir_all(&build_dir).unwrap();
-                    }
-                    fs::create_dir_all(&build_dir).unwrap();
-                    let js_out = build_dir.join(format!("{}.js", tool_name));
-
-                    // Use npx esbuild to bundle TS into a single clean JS file
-                    let tsc_build = std::process::Command::new("npx")
-                        .args([
-                            "esbuild",
-                            filepath,
-                            "--bundle",
-                            "--format=esm",
-                            &format!("--outfile={}", js_out.to_str().unwrap()),
-                        ])
-                        .output()
-                        .expect(
-                            "Failed to execute npx esbuild. Ensure Node.js and npx are installed.",
-                        );
-
-                    if !tsc_build.status.success() {
-                        println!(
-                            "{} TypeScript transpilation failed:\n{}",
-                            "[-]".red(),
-                            String::from_utf8_lossy(&tsc_build.stderr)
-                        );
-                        exit(1);
-                    }
-
-                    println!("{} Initializing Javy compiler...", "[~]".yellow());
-
-                    // AUTO-INSTALLER: Check if Javy is installed
-                    if std::process::Command::new("javy")
-                        .arg("--version")
-                        .output()
-                        .is_err()
-                    {
-                        println!(
-                            "{} 'javy' compiler not found. Auto-installing via npm...",
-                            "[*]".bright_blue()
-                        );
-                        let install = std::process::Command::new("npm")
-                            .args(["install", "-g", "javy-cli"])
-                            .output()
-                            .expect("Failed to run npm.");
-
-                        if !install.status.success() {
-                            println!(
-                                "{} Failed to auto-install javy. Try running: npm install -g javy-cli",
-                                "[-]".red()
-                            );
-                            exit(1);
                         }
                     }
-
-                    let build = std::process::Command::new("javy")
-                        .args(["compile", js_out.to_str().unwrap(), "-o", dest_file.to_str().unwrap()])
-                        .output()
-                        .expect("Failed to execute javy. Ensure Javy is installed by running: npm install -g javy-cli");
-
-                    if build.status.success() {
-                        fs::remove_dir_all(&build_dir).unwrap(); // Cleanup temp JS
-                        println!("{} Cartridge forged successfully!", "[+]".green());
-                        println!("Path :: {}", dest_file.display().to_string().bright_black());
-                    } else {
+                    // Python tools build
+                    "py" => {
                         println!(
-                            "{} Compilation failed:\n{}",
-                            "[-]".red(),
-                            String::from_utf8_lossy(&build.stderr)
+                            "{} Detected Language: {}",
+                            "[i]".bright_black(),
+                            "Python".yellow().bold()
                         );
-                        exit(1);
-                    }
-                }
-                // Zig tools build
-                "zig" => {
-                    println!(
-                        "{} Detected Language: {}",
-                        "[i]".bright_black(),
-                        "Zig".truecolor(247, 164, 29).bold()
-                    );
-                    println!("{} Initializing Zig WASI compiler...", "[~]".yellow());
 
-                    let build = std::process::Command::new("zig")
-                        .args([
-                            "build-exe", filepath,
-                            "-target", "wasm32-wasi",
-                            "-O", "ReleaseFast",
-                            &format!("-femit-bin={}", dest_file.to_str().unwrap())
-                        ])
-                        .output()
-                        .expect("Failed to execute zig. Ensure Zig is installed by running: zig version");
+                        if env == "data" {
+                            // MODE: Statically Linked CPython + Pandas/Numpy/Sci-kit Learn via Zip Append
+                            println!(
+                                "{} Environment: Data Science (Numpy/Pandas/Sci-kit Learn enabled)",
+                                "[*]".bright_blue()
+                            );
+                            println!(
+                                "{} Initiating VFS Zip-Append Compilation...",
+                                "[~]".yellow()
+                            );
 
-                    if build.status.success() {
-                        println!("{} Cartridge forged successfully!", "[+]".green());
-                        println!("Path :: {}", dest_file.display().to_string().bright_black());
-                    } else {
-                        println!(
-                            "{} Compilation failed:\n{}",
-                            "[-]".red(),
-                            String::from_utf8_lossy(&build.stderr)
-                        );
-                        exit(1);
-                    }
-                }
-                // C/C++ tools build
-                "c" | "cpp" | "cc" | "cxx" => {
-                    let is_cpp = ext != "c";
-                    let lang_name = if is_cpp { "C++" } else { "C" };
-                    let compiler = if is_cpp { "clang++" } else { "clang" };
+                            let base_wasm_path =
+                                get_ore_dir().join("runtimes").join("system-py-data.wasm");
 
-                    println!(
-                        "{} Detected Language: {}",
-                        "[i]".bright_black(),
-                        lang_name.magenta().bold()
-                    );
-                    println!(
-                        "{} Initializing WASI-SDK compiler ({})...",
-                        "[~]".yellow(),
-                        compiler
-                    );
+                            if !base_wasm_path.exists() {
+                                println!(
+                                    "{} [WARN]: Data Science base engine not found.",
+                                    "[!]".yellow()
+                                );
+                                println!(
+                                    "{} Pulling 'system-py-data' wasm tool via ore-cli...",
+                                    "[*]".bright_blue()
+                                );
+                                // DYNAMIC SELF-INVOCATION: Automatically runs itself (ore-cli)
+                                let current_exe = std::env::current_exe()
+                                    .unwrap_or_else(|_| PathBuf::from("ore"));
 
-                    let build_result = std::process::Command::new(compiler)
-                        .args([
-                            filepath,
-                            "--target=wasm32-wasi",
-                            "-O3", // Maximum performance
-                            "-o",
-                            dest_file.to_str().unwrap(),
-                        ])
-                        .output();
+                                let install = std::process::Command::new(current_exe)
+                                    .args(["pull", "system-py-data"])
+                                    .output()
+                                    .expect("Failed to run ore pull command.");
 
-                    match build_result {
-                        Ok(build) => {
+                                if !install.status.success() {
+                                    println!(
+                                        "{} Failed to auto-install system-py-data. Try running: ore pull system-py-data",
+                                        "[-]".red()
+                                    );
+                                    exit(1);
+                                }
+                            }
+
+                            let py_code =
+                                fs::read_to_string(filepath).expect("Failed to read Python file");
+
+                            // Create a Zip Archive in memory
+                            let mut zip_buf = std::io::Cursor::new(Vec::new());
+                            {
+                                let mut zip = zip::ZipWriter::new(&mut zip_buf);
+                                let options = zip::write::SimpleFileOptions::default()
+                                    .compression_method(zip::CompressionMethod::Stored); // Uncompressed for speed
+
+                                // Python WASI automatically executes __main__.py when appended!
+                                zip.start_file("__main__.py", options).unwrap();
+                                use std::io::Write;
+                                zip.write_all(py_code.as_bytes()).unwrap();
+                                zip.finish().unwrap();
+                            }
+
+                            // Read the Fat CPython WASM binary
+                            let mut final_wasm = fs::read(&base_wasm_path).unwrap_or_else(|e| {
+                                    println!(
+                                        "{} FATAL: Data Science base engine is missing or corrupted: {}",
+                                        "[-]".red().bold(),
+                                        e
+                                    );
+                                    println!(
+                                        "    Run 'ore pull system-py-data' to restore the heavy runtime."
+                                    );
+                                    exit(1);
+                                });
+
+                            // Concatenate the Zip bytes to the absolute end of the WASM binary!
+                            final_wasm.extend(zip_buf.into_inner());
+
+                            // Save the new, unified Cartridge
+                            fs::write(&dest_file, final_wasm)
+                                .expect("Failed to forge heavy WASM cartridge");
+
+                            println!(
+                                "{} Python Data Tool frozen into WASM successfully!",
+                                "[+]".green()
+                            );
+                            println!(
+                                "{} Note: Cartridge size is ~110MB. It contains the C-Extensions.",
+                                "[i]".bright_black()
+                            );
+                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        } else {
+                            // MODE: Pure Python via RustPython AOT Compilation
+                            println!(
+                                "{} Initiating RustPython AOT Compilation...",
+                                "[~]".yellow()
+                            );
+                            println!(
+                                "{} Note: The first compilation will take 1-2 minutes to build the Python engine.",
+                                "[i]".bright_black()
+                            );
+                            println!(
+                                "{} Note: Resulting cartridge will be ~25MB. Pure Python only.",
+                                "[i]".bright_black()
+                            );
+
+                            let _ = std::process::Command::new("rustup")
+                                .args(["target", "add", "wasm32-wasip1"])
+                                .output()
+                                .expect("Failed to execute rustup. Is Rust installed?");
+
+                            let build_dir = get_ore_dir().join(".tmp_build").join(&tool_name);
+                            if build_dir.exists() {
+                                fs::remove_dir_all(&build_dir).unwrap();
+                            }
+                            fs::create_dir_all(build_dir.join("src")).unwrap();
+
+                            // Copy the developer's python script
+                            let build_filename = tool_name.clone();
+                            let py_code =
+                                fs::read_to_string(filepath).expect("Failed to read Python file");
+                            fs::write(build_dir.join("src").join(build_filename), py_code).unwrap();
+
+                            // Write the Cargo.toml for the RustPython wrapper
+                            let cargo_toml = r#"
+[workspace]
+# Empty workspace table isolates this build from the host's Cargo workspace!
+
+[package]
+name = "ore_tool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustpython = "0.5.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+"#;
+                            fs::write(build_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+                            // Write the Rust Execution Wrapper (RustPython 0.5.0 API)
+                            let main_rs = format!(
+                                r#"
+fn main() {{
+    use rustpython::{{InterpreterBuilder, InterpreterBuilderExt, vm}};
+
+    // The official 0.5.0 builder automatically wires up the Standard Library for us!
+    let interp = InterpreterBuilder::new()
+        .init_stdlib()
+        .build();
+
+    interp.enter(|vm| {{
+        let scope = vm.new_scope_with_builtins();
+        
+        // Bake the developer's exact script directly into the binary!
+        let script = include_str!("{}");
+        
+        // Compile the script text into Python Bytecode
+        let code_obj = vm.compile(script, vm::compiler::Mode::Exec, "<embedded>".to_owned())
+            .expect("Failed to compile Python syntax");
+        
+        // Run the script!
+        if let Err(e) = vm.run_code_obj(code_obj, scope) {{
+            vm.print_exception(e);
+            std::process::exit(1);
+        }}
+    }});
+}}
+"#,
+                                tool_name
+                            );
+                            fs::write(build_dir.join("src").join("main.rs"), main_rs).unwrap();
+
+                            // Compile the wrapped Python script to WASM!
+                            let build = std::process::Command::new("cargo")
+                                .current_dir(&build_dir)
+                                .args(["build", "--target", "wasm32-wasip1", "--release"])
+                                .output()
+                                .expect("Failed to execute cargo build.");
+
                             if build.status.success() {
-                                println!("{} Cartridge forged successfully!", "[+]".green());
+                                let compiled_wasm = build_dir
+                                    .join("target")
+                                    .join("wasm32-wasip1")
+                                    .join("release")
+                                    .join("ore_tool.wasm");
+                                fs::copy(&compiled_wasm, &dest_file)
+                                    .expect("Failed to copy compiled WASM to tools folder");
+                                fs::remove_dir_all(&build_dir).unwrap(); // Clean up the temp build folder
+
+                                println!("{} Python frozen into WASM successfully!", "[+]".green());
                                 println!(
                                     "Path :: {}",
                                     dest_file.display().to_string().bright_black()
@@ -1146,41 +1340,283 @@ async fn main() {
                                 exit(1);
                             }
                         }
-                        Err(_) => {
+                    }
+                    // JavaScript tools build
+                    "js" => {
+                        println!(
+                            "{} Detected Language: {}",
+                            "[i]".bright_black(),
+                            "JavaScript".truecolor(247, 223, 30).bold()
+                        );
+                        println!("{} Initializing Javy compiler...", "[~]".yellow());
+
+                        let npm_cmd = if cfg!(target_os = "windows") {
+                            "npm.cmd"
+                        } else {
+                            "npm"
+                        };
+                        let javy_cmd = if cfg!(target_os = "windows") {
+                            "javy.cmd"
+                        } else {
+                            "javy"
+                        };
+
+                        // AUTO-INSTALLER: Check if Javy is installed
+                        if std::process::Command::new(javy_cmd)
+                            .arg("--version")
+                            .output()
+                            .is_err()
+                        {
                             println!(
-                                "{} FATAL: '{}' compiler not found in PATH.",
-                                "[-]".red().bold(),
-                                compiler
+                                "{} 'javy' compiler not found. Auto-installing via npm...",
+                                "[*]".bright_blue()
                             );
+                            let install = std::process::Command::new(npm_cmd)
+                                .args(["install", "-g", "javy-cli"])
+                                .output()
+                                .expect("Failed to run npm. Is Node.js installed?");
+
+                            if !install.status.success() {
+                                println!(
+                                    "{} Failed to auto-install javy. Try running: npm install -g javy-cli",
+                                    "[-]".red()
+                                );
+                                exit(1);
+                            }
+                            println!("{} Javy installed successfully!", "[+]".green());
+                        }
+
+                        // Javy takes a JS file and fuses it with QuickJS into a single WASM binary.
+                        let build = std::process::Command::new(javy_cmd)
+                            .args(["compile", filepath, "-o", dest_file.to_str().unwrap()])
+                            .output()
+                            .expect("Failed to execute javy. Ensure Javy is installed by running: npm install -g javy-cli");
+
+                        if build.status.success() {
+                            println!("{} Cartridge forged successfully!", "[+]".green());
+                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        } else {
                             println!(
-                                "    {} C/C++ requires the 'wasi-sdk' to compile to WebAssembly.",
-                                "[!]".yellow()
-                            );
-                            println!(
-                                "    {} Download it here: https://github.com/WebAssembly/wasi-sdk\n",
-                                "[i]".bright_blue()
-                            );
-                            println!(
-                                "    {} PRO TIP: If you have 'zig' installed, you can compile C/C++ instantly without the wasi-sdk!",
-                                "[!]".yellow()
-                            );
-                            println!(
-                                "       Just run: zig {} -target wasm32-wasi {} -o {}",
-                                if is_cpp { "c++" } else { "cc" },
-                                filepath,
-                                dest_file.file_name().unwrap().to_str().unwrap()
+                                "{} Compilation failed:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&build.stderr)
                             );
                             exit(1);
                         }
                     }
-                }
-                _ => {
-                    println!(
-                        "{} FATAL: Unsupported file extension '{}'. Supported: .rs, .go, .py, .js, .ts, .zig, .c, .cpp, .cc, .cxx",
-                        "[-]".red(),
-                        ext
-                    );
-                    exit(1);
+                    // Typescript tools build
+                    "ts" => {
+                        println!(
+                            "{} Detected Language: {}",
+                            "[i]".bright_black(),
+                            "TypeScript".blue().bold()
+                        );
+                        println!(
+                            "{} Transpiling to JavaScript via esbuild...",
+                            "[~]".yellow()
+                        );
+
+                        let npx_cmd = if cfg!(target_os = "windows") {
+                            "npx.cmd"
+                        } else {
+                            "npx"
+                        };
+                        let npm_cmd = if cfg!(target_os = "windows") {
+                            "npm.cmd"
+                        } else {
+                            "npm"
+                        };
+                        let javy_cmd = if cfg!(target_os = "windows") {
+                            "javy.cmd"
+                        } else {
+                            "javy"
+                        };
+
+                        let build_dir = get_ore_dir().join(".tmp_build").join(&tool_name);
+                        if build_dir.exists() {
+                            fs::remove_dir_all(&build_dir).unwrap();
+                        }
+                        fs::create_dir_all(&build_dir).unwrap();
+                        let js_out = build_dir.join(format!("{}.js", tool_name));
+
+                        // Use npx esbuild to bundle TS into a single clean JS file
+                        let tsc_build = std::process::Command::new(npx_cmd)
+                            .args([
+                                "esbuild",
+                                filepath,
+                                "--bundle",
+                                "--format=esm",
+                                &format!("--outfile={}", js_out.to_str().unwrap()),
+                            ])
+                            .output()
+                            .expect(
+                                "Failed to execute npx esbuild. Ensure Node.js and npx are installed.",
+                            );
+
+                        if !tsc_build.status.success() {
+                            println!(
+                                "{} TypeScript transpilation failed:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&tsc_build.stderr)
+                            );
+                            exit(1);
+                        }
+
+                        println!("{} Initializing Javy compiler...", "[~]".yellow());
+
+                        // AUTO-INSTALLER: Check if Javy is installed
+                        if std::process::Command::new(javy_cmd)
+                            .arg("--version")
+                            .output()
+                            .is_err()
+                        {
+                            println!(
+                                "{} 'javy' compiler not found. Auto-installing via npm...",
+                                "[*]".bright_blue()
+                            );
+                            let install = std::process::Command::new(npm_cmd)
+                                .args(["install", "-g", "javy-cli"])
+                                .output()
+                                .expect("Failed to run npm.");
+
+                            if !install.status.success() {
+                                println!(
+                                    "{} Failed to auto-install javy. Try running: npm install -g javy-cli",
+                                    "[-]".red()
+                                );
+                                exit(1);
+                            }
+                        }
+
+                        let build = std::process::Command::new(javy_cmd)
+                            .args(["compile", js_out.to_str().unwrap(), "-o", dest_file.to_str().unwrap()])
+                            .output()
+                            .expect("Failed to execute javy. Ensure Javy is installed by running: npm install -g javy-cli");
+
+                        if build.status.success() {
+                            fs::remove_dir_all(&build_dir).unwrap(); // Cleanup temp JS
+                            println!("{} Cartridge forged successfully!", "[+]".green());
+                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        } else {
+                            println!(
+                                "{} Compilation failed:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&build.stderr)
+                            );
+                            exit(1);
+                        }
+                    }
+                    // Zig tools build
+                    "zig" => {
+                        println!(
+                            "{} Detected Language: {}",
+                            "[i]".bright_black(),
+                            "Zig".truecolor(247, 164, 29).bold()
+                        );
+                        println!("{} Initializing Zig WASI compiler...", "[~]".yellow());
+
+                        let build = std::process::Command::new("zig")
+                            .args([
+                                "build-exe", filepath,
+                                "-target", "wasm32-wasi",
+                                "-O", "ReleaseFast",
+                                &format!("-femit-bin={}", dest_file.to_str().unwrap())
+                            ])
+                            .output()
+                            .expect("Failed to execute zig. Ensure Zig is installed by running: zig version");
+
+                        if build.status.success() {
+                            println!("{} Cartridge forged successfully!", "[+]".green());
+                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        } else {
+                            println!(
+                                "{} Compilation failed:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&build.stderr)
+                            );
+                            exit(1);
+                        }
+                    }
+                    // C/C++ tools build
+                    "c" | "cpp" | "cc" | "cxx" => {
+                        let is_cpp = ext != "c";
+                        let lang_name = if is_cpp { "C++" } else { "C" };
+                        let compiler = if is_cpp { "clang++" } else { "clang" };
+
+                        println!(
+                            "{} Detected Language: {}",
+                            "[i]".bright_black(),
+                            lang_name.magenta().bold()
+                        );
+                        println!(
+                            "{} Initializing WASI-SDK compiler ({})...",
+                            "[~]".yellow(),
+                            compiler
+                        );
+
+                        let build_result = std::process::Command::new(compiler)
+                            .args([
+                                filepath,
+                                "--target=wasm32-wasi",
+                                "-O3", // Maximum performance
+                                "-o",
+                                dest_file.to_str().unwrap(),
+                            ])
+                            .output();
+
+                        match build_result {
+                            Ok(build) => {
+                                if build.status.success() {
+                                    println!("{} Cartridge forged successfully!", "[+]".green());
+                                    println!(
+                                        "Path :: {}",
+                                        dest_file.display().to_string().bright_black()
+                                    );
+                                } else {
+                                    println!(
+                                        "{} Compilation failed:\n{}",
+                                        "[-]".red(),
+                                        String::from_utf8_lossy(&build.stderr)
+                                    );
+                                    exit(1);
+                                }
+                            }
+                            Err(_) => {
+                                println!(
+                                    "{} FATAL: '{}' compiler not found in PATH.",
+                                    "[-]".red().bold(),
+                                    compiler
+                                );
+                                println!(
+                                    "    {} C/C++ requires the 'wasi-sdk' to compile to WebAssembly.",
+                                    "[!]".yellow()
+                                );
+                                println!(
+                                    "    {} Download it here: https://github.com/WebAssembly/wasi-sdk\n",
+                                    "[i]".bright_blue()
+                                );
+                                println!(
+                                    "    {} PRO TIP: If you have 'zig' installed, you can compile C/C++ instantly without the wasi-sdk!",
+                                    "[!]".yellow()
+                                );
+                                println!(
+                                    "       Just run: zig {} -target wasm32-wasi {} -o {}",
+                                    if is_cpp { "c++" } else { "cc" },
+                                    filepath,
+                                    dest_file.file_name().unwrap().to_str().unwrap()
+                                );
+                                exit(1);
+                            }
+                        }
+                    }
+                    _ => {
+                        println!(
+                            "{} FATAL: Unsupported file extension '{}'. Supported: .rs, .go, .py, .js, .ts, .zig, .c, .cpp, .cc, .cxx",
+                            "[-]".red(),
+                            ext
+                        );
+                        exit(1);
+                    }
                 }
             }
         }

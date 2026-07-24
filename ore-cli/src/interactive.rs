@@ -427,15 +427,25 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
         .with_render_config(theme)
         .prompt()
         .unwrap_or_default();
+        let fuel =
+            CustomType::<u64>::new("Max CPU Instructions (Fuel Limit) [Recommended: 5000000000]:")
+                .with_default(5_000_000_000)
+                .with_help_message(
+                    "5 Billion ≈ 2 seconds of pure compute. Prevents infinite loops.",
+                )
+                .with_render_config(theme)
+                .prompt()
+                .unwrap_or(5_000_000_000);
 
         toml_output.push_str("[execution]\n");
         toml_output.push_str(&format!("can_execute_shell = {}\n", shell));
         toml_output.push_str(&format!("can_execute_wasm = {}\n", wasm));
         toml_output.push_str(&format!("allowed_tools = {}\n", format_list(tools)));
         toml_output.push_str(&format!(
-            "allowed_language_runtimes = {}\n\n",
+            "allowed_language_runtimes = {}\n",
             format_list(runtimes_selection.join(","))
         ));
+        toml_output.push_str(&format!("max_cpu_instructions = {}\n\n", fuel));
     }
 
     // --- 6. IPC ---

@@ -347,6 +347,10 @@ impl WasmSandbox {
         // JIT Compilation (Near-Instantaneous)
         let module = Module::new(&self.engine, &params.wasm_binary)?;
 
+        // THE SYSCALL STUBBER (Fixes WasmEdge and proprietary imports)
+        // Automatically stubs out any unknown host functions with safe Traps so the VM can boot!
+        linker.define_unknown_imports_as_traps(&module)?;
+
         let instance = linker.instantiate(&mut store, &module)?;
         let start_func = instance.get_typed_func::<(), ()>(&mut store, "_start")?;
 
@@ -358,16 +362,21 @@ impl WasmSandbox {
         match start_func.call(&mut store, ()) {
             Ok(_) => crate::kprintln!("-> [SANDBOX] Execution completed safely."),
             Err(e) => {
-                let err_msg = e.to_string();
-                if err_msg.contains("out of fuel") {
+                // By using {:#}, anyhow prints the ENTIRE error chain, exposing the root cause!
+                let err_msg = format!("{:#}", e);
+                if err_msg.contains("out of fuel") || err_msg.contains("all fuel consumed") {
                     return Err(Error::msg(
                         "Sandbox Trap: CPU Fuel Exhausted (Runaway AI or Infinite Loop Detected)",
                     ));
-                } else if err_msg.contains("guest exit") {
+                } else if err_msg.contains("guest exit")
+                    || err_msg.contains("runtime.exit")
+                    || err_msg.contains("proc_exit")
+                {
                     // Normal WASI program exit code
-                    crate::kprintln!("-> [SANDBOX] Program exited.");
+                    crate::kprintln!("-> [SANDBOX] Program exited gracefully via OS syscall.");
                 } else {
                     crate::kprintln!("-> [SANDBOX TRAP] Execution halted: {}", e);
+                    return Err(e.into());
                 }
             }
         }

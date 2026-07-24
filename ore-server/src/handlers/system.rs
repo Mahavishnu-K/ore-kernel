@@ -179,7 +179,7 @@ pub async fn execute_tool(
 
     let params = ExecuteParams {
         wasm_binary,
-        fuel_limit: 50_000_000, // 50 Million CPU Instructions.
+        fuel_limit: manifest.execution.max_cpu_instructions, // Dynamic fuel limit per manifest (Default: 5 Billion ≈ 2 seconds of pure compute)
         args: run_args,
         stdin: payload.input_data.map(|s| s.into_bytes()),
         allowed_read_paths: manifest.file_system.allowed_read_paths.clone(),

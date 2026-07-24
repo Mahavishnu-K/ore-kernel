@@ -74,6 +74,7 @@ pub enum Commands {
         app_id: String,
     },
     /// Compile a source file (Rust, Go, Python, JS, TS, Zig, C, C++) into a secure WASM Cartridge
+    #[command(name = "mktool")]
     MkTool {
         /// The file path to the source code (e.g., tool.rs, script.py, main.go, index.js)
         filepath: String,

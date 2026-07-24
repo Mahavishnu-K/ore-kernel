@@ -2775,6 +2775,7 @@ dependencies = [
  "serde",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
+ "walkdir",
  "zip 8.6.0",
 ]
 
