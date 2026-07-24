@@ -43,7 +43,7 @@ By decoupling the *tools* from the *agents*, ORE unlocks unprecedented capabilit
 - **Absolute Tool Portability:** Tools compiled to WASM cartridges are universally portable. You can write a tool once, distribute it as a single `.wasm` file, and any ORE user on any OS (Windows, macOS, Linux) can run it instantly without worrying about Python environments, dependency trees, or CUDA driver conflicts.
 
 > [!IMPORTANT]
-> **Performance Note:** Because ORE utilizes WASM instead of Docker, spinning up a secure, isolated sandbox for an AI agent takes **less than 5 milliseconds**. This allows for massive swarms of autonomous agents to execute hundreds of tools concurrently with near-zero overhead.
+> **Performance Note:** Because ORE utilizes WASM instead of Docker, spinning up a secure, isolated sandbox for an AI agent takes **less than 5 milliseconds**. This allows for massive swarms of autonomous agents to execute hundreds of tools concurrently with near-zero overhead. <br/>
 > **Rule of Thumb for ORE Tools:** WebAssembly is a pure compute environment. Your tools should take Data IN (via `STDIN` or File), crunch the math/text blazingly fast, use `ore.fetch` for network requests, and spit Data OUT (via `STDOUT` or File). Do not try to open raw TCP sockets or spawn OS threads. Thats all an agent tool needs to do ;).
 
 ### 2. The VRAM Wall (Infinite Concurrency)
