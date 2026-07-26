@@ -11,9 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial setup for the `ore-kernel` open-source repository.
 - Community standards: `CODE_OF_CONDUCT.md`.
 - Security policy: `SECURITY.md`.
+- Universal Polyglot Toolchain and cross-language Nano-Service orchestration.
 
 ### Changed
-- None yet.
+- Refactored path display logic during cartridge compilation in `ore-cli`.
+- Updated string formatting in `ore-server` IPC and system handlers.
 
 ### Deprecated
 - None yet.
