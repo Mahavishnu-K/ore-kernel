@@ -315,7 +315,7 @@ pub async fn ipc_send(
         }
         Err(e) => {
             kprintln!("-> [WARN] {}", e);
-            format!("KERNEL ERROR: {}", e)
+            format!("KERNEL ERROR: {}", e).to_string()
         }
     }
 }

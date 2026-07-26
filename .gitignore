@@ -4,10 +4,10 @@
 *.gguf
 *.safetensors
 *.xml
-*.json
 *.hash
 *.wasm
 
 /models/
 /runtimes/
 /tools/
+/memory/

@@ -1,0 +1,7 @@
+{
+  "name": "ts_validator",
+  "version": "1.0.0",
+  "dependencies": {
+    "zod": "^3.22.4"
+  }
+}

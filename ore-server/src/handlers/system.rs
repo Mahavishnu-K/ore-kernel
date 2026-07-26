@@ -12,6 +12,7 @@ pub async fn health_check(State(state): State<Arc<KernelState>>) -> String {
         "ORE Kernel is ALIVE. Powered by: {}",
         state.driver.engine_name()
     )
+    .to_string()
 }
 
 pub async fn execute_tool(
@@ -87,7 +88,7 @@ pub async fn execute_tool(
             }
             Err(e) => {
                 kprintln!("-> [SHELL FAILED] {}", e);
-                format!("KERNEL ERROR: Host Shell execution failed: {}", e)
+                format!("KERNEL ERROR: Host Shell execution failed: {}", e).to_string()
             }
         };
     }
@@ -200,11 +201,11 @@ pub async fn execute_tool(
         }
         Ok(Err(e)) => {
             ore_core::kprintln!("-> [EXECUTION FAILED] {}", e);
-            format!("KERNEL ERROR: {}", e)
+            format!("KERNEL ERROR: {}", e).to_string()
         }
         Err(e) => {
             ore_core::kprintln!("-> [KERNEL PANIC] Sandbox thread crashed: {}", e);
-            format!("KERNEL PANIC: {}", e)
+            format!("KERNEL PANIC: {}", e).to_string()
         }
     }
 }
@@ -316,7 +317,7 @@ pub async fn list_agents(State(state): State<Arc<KernelState>>) -> String {
 
             // Truncate if too long
             let models_disp = if models.len() > 17 {
-                format!("{}...", &models[..17])
+                format!("{}...", &models[..17]).to_string()
             } else {
                 models
             };
@@ -485,7 +486,7 @@ pub async fn compact_memory(
         Pager::delete_kv_cache(&app_id);
     }
 
-    format!("SUCCESS: Memory for Agent '{}' manually compacted.", app_id)
+    format!("SUCCESS: Memory for Agent '{}' manually compacted.", app_id).to_string()
 }
 
 pub async fn clear_memory(
@@ -502,6 +503,7 @@ pub async fn clear_memory(
         "SUCCESS: Memory for Agent '{}' has been wiped clean from SSD and RAM.",
         app_id
     )
+    .to_string()
 }
 
 pub async fn top_telemetry(State(state): State<Arc<KernelState>>) -> String {
@@ -531,5 +533,5 @@ pub async fn kill_app(State(state): State<Arc<KernelState>>, Path(app_id): Path<
         app_id
     );
     let _ = state.driver.invalidate_agent_cache(&app_id).await;
-    format!("SUCCESS: App '{}' context wiped from GPU Memory.", app_id)
+    format!("SUCCESS: App '{}' context wiped from GPU Memory.", app_id).to_string()
 }

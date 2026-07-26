@@ -1,5 +1,5 @@
-app_id = "wasm_agent"
-description = "QA Testing Agent"
+app_id = "test_agent"
+description = "Omni-Language QA Agent"
 version = "1.0.0"
 
 [resources]
@@ -18,18 +18,9 @@ auto_summarize_on_cap = true
 allowed_read_paths = ["./test_path"] # Maps to /workspace/test_path (Read-Only)
 allowed_write_paths = ["./test_output"] # Will map to /workspace/test_output
 
-[network]
-network_enabled = true
-allow_localhost_access = false
-
-[[network.rules]]
-domain = "jsonplaceholder.typicode.com"
-allowed_methods = ["GET"]
-allowed_paths = ["*"]
-
 [execution]
 can_execute_shell = false
 can_execute_wasm = true
-allowed_tools = ["rust_cruncher", "ts_generator", "fibonacci_benchmark", "infinite_loop_trap", "network_interception", "vfs_security_check", "go_hasher", "js_formatter"]
-allowed_language_runtimes = ["python", "js"]
+allowed_tools = ["rust", "typescript", "javascript", "go", "js_formatter"]
+allowed_language_runtimes = ["python"]
 max_cpu_instructions = 5_000_000_000

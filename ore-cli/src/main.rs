@@ -646,7 +646,9 @@ async fn main() {
             if !dest_dir.exists() {
                 fs::create_dir_all(&dest_dir).unwrap();
             }
-            let dest_file = dest_dir.join(format!("{}.wasm", tool_name));
+            let absolute_dest_dir = fs::canonicalize(&dest_dir).unwrap();
+            let dest_file = absolute_dest_dir.join(format!("{}.wasm", tool_name));
+            let display_path = dest_file.display().to_string().replace("\\\\?\\", "");
 
             println!(
                 "{} ORE Toolchain forging '{}' into a secure WASM cartridge...",
@@ -697,7 +699,7 @@ async fn main() {
                         fs::copy(&compiled_wasm, &dest_file).expect("Failed to copy WASM");
 
                         println!("{} Cartridge forged successfully!", "[+]".green());
-                        println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        println!("Path :: {}", display_path.bright_black());
                     } else {
                         println!(
                             "{} Compilation failed:\n{}",
@@ -730,12 +732,27 @@ async fn main() {
                         "javy"
                     };
 
-                    println!("{} Installing NPM dependencies...", "[~]".yellow());
-                    std::process::Command::new(npm_cmd)
-                        .current_dir(path)
-                        .args(["install"])
-                        .output()
-                        .unwrap();
+                    if !path.join("node_modules").exists() {
+                        println!("{} Installing NPM dependencies...", "[~]".yellow());
+                        let npm_install = std::process::Command::new(npm_cmd)
+                            .current_dir(path)
+                            .args(["install"])
+                            .output()
+                            .unwrap();
+                        if !npm_install.status.success() {
+                            println!(
+                                "{} NPM install failed:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&npm_install.stderr)
+                            );
+                            exit(1);
+                        }
+                    } else {
+                        println!(
+                            "{} Found 'node_modules'. Skipping install...",
+                            "[i]".bright_black()
+                        );
+                    }
 
                     // Find the entry point automatically!
                     let entry_points = [
@@ -763,10 +780,14 @@ async fn main() {
                     }
 
                     println!("{} Bundling project via esbuild...", "[~]".yellow());
-                    let tmp_js = get_ore_dir()
-                        .join(".tmp_build")
-                        .join(format!("{}.js", tool_name));
-                    fs::create_dir_all(tmp_js.parent().unwrap()).unwrap();
+                    let tmp_js_dir = get_ore_dir().join(".tmp_build");
+                    fs::create_dir_all(&tmp_js_dir).unwrap();
+
+                    let absolute_tmp_dir = fs::canonicalize(&tmp_js_dir).unwrap();
+                    let absolute_tmp_js = absolute_tmp_dir.join(format!("{}.js", tool_name));
+
+                    let clean_tmp_js = absolute_tmp_js.to_str().unwrap().replace("\\\\?\\", "");
+                    let clean_dest_file = dest_file.to_str().unwrap().replace("\\\\?\\", "");
 
                     let esbuild = std::process::Command::new(npx_cmd)
                         .current_dir(path)
@@ -775,7 +796,7 @@ async fn main() {
                             entry_file.unwrap(),
                             "--bundle",
                             "--format=esm",
-                            &format!("--outfile={}", tmp_js.to_str().unwrap()),
+                            &format!("--outfile={}", clean_tmp_js),
                         ])
                         .output()
                         .unwrap();
@@ -802,19 +823,14 @@ async fn main() {
 
                     println!("{} Compiling bundled JS to WebAssembly...", "[~]".yellow());
                     let javy = std::process::Command::new(javy_cmd)
-                        .args([
-                            "compile",
-                            tmp_js.to_str().unwrap(),
-                            "-o",
-                            dest_file.to_str().unwrap(),
-                        ])
+                        .args(["compile", &clean_tmp_js, "-o", &clean_dest_file])
                         .output()
                         .unwrap();
 
                     if javy.status.success() {
-                        fs::remove_file(tmp_js).unwrap();
+                        fs::remove_file(&absolute_tmp_js).unwrap();
                         println!("{} Cartridge forged successfully!", "[+]".green());
-                        println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        println!("Path :: {}", display_path.bright_black());
                     } else {
                         println!(
                             "{} Compilation failed:\n{}",
@@ -830,6 +846,31 @@ async fn main() {
                         "[i]".bright_black(),
                         "Go Modules".cyan().bold()
                     );
+
+                    // auto-fetch dependencies if go.sum is missing
+                    if !path.join("go.sum").exists() {
+                        println!("{} Fetching Go dependencies...", "[~]".yellow());
+                        let tidy = std::process::Command::new("go")
+                            .current_dir(path)
+                            .args(["mod", "tidy"])
+                            .output()
+                            .expect("Failed to execute go mod tidy. Is Go installed?");
+
+                        if !tidy.status.success() {
+                            println!(
+                                "{} Failed to fetch Go dependencies:\n{}",
+                                "[-]".red(),
+                                String::from_utf8_lossy(&tidy.stderr)
+                            );
+                            exit(1);
+                        }
+                    } else {
+                        println!(
+                            "{} Found 'go.sum'. Skipping dependency fetch...",
+                            "[i]".bright_black()
+                        );
+                    }
+
                     println!("{} Initializing Go WASI compiler...", "[~]".yellow());
 
                     let build = std::process::Command::new("go")
@@ -842,7 +883,7 @@ async fn main() {
 
                     if build.status.success() {
                         println!("{} Cartridge forged successfully!", "[+]".green());
-                        println!("Path :: {}", dest_file.display().to_string().bright_black());
+                        println!("Path :: {}", display_path.bright_black());
                     } else {
                         println!(
                             "{} Compilation failed:\n{}",
@@ -887,7 +928,10 @@ async fn main() {
                     }
 
                     // auto-vendor dependencies into a temporary directory
-                    let vendor_dir = get_ore_dir().join(".tmp_build").join("vendor");
+                    let vendor_dir = get_ore_dir()
+                        .join(".tmp_build")
+                        .join(&tool_name)
+                        .join("vendor");
                     if vendor_dir.exists() {
                         fs::remove_dir_all(&vendor_dir).unwrap();
                     }
@@ -991,7 +1035,7 @@ async fn main() {
                         "{} Python Project frozen into WASM successfully!",
                         "[+]".green()
                     );
-                    println!("Path :: {}", dest_file.display().to_string().bright_black());
+                    println!("Path :: {}", display_path.bright_black());
                 } else if path.join("build.zig").exists() {
                     // ------------------------- ZIG PROJECT -------------------------
                     println!(
@@ -1031,7 +1075,7 @@ async fn main() {
                                 .expect("Failed to copy compiled WASM to tools folder");
 
                             println!("{} Cartridge forged successfully!", "[+]".green());
-                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                            println!("Path :: {}", display_path.bright_black());
                         } else {
                             println!(
                                 "{} FATAL: Zig compilation succeeded, but no .wasm file was found in 'zig-out/bin/'.",
@@ -1089,7 +1133,7 @@ async fn main() {
 
                         if build.status.success() {
                             println!("{} Cartridge forged successfully!", "[+]".green());
-                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                            println!("Path :: {}", display_path.bright_black());
                         } else {
                             println!(
                                 "{} Compilation failed:\n{}",
@@ -1119,7 +1163,7 @@ async fn main() {
 
                         if build.status.success() {
                             println!("{} Cartridge forged successfully!", "[+]".green());
-                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                            println!("Path :: {}", display_path.bright_black());
                         } else {
                             println!(
                                 "{} Compilation failed:\n{}",
@@ -1222,7 +1266,7 @@ async fn main() {
                                 "{} Note: Cartridge size is ~110MB. It contains the C-Extensions.",
                                 "[i]".bright_black()
                             );
-                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                            println!("Path :: {}", display_path.bright_black());
                         } else {
                             // MODE: Pure Python via RustPython AOT Compilation
                             println!(
@@ -1327,10 +1371,7 @@ fn main() {{
                                 fs::remove_dir_all(&build_dir).unwrap(); // Clean up the temp build folder
 
                                 println!("{} Python frozen into WASM successfully!", "[+]".green());
-                                println!(
-                                    "Path :: {}",
-                                    dest_file.display().to_string().bright_black()
-                                );
+                                println!("Path :: {}", display_path.bright_black());
                             } else {
                                 println!(
                                     "{} Compilation failed:\n{}",
@@ -1394,7 +1435,7 @@ fn main() {{
 
                         if build.status.success() {
                             println!("{} Cartridge forged successfully!", "[+]".green());
-                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                            println!("Path :: {}", display_path.bright_black());
                         } else {
                             println!(
                                 "{} Compilation failed:\n{}",
@@ -1496,7 +1537,7 @@ fn main() {{
                         if build.status.success() {
                             fs::remove_dir_all(&build_dir).unwrap(); // Cleanup temp JS
                             println!("{} Cartridge forged successfully!", "[+]".green());
-                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                            println!("Path :: {}", display_path.bright_black());
                         } else {
                             println!(
                                 "{} Compilation failed:\n{}",
@@ -1527,7 +1568,7 @@ fn main() {{
 
                         if build.status.success() {
                             println!("{} Cartridge forged successfully!", "[+]".green());
-                            println!("Path :: {}", dest_file.display().to_string().bright_black());
+                            println!("Path :: {}", display_path.bright_black());
                         } else {
                             println!(
                                 "{} Compilation failed:\n{}",
@@ -1568,10 +1609,7 @@ fn main() {{
                             Ok(build) => {
                                 if build.status.success() {
                                     println!("{} Cartridge forged successfully!", "[+]".green());
-                                    println!(
-                                        "Path :: {}",
-                                        dest_file.display().to_string().bright_black()
-                                    );
+                                    println!("Path :: {}", display_path.bright_black());
                                 } else {
                                     println!(
                                         "{} Compilation failed:\n{}",
