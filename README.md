@@ -26,16 +26,26 @@
 
 ---
 
+## The ORE Architecture: Enter Nano-Services
+
+**ORE introduces Nano-Services (In-Process Microservices) by breaking the Python tooling monolith and replaces Docker with this Nano-Services for agents tooling.** 
+
+Instead of wrapping Rust, Go, C++, or any other language in bloated Docker containers and REST APIs just so a Python agent can call them, ORE compiles them directly into WebAssembly Nano-Services. 
+
+By bringing enterprise microservice architecture down to the binary level, ORE strips away TCP network latency and executes language-agnostic `.wasm` cartridges in-process, booting in **~50 microseconds**. 
+
+You get the modularity and decoupling of microservices with the raw memory-speed of a monolith.
+
 ## Why ORE? (The Physics of Local AI)
 
-Modern local AI stacks are dangerously fragile. If you try to run multi-agent swarms (like OpenClaw, AutoGen, or CrewAI) on consumer hardware using basic Python wrappers, you hit physical hardware walls. ORE was built to bypass them.
+Modern local AI stacks are dangerously fragile. If you try to run multi-agent swarms (like OpenClaw, AutoGen, or CrewAI) `ore-kernel` helps you avoid any failures.
 
 ### 1. The WebAssembly Kernel (Zero-Trust AI Execution)
 
 Currently, giving an AI agent the ability to execute code or use tools means giving it root access inside a heavy, slow Docker container. ORE fundamentally changes this by introducing a **WebAssembly (WASM) Sandbox Engine** directly at the kernel level.
 
 By decoupling the *tools* from the *agents*, ORE unlocks unprecedented capabilities for the Agentic AI ecosystem:
-- **Cross-Language Tooling:** Agents written in Python can seamlessly and securely execute tools written in Rust, Go, Zig, Javascript, Typescript, or C/C++ via pre-compiled `.wasm` cartridges (Python tools aren't supported yet, but will be soon 👾). You no longer have to write tools in the same language as your agent (unless you want to, of course 😼).
+- **Cross-Language Tooling:** Agents written in Python can seamlessly and securely execute tools written in Rust, Go, Zig, Javascript, Typescript, or C/C++ via pre-compiled `.wasm` cartridges (Python-to-WASM tooling isn't fully stable yet, but it's coming soon. Feel free to try and break it though 👾). You no longer have to write tools in the same language as your agent (unless you want to, of course 😼).
 - **Strict CPU Fuel Limits:** ORE limits the exact number of CPU instructions an AI-generated script can execute, entirely eliminating "Runaway AI" or infinite loops without freezing the host.
 - **Zero-RAM Layer 7 Network Firewall:** The sandbox has no raw TCP/UDP socket access. Instead, all outbound network calls are routed through a kernel-level Layer 7 proxy. Requests are validated against strict domain and HTTP method whitelists in the Agent Manifest, and responses are streamed directly to the SSD.
 - **Virtual File System (VFS):** Granular, manifest-driven permissions define exactly which host directories the AI can read (strictly Read-Only) or write to.
@@ -45,6 +55,7 @@ By decoupling the *tools* from the *agents*, ORE unlocks unprecedented capabilit
 > [!IMPORTANT]
 > - **Performance Note:** Because ORE utilizes WASM instead of Docker, spinning up a secure, isolated sandbox for an AI agent takes **less than 5 milliseconds**. This allows for massive swarms of autonomous agents to execute hundreds of tools concurrently with near-zero overhead. <br/>
 > - **Rule of Thumb for ORE Tools:** WebAssembly is a pure compute environment. Your tools should take Data IN (via `STDIN` or File), crunch the math/text blazingly fast, use `ore.fetch` for network requests, and spit Data OUT (via `STDOUT` or File). Do not try to open raw TCP sockets or spawn OS threads. Thats all an agent tool needs to do ;).
+> - It is **NOT** a container for web browsers, GPU training loops, or raw database drivers.
 
 ### 2. The VRAM Wall (Infinite Concurrency)
 ![GPU Leverage](docs/img/GPU%20leverage.png)
