@@ -58,9 +58,29 @@ By decoupling the *tools* from the *agents*, ORE unlocks unprecedented capabilit
 > - It is **NOT** a container for web browsers, GPU training loops, or raw database drivers.
 
 ### 2. Zero-Copy Cross-Language Memory Fusion (ore-ld)
-The absolute crown jewel of the ORE Sandbox is the **Native WebAssembly Dynamic Linker (`ore-ld`)**. 
-Standard microservices force you to serialize data to JSON and pipe it over STDOUT to share data between languages. ORE eliminates this.
-Using the built-in MMU, a Host Agent (e.g., written in Rust) can use `ore_dlopen` to load a plugin (e.g., written in C or Zig). The ORE Kernel dynamically expands the WebAssembly function table and injects the exact same linear memory space into both the host and the plugin. This means a Rust agent can pass a raw memory pointer to a C plugin, and the plugin mutates the data *in-place* at bare-metal speed with zero serialization overhead!
+
+Standard WebAssembly tools (`.wasm`) are perfect for 90% of tasks, acting as the "hands" of an AI agent to safely scrape the web or query databases via isolated STDIN/STDOUT pipes. But for the final 10% of high-frequency Enterprise workloads, piping data through STDOUT is physically crippling. If an AI agent holds 5 Gigabytes of trading data in RAM and needs to compress it, serializing 5GB of JSON across isolated sandboxes incurs a massive performance tax.
+
+ORE solves this by introducing `ore-ld`, a custom POSIX-compliant Dynamic Linker built directly into the WebAssembly Kernel. It gives AI Agents **Brain Implants**.
+
+Instead of standalone tools, developers can write Position Independent Code (`.wasi.so` Shared Objects). When a live Host Agent needs to process data, ORE dynamically allocates RAM, expands the WebAssembly routing tables on the fly, and physically fuses the foreign plugin directly into the Host Agent's live memory space.
+
+By adhering strictly to the WebAssembly C-ABI, `ore-ld` unlocks three massive Enterprise capabilities:
+- **Zero-Copy Big Data Mutation**: Instead of serializing 5GB of data to JSON, the Host Agent simply hands the Plugin the integer memory address of the data. The Plugin instantly encrypts or mutates the data in-place at the absolute speed of silicon. Zero bytes are copied.
+- **Zero-Downtime Hot-Swapping**: Imagine an autonomous Crypto Trading Agent that has built up 5 hours of order-book state in its RAM. If the data science team pushes an updated risk formula (`algo_v2.wasi.so`), the live Agent calls `ore_dlopen`. ORE dynamically overwrites the math logic while the Agent is still running. The Agent's memory state is perfectly preserved, resulting in exactly 0.00 seconds of downtime.
+- **Black-Box Enterprise Extensibility (BYOP)**: A defense contractor can sell a massive, closed-source `.wasm` Agent to a bank. The bank can write a custom legacy database connector in C++, compile it to `hook.wasi.so`, and drop it into the `~/.ore/plugins/` folder. The closed-source Agent dynamically links it at runtime. Complete IP protection for both parties.
+
+> [!NOTE]
+> **The Language Physics of Memory Fusion:**
+> True Memory Fusion requires absolute memory discipline. Therefore, `.wasi.so` plugins are strictly restricted to the "Big 4" Systems Languages: Rust, C, C++, and Zig. Interpreted languages with Garbage Collectors (Python, JS, Go) are banned from participating in direct memory fusion, as their GCs would corrupt the shared RAM. (Python and JS agents access these plugins safely via the `@ore/sdk` Heterogeneous Bridge).
+> 
+> **Frictionless Developer Experience (DX):**
+> We abstracted the brutal physics of the WebAssembly C-ABI. You don't need to write raw pointers, calculate string byte-lengths, or manage `extern "C"` boilerplate.
+> - **C / C++**: The CLI auto-injects `ore.h`, providing the `ORE_BIND` macro.
+> - **Rust**: Import the `ore-sys` crate for `ore_export!` and `ore_bind!` macros.
+> - **Zig**: The CLI auto-injects `ore.zig`, utilizing Zig's comptime to dynamically forge function signatures natively.
+> 
+> Simply run `ore mktool math.c --shared` to forge a Plugin, and `ore mktool agent.rs --host` to forge a Host. ORE handles the memory table takeovers automatically.
 
 ### 3. The VRAM Wall (Infinite Concurrency)
 ![GPU Leverage](docs/img/GPU%20leverage.png)
