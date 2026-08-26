@@ -21,6 +21,6 @@ allowed_write_paths = ["./test_output"] # Will map to /workspace/test_output
 [execution]
 can_execute_shell = false
 can_execute_wasm = true
-allowed_tools = ["rust", "typescript", "javascript", "go", "js_formatter", "linker_test", "crypto_tool", "finance_tool", "data_tool", "iot_tool"]
+allowed_tools = ["rust", "typescript", "javascript", "go", "js_formatter", "linker_test", "crypto_tool", "finance_tool", "data_tool", "iot_tool", "c_uses_rust", "rust_uses_cpp", "zig_uses_c"]
 allowed_language_runtimes = ["python"]
 max_cpu_instructions = 5_000_000_000
