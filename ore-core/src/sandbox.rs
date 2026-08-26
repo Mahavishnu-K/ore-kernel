@@ -1,10 +1,28 @@
+use crate::linker::{HasLinkerState, LinkerState};
 use crate::registry::NetworkRule;
 
 use anyhow::{Error, Result};
-use wasmtime::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store};
+use wasmtime::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, Table, TableType};
 use wasmtime_wasi::p1::{WasiP1Ctx, add_to_linker_sync};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
+
+// THE MASTER SANDBOX STATE
+// Holds both the OS system calls (WASI) and the Dynamic Linker Registry
+pub struct OreSandboxState {
+    pub wasi: WasiP1Ctx,
+    pub linker: LinkerState,
+}
+
+impl HasLinkerState for OreSandboxState {
+    fn linker_state(&self) -> &LinkerState {
+        &self.linker
+    }
+
+    fn linker_state_mut(&mut self) -> &mut LinkerState {
+        &mut self.linker
+    }
+}
 
 pub struct ExecuteParams {
     pub wasm_binary: Vec<u8>,
@@ -55,8 +73,13 @@ impl WasmSandbox {
 
     /// The "Inception" Execution (Happens per-request)
     pub fn execute(&self, params: ExecuteParams) -> Result<String> {
-        let mut linker: Linker<WasiP1Ctx> = Linker::new(&self.engine);
-        add_to_linker_sync(&mut linker, |state| state)?;
+        let mut linker: Linker<OreSandboxState> = Linker::new(&self.engine);
+
+        // Tells WASI how to find its context inside our master state
+        add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
+
+        // INJECT THE ORE DYNAMIC LINKER! (ore-ld)
+        crate::linker::add_to_linker(&mut linker)?;
 
         let network_enabled = params.network_enabled;
         let localhost_access = params.allow_localhost_access;
@@ -77,7 +100,7 @@ impl WasmSandbox {
         linker.func_wrap(
             "ore",
             "fetch",
-            move |mut caller: Caller<'_, WasiP1Ctx>,
+            move |mut caller: Caller<'_, OreSandboxState>,
                   method_ptr: u32, method_len: u32,
                   url_ptr: u32, url_len: u32,
                   body_ptr: u32, body_len: u32,
@@ -92,7 +115,7 @@ impl WasmSandbox {
                 };
 
                 // Helper closure to safely read a byte array from WASM memory
-                let read_bytes = |mem: &Memory, caller: &mut Caller<'_, WasiP1Ctx>, ptr: u32, len: u32| -> Option<Vec<u8>> {
+                let read_bytes = |mem: &Memory, caller: &mut Caller<'_, OreSandboxState>, ptr: u32, len: u32| -> Option<Vec<u8>> {
                     if len == 0 { return Some(vec![]); }
                     let data = mem.data(caller);
                     let start = ptr as usize;
@@ -107,7 +130,7 @@ impl WasmSandbox {
                 };
 
                 // Helper closure to safely convert a byte array to a string from WASM memory
-                let read_string = |mem: &Memory, caller: &mut Caller<'_, WasiP1Ctx>, ptr: u32, len: u32| -> Option<String> {
+                let read_string = |mem: &Memory, caller: &mut Caller<'_, OreSandboxState>, ptr: u32, len: u32| -> Option<String> {
                     let bytes = read_bytes(mem, caller, ptr, len)?;
                     String::from_utf8(bytes).ok()
                 };
@@ -338,8 +361,23 @@ impl WasmSandbox {
 
         let wasi_ctx = wasi_builder.build_p1();
 
+        let sandbox_state = OreSandboxState {
+            wasi: wasi_ctx,
+            linker: LinkerState::default(),
+        };
+
         // Create the isolated State Store
-        let mut store = Store::new(&self.engine, wasi_ctx);
+        let mut store = Store::new(&self.engine, sandbox_state);
+
+        let table_type: TableType = TableType::new(wasmtime::RefType::FUNCREF, 1024, Some(65536));
+        let os_table = Table::new(&mut store, table_type, wasmtime::Ref::Func(None))
+            .expect("FATAL: Failed to create OS Routing Table");
+
+        store.data_mut().linker_state_mut().os_table = Some(os_table);
+
+        linker
+            .define(&mut store, "env", "__indirect_function_table", os_table)
+            .expect("FATAL: Failed to inject OS Table");
 
         // Fuel Injection! Sandbox will panic if it exceeds this CPU instruction limit.
         store.set_fuel(params.fuel_limit)?;
@@ -359,27 +397,7 @@ impl WasmSandbox {
             params.fuel_limit
         );
 
-        match start_func.call(&mut store, ()) {
-            Ok(_) => crate::kprintln!("-> [SANDBOX] Execution completed safely."),
-            Err(e) => {
-                // By using {:#}, anyhow prints the ENTIRE error chain, exposing the root cause!
-                let err_msg = format!("{:#}", e);
-                if err_msg.contains("out of fuel") || err_msg.contains("all fuel consumed") {
-                    return Err(Error::msg(
-                        "Sandbox Trap: CPU Fuel Exhausted (Runaway AI or Infinite Loop Detected)",
-                    ));
-                } else if err_msg.contains("guest exit")
-                    || err_msg.contains("runtime.exit")
-                    || err_msg.contains("proc_exit")
-                {
-                    // Normal WASI program exit code
-                    crate::kprintln!("-> [SANDBOX] Program exited gracefully via OS syscall.");
-                } else {
-                    crate::kprintln!("-> [SANDBOX TRAP] Execution halted: {}", e);
-                    return Err(e.into());
-                }
-            }
-        }
+        let exec_result = start_func.call(&mut store, ());
 
         // Extraction & Destruction
         // Drop the store explicitly so the WritePipes finish cleanly
@@ -397,6 +415,32 @@ impl WasmSandbox {
             final_output.push_str(&error_output);
         }
 
-        Ok(final_output)
+        match exec_result {
+            Ok(_) => {
+                crate::kprintln!("-> [SANDBOX] Execution completed safely.");
+                Ok(final_output)
+            }
+            Err(e) => {
+                // By using {:#}, anyhow prints the ENTIRE error chain, exposing the root cause!
+                let err_msg = format!("{:#}", e);
+                if err_msg.contains("out of fuel") || err_msg.contains("all fuel consumed") {
+                    Err(Error::msg(
+                        "Sandbox Trap: CPU Fuel Exhausted (Runaway AI or Infinite Loop Detected)",
+                    ))
+                } else if err_msg.contains("guest exit")
+                    || err_msg.contains("runtime.exit")
+                    || err_msg.contains("proc_exit")
+                    || err_msg.contains("startWasi")
+                {
+                    // Normal WASI program exit code
+                    crate::kprintln!("-> [SANDBOX] Program exited gracefully via OS syscall.");
+                    Ok(final_output)
+                } else {
+                    crate::kprintln!("-> [SANDBOX TRAP] Execution halted: {}", e);
+                    final_output.push_str(&format!("\nKERNEL ERROR: {}", e));
+                    Ok(final_output)
+                }
+            }
+        }
     }
 }

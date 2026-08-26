@@ -3,7 +3,8 @@ resolver = "2"
 members = [
     "ore-core",
     "ore-server",
-    "ore-cli"
+    "ore-cli",
+    "ore-sys"
 ]
 
 [workspace.package]

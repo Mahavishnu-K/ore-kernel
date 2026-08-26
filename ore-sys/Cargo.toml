@@ -1,0 +1,12 @@
+[package]
+name = "ore-sys"
+version = "0.1.0"
+edition = "2024"
+description = "The official Rust SDK for the ORE Kernel (True Memory Fusion)"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Mahavishnu-K/ore-kernel"
+
+[features]
+default = []
+host = []
+plugin = []

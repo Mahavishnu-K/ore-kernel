@@ -627,7 +627,16 @@ async fn main() {
             filepath,
             name,
             env,
+            shared,
+            host,
         } => {
+            if *shared && *host {
+                println!(
+                    "{} FATAL: A module cannot be compiled as both a --shared Plugin and a --host Tool.",
+                    "[-]".red().bold()
+                );
+                exit(1);
+            }
             let path = Path::new(filepath);
             if !path.exists() {
                 println!(
@@ -642,21 +651,61 @@ async fn main() {
                 .clone()
                 .unwrap_or_else(|| path.file_stem().unwrap().to_str().unwrap().to_string());
 
-            let dest_dir = get_ore_dir().join("tools");
+            let (target_folder, extension) = if *shared {
+                ("plugins", "wasi.so")
+            } else {
+                ("tools", "wasm")
+            };
+
+            let dest_dir = get_ore_dir().join(target_folder);
             if !dest_dir.exists() {
                 fs::create_dir_all(&dest_dir).unwrap();
             }
             let absolute_dest_dir = fs::canonicalize(&dest_dir).unwrap();
-            let dest_file = absolute_dest_dir.join(format!("{}.wasm", tool_name));
+            let dest_file = absolute_dest_dir.join(format!("{}.{}", tool_name, extension));
             let display_path = dest_file.display().to_string().replace("\\\\?\\", "");
 
             println!(
-                "{} ORE Toolchain forging '{}' into a secure WASM cartridge...",
+                "{} ORE Toolchain forging '{}' into a secure {}...",
                 "[*]".bright_blue(),
-                tool_name.cyan().bold()
+                tool_name.cyan().bold(),
+                if *shared {
+                    "WASI Shared Object Plugin"
+                } else {
+                    "WASM Cartridge"
+                }
             );
 
             if path.is_dir() {
+                if path.join("package.json").exists()
+                    || path.join("go.mod").exists()
+                    || path.join("__main__.py").exists()
+                {
+                    // THE PROJECT SAFETY BLOCKER
+                    if *shared {
+                        println!(
+                            "{} FATAL: Node.js, Go, and Python projects use Garbage Collectors.",
+                            "[-]".red().bold()
+                        );
+                        println!(
+                            "    They cannot be compiled into True Memory Fusion Plugins (.wasi.so)."
+                        );
+                        println!("    Please use Rust, C, C++, or Zig for Plugins.");
+                        exit(1);
+                    }
+
+                    if *host {
+                        println!(
+                            "{} FATAL: Interpreted languages cannot act as C-ABI Hosts.",
+                            "[-]".red().bold()
+                        );
+                        println!(
+                            "    To use plugins in Python/JS, use the @ore/sdk instead of the --host flag."
+                        );
+                        exit(1);
+                    }
+                }
+
                 if path.join("Cargo.toml").exists() {
                     // ------------------------- RUST PROJECT -------------------------
                     println!(
@@ -665,19 +714,77 @@ async fn main() {
                         "Rust (Cargo)".red().bold()
                     );
 
+                    let cargo_str = fs::read_to_string(path.join("Cargo.toml")).unwrap();
+                    let cargo_val: toml::Value = toml::from_str(&cargo_str).unwrap();
+
+                    if *shared {
+                        let mut is_cdylib = false;
+                        if let Some(lib) = cargo_val.get("lib")
+                            && let Some(crate_types) =
+                                lib.get("crate-type").and_then(|v| v.as_array())
+                            && crate_types.iter().any(|v| v.as_str() == Some("cdylib"))
+                        {
+                            is_cdylib = true;
+                        }
+
+                        if !is_cdylib {
+                            println!(
+                                "{} FATAL: Cargo.toml is missing the C-Dynamic Library declaration.",
+                                "[-]".red().bold()
+                            );
+                            println!(
+                                "    To compile a Rust project into a Memory Fusion Plugin (.wasi.so),"
+                            );
+                            println!(
+                                "    you must explicitly tell Cargo to build a C-ABI library.\n"
+                            );
+                            println!(
+                                "    {} Please add this exactly to your Cargo.toml:",
+                                "[!]".yellow()
+                            );
+                            println!("\n    [lib]");
+                            println!("    crate-type = [\"cdylib\"]\n");
+                            exit(1);
+                        }
+                    }
+
+                    let rust_target = if *shared {
+                        "wasm32-unknown-unknown"
+                    } else {
+                        "wasm32-wasip1"
+                    };
+
                     let _ = std::process::Command::new("rustup")
-                        .args(["target", "add", "wasm32-wasip1"])
+                        .args(["target", "add", rust_target])
                         .output();
 
                     println!(
                         "{} Building Cargo project (including all crates.io dependencies)...",
                         "[~]".yellow()
                     );
-                    let build = std::process::Command::new("cargo")
-                        .current_dir(path)
-                        .args(["build", "--target", "wasm32-wasip1", "--release"])
-                        .output()
-                        .expect("Failed to execute cargo build.");
+
+                    let mut cmd = std::process::Command::new("cargo");
+                    cmd.current_dir(path);
+
+                    if *shared || *host {
+                        // FOR CUSTOM OS LINKING: We must use `rustc` to pass raw LLVM flags
+                        cmd.args(["rustc", "--target", rust_target, "--release", "--"]);
+
+                        if *shared {
+                            cmd.args(["-C", "relocation-model=pic", "-C", "link-arg=-shared"]);
+                        } else if *host {
+                            cmd.args([
+                                "-C",
+                                "link-arg=--export-dynamic",
+                                "-C",
+                                "link-arg=--import-table",
+                            ]);
+                        }
+                    } else {
+                        cmd.args(["build", "--target", rust_target, "--release"]);
+                    }
+
+                    let build = cmd.output().expect("Failed to execute cargo build.");
 
                     if build.status.success() {
                         let cargo_str = fs::read_to_string(path.join("Cargo.toml")).unwrap();
@@ -693,7 +800,7 @@ async fn main() {
 
                         let compiled_wasm = path
                             .join("target")
-                            .join("wasm32-wasip1")
+                            .join(rust_target)
                             .join("release")
                             .join(format!("{}.wasm", pkg_name));
                         fs::copy(&compiled_wasm, &dest_file).expect("Failed to copy WASM");
@@ -1101,6 +1208,16 @@ async fn main() {
             } else {
                 let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
+                if (*shared || *host) && ["py", "js", "ts", "go"].contains(&ext) {
+                    println!(
+                        "{} FATAL: Language '{}' uses a Garbage Collector and cannot be compiled into a True Memory Fusion Plugin (.wasi.so).",
+                        "[-]".red().bold(),
+                        ext
+                    );
+                    println!("    Please use Rust, C, C++, or Zig for Plugins.");
+                    exit(1);
+                }
+
                 match ext {
                     // Rust tools build
                     "rs" => {
@@ -1109,29 +1226,139 @@ async fn main() {
                             "[i]".bright_black(),
                             "Rust".red().bold()
                         );
+                        let rust_target = if *shared {
+                            "wasm32-unknown-unknown"
+                        } else {
+                            "wasm32-wasip1"
+                        };
                         println!("{} Initializing Cargo WASI compiler...", "[~]".yellow());
 
                         // Check if the wasm32-wasip1 target is installed
                         let _ = std::process::Command::new("rustup")
-                            .args(["target", "add", "wasm32-wasip1"])
+                            .args(["target", "add", rust_target])
                             .output()
                             .expect("Failed to execute rustup. Is Rust installed?");
 
-                        // Compile using rustc directly to a standalone WASM file
-                        let build = std::process::Command::new("rustc")
-                            .args([
+                        let build_dir = get_ore_dir().join(".tmp_build").join(&tool_name);
+
+                        let mut cmd;
+
+                        if *shared || *host {
+                            if build_dir.exists() {
+                                fs::remove_dir_all(&build_dir).unwrap();
+                            }
+                            fs::create_dir_all(build_dir.join("src")).unwrap();
+
+                            let src_file = if *shared { "lib.rs" } else { "main.rs" };
+                            fs::copy(filepath, build_dir.join("src").join(src_file)).unwrap();
+
+                            let features = if *shared {
+                                r#"features = ["plugin"]"#
+                            } else if *host {
+                                r#"features = ["host"]"#
+                            } else {
+                                ""
+                            };
+
+                            // Smart local resolution: If we are testing inside the repo, use the local path.
+                            // Otherwise, fallback to pulling from crates.io (version = "*")
+                            // Helper to strip Windows UNC paths and fix slashes for Cargo.toml
+                            let clean_path = |p: std::path::PathBuf| -> String {
+                                p.display()
+                                    .to_string()
+                                    .replace("\\\\?\\", "")
+                                    .replace("\\", "/")
+                            };
+
+                            // Smart local resolution: Search common dev paths relative to CWD
+                            let local_sys = std::fs::canonicalize("../ore-sys")
+                                .ok()
+                                .or_else(|| std::fs::canonicalize("ore-sys").ok())
+                                .or_else(|| std::fs::canonicalize("../../ore-sys").ok());
+
+                            let dep_line = if let Some(abs_path) = local_sys {
+                                format!(
+                                    r#"ore-sys = {{ path = "{}", {} }}"#,
+                                    clean_path(abs_path),
+                                    features
+                                )
+                            } else {
+                                // Production Fallback: Pull from crates.io
+                                format!(r#"ore-sys = {{ version = "*", {} }}"#, features)
+                            };
+
+                            let mut cargo_toml = format!(
+                                r#"
+    [workspace]
+    # Isolates this build from the host's Cargo workspace!
+
+    [package]
+    name = "ore_tool"
+    version = "0.1.0"
+    edition = "2024"
+
+    [dependencies]
+    {}
+
+    [profile.release]
+    opt-level = 3
+    lto = true
+    codegen-units = 1
+    strip = true
+    "#,
+                                dep_line
+                            );
+
+                            if *shared {
+                                cargo_toml.push_str("\n[lib]\ncrate-type = [\"cdylib\"]\n");
+                            }
+
+                            fs::write(build_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+                            cmd = std::process::Command::new("cargo");
+
+                            cmd.current_dir(&build_dir);
+                            // Compile using rustc directly to a standalone WASM file
+                            cmd.args(["rustc", "--target", rust_target, "--release", "--"]);
+
+                            if *shared {
+                                cmd.args(["-C", "relocation-model=pic", "-C", "link-arg=-shared"]);
+                            } else if *host {
+                                cmd.args([
+                                    "-C",
+                                    "link-arg=--export-dynamic",
+                                    "-C",
+                                    "link-arg=--import-table",
+                                ]);
+                            }
+                        } else {
+                            cmd = std::process::Command::new("rustc");
+                            cmd.args([
                                 filepath,
                                 "--target",
-                                "wasm32-wasip1",
+                                rust_target,
                                 "-C",
-                                "opt-level=3", // Max optimization
+                                "opt-level=3",
                                 "-o",
                                 dest_file.to_str().unwrap(),
-                            ])
-                            .output()
-                            .expect("Failed to execute rustc.");
+                            ]);
+                        }
+
+                        let build = cmd.output().expect("Failed to execute compiler.");
 
                         if build.status.success() {
+                            if *shared || *host {
+                                let compiled_wasm = build_dir
+                                    .join("target")
+                                    .join(rust_target)
+                                    .join("release")
+                                    .join("ore_tool.wasm");
+                                fs::copy(&compiled_wasm, &dest_file)
+                                    .expect("Failed to copy compiled WASM to tools folder");
+
+                                fs::remove_dir_all(&build_dir).unwrap();
+                            }
+
                             println!("{} Cartridge forged successfully!", "[+]".green());
                             println!("Path :: {}", display_path.bright_black());
                         } else {
@@ -1140,6 +1367,7 @@ async fn main() {
                                 "[-]".red(),
                                 String::from_utf8_lossy(&build.stderr)
                             );
+                            exit(1);
                         }
                     }
                     // Go tools build
@@ -1556,15 +1784,62 @@ fn main() {{
                         );
                         println!("{} Initializing Zig WASI compiler...", "[~]".yellow());
 
-                        let build = std::process::Command::new("zig")
-                            .args([
-                                "build-exe", filepath,
-                                "-target", "wasm32-wasi",
-                                "-O", "ReleaseFast",
-                                &format!("-femit-bin={}", dest_file.to_str().unwrap())
-                            ])
-                            .output()
-                            .expect("Failed to execute zig. Ensure Zig is installed by running: zig version");
+                        let tmp_zig_dir = get_ore_dir().join(".tmp_build").join("zig_inject");
+                        if *host {
+                            fs::create_dir_all(&tmp_zig_dir).unwrap();
+                            let sys_zig_content = include_str!("syskit/ore.zig");
+                            fs::write(tmp_zig_dir.join("ore.zig"), sys_zig_content)
+                                .expect("Failed to write temporary ore.zig SDK");
+                            println!("{} Temporary Zig SDK written.", "[+]".green());
+                        }
+
+                        let mut cmd = std::process::Command::new("zig");
+
+                        if *shared {
+                            cmd.args([
+                                "build-lib",
+                                filepath,
+                                "-target",
+                                "wasm32-freestanding",
+                                "-dynamic",
+                                "-O",
+                                "ReleaseFast",
+                                &format!("-femit-bin={}", dest_file.to_str().unwrap()),
+                            ]);
+                        } else if *host {
+                            let mod_path = tmp_zig_dir.join("ore.zig");
+                            cmd.args([
+                                "build-exe",
+                                "-target",
+                                "wasm32-wasi",
+                                "-O",
+                                "ReleaseFast",
+                                "-rdynamic",
+                                "--import-symbols",
+                                "--import-table",
+                                &format!("-femit-bin={}", dest_file.to_str().unwrap()),
+                                "--dep",
+                                "ore_sys",
+                                &format!("-Mroot={}", filepath),
+                                &format!("-More_sys={}", mod_path.display()),
+                            ]);
+                        } else {
+                            cmd.args([
+                                "build-exe",
+                                filepath,
+                                "-target",
+                                "wasm32-wasi",
+                                "-O",
+                                "ReleaseFast",
+                                &format!("-femit-bin={}", dest_file.to_str().unwrap()),
+                            ]);
+                        }
+
+                        let build = cmd.output().expect("Failed to execute zig. Ensure Zig is installed by running: zig version");
+
+                        if *host {
+                            let _ = fs::remove_dir_all(&tmp_zig_dir);
+                        }
 
                         if build.status.success() {
                             println!("{} Cartridge forged successfully!", "[+]".green());
@@ -1582,7 +1857,7 @@ fn main() {{
                     "c" | "cpp" | "cc" | "cxx" => {
                         let is_cpp = ext != "c";
                         let lang_name = if is_cpp { "C++" } else { "C" };
-                        let compiler = if is_cpp { "clang++" } else { "clang" };
+                        let compiler = if is_cpp { "c++" } else { "cc" };
 
                         println!(
                             "{} Detected Language: {}",
@@ -1595,15 +1870,59 @@ fn main() {{
                             compiler
                         );
 
-                        let build_result = std::process::Command::new(compiler)
-                            .args([
-                                filepath,
-                                "--target=wasm32-wasi",
-                                "-O3", // Maximum performance
+                        let mut cmd = std::process::Command::new("zig");
+                        cmd.arg(compiler).arg(filepath);
+
+                        let tmp_include_dir = get_ore_dir().join(".tmp_build").join("cpp_inject");
+                        if *shared || *host {
+                            fs::create_dir_all(&tmp_include_dir).unwrap();
+                            let ore_h_content = include_str!("syskit/ore.h");
+                            fs::write(tmp_include_dir.join("ore.h"), ore_h_content)
+                                .expect("Failed to write temporary ore.h SDK");
+
+                            let include_arg = format!("-I{}", tmp_include_dir.display());
+                            cmd.arg(&include_arg);
+                        }
+
+                        if *shared {
+                            cmd.args([
+                                "-target",
+                                "wasm32-freestanding",
+                                "-nostdlib",
+                                "-shared",
+                                "-fPIC",
+                                "-DORE_PLUGIN_MODE",
+                                "-Wl,--no-entry",
+                                "-O3",
+                                "-fno-sanitize=undefined",
                                 "-o",
                                 dest_file.to_str().unwrap(),
-                            ])
-                            .output();
+                            ]);
+                        } else if *host {
+                            cmd.args([
+                                "-target",
+                                "wasm32-wasi",
+                                "-Wl,--export-dynamic",
+                                "-Wl,--import-table",
+                                "-O3",
+                                "-o",
+                                dest_file.to_str().unwrap(),
+                            ]);
+                        } else {
+                            cmd.args([
+                                "-target",
+                                "wasm32-wasi",
+                                "-O3",
+                                "-o",
+                                dest_file.to_str().unwrap(),
+                            ]);
+                        }
+
+                        let build_result = cmd.output();
+
+                        if *shared || *host {
+                            let _ = fs::remove_dir_all(&tmp_include_dir);
+                        }
 
                         match build_result {
                             Ok(build) => {
@@ -1621,21 +1940,17 @@ fn main() {{
                             }
                             Err(_) => {
                                 println!(
-                                    "{} FATAL: '{}' compiler not found in PATH.",
+                                    "{} FATAL: zig '{}' compiler not found in PATH.",
                                     "[-]".red().bold(),
                                     compiler
                                 );
                                 println!(
-                                    "    {} C/C++ requires the 'wasi-sdk' to compile to WebAssembly.",
+                                    "    {} ORE uses Zig as an ultra-fast LLVM C/C++ cross-compiler.",
                                     "[!]".yellow()
                                 );
                                 println!(
-                                    "    {} Download it here: https://github.com/WebAssembly/wasi-sdk\n",
+                                    "    {} Download it here: https://ziglang.org/download/\n",
                                     "[i]".bright_blue()
-                                );
-                                println!(
-                                    "    {} PRO TIP: If you have 'zig' installed, you can compile C/C++ instantly without the wasi-sdk!",
-                                    "[!]".yellow()
                                 );
                                 println!(
                                     "       Just run: zig {} -target wasm32-wasi {} -o {}",

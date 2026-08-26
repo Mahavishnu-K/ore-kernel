@@ -158,8 +158,13 @@ ore-system/
 │   ├── ipc.rs               MessageBus, SemanticBus, RateLimiter
 │   ├── scheduler.rs         GpuScheduler with RAII GpuLease
 │   ├── memory.rs            Memory Management (context persistence)
-│   ├── sandbox.rs           Zero-Trust WASM Sandbox (Console-Cartridge)
 │   ├── registry.rs          App manifest registry
+│   ├── sandbox.rs           Zero-Trust WASM Sandbox (Wasmtime, WASI)
+│   ├── linker/              WebAssembly Dynamic Linker (ore-ld)
+│   │   ├── mod.rs           Linker module entrypoint
+│   │   ├── linker_state.rs  Linker registry and Handle tracking
+│   │   ├── mmu.rs           Memory Management Unit (memory.grow, -fPIC globals)
+│   │   └── syscalls.rs      Table expansion & plugin loading (ore_dlopen, ore_dlsym)
 │   ├── external/            External inference drivers
 │   │   └── ollama.rs        OllamaDriver (HTTP proxy)
 │   └── native/              Native Candle Engine
@@ -184,7 +189,13 @@ ore-system/
 │   ├── main.rs              Command dispatch + ore pull/top/run/etc.
 │   ├── cli.rs               Clap argument definitions
 │   ├── interactive.rs       Interactive wizards (init, manifest)
-│   └── utils.rs             HTTP helpers, token reader
+│   ├── utils.rs             HTTP helpers, token reader
+│   └── src/syskit/          C/Zig SDK headers (ore.h, ore.zig) for plugins
+├── ore-sys/                 Rust SDK Crate (ore_bind!, ore_export!)
+│   └── src/                 
+│       ├── lib.rs           SDK macro exports
+│       ├── host.rs          Plugin loading (Plugin::load, ore_bind!)
+│       └── plugin.rs        Plugin exports (ore_export!)
 ├── manifests/               App permission manifests (.toml files)
 ├── models/                  Downloaded model weights
 ├── memory/                    SSD page files for agent context
@@ -203,11 +214,16 @@ ore-system/
 
 3. **Sandboxed Tool Execution** - Agents can execute pre-compiled WebAssembly tools (Console Cartridges) or autonomous scripts (Inception Mode) through a Zero-Trust WASM Sandbox. It uses deterministic CPU profiling (50M fuel limit) to prevent infinite loops, and a capability-based file system (`cap-std`) to restrict access to an isolated `/workspace`. The sandbox execution runs inside a dedicated blocking thread to prevent starving the async runtime. Agents can also bypass the sandbox to run raw host shell commands if explicitly permitted by their manifest (flagged as UNSAFE).
 
-3. **OS-Style Memory Management & Resource Limits** - Idle agent context is paged to SSD (`memory/` directory) and restored on demand. The kernel strictly enforces `memory_limits` to prevent OOM crashes (setting explicit caps on KV-cache VRAM and JSON context tokens) by triggering automatic background memory compaction. The `SemanticBus` can transparently freeze vector pipelines to SSD (`.pipe` files) and runs hourly garbage collection to evict stale embeddings.
+4. **Dynamic Linker (`ore-ld`)** - Agents execute WebAssembly tools through a Zero-Trust WASM Sandbox (`OreSandboxState`). The state holds both the `WasiP1Ctx` for OS routing and the custom `LinkerState`. 
+   - **The MMU**: The kernel features a custom MMU (`linker/mmu.rs`) that allocates isolated `.data` pages for dynamic plugins via `memory.grow` and forges the LLVM `-fPIC` C-ABI globals (`__memory_base` & `__table_base`).
+   - **Table Hijacking (`trap_ore_dlsym`)**: When a plugin is loaded, the kernel dynamically grows the Wasmtime `__indirect_function_table` and injects the plugin's function pointers into it. 
+   - **Cross-Language Memory Fusion**: Because plugins are injected with the exact same linear `memory` export as the host, a Rust host agent can dynamically load a C plugin and pass it raw memory pointers, allowing the plugin to mutate the host's RAM *in-place* with zero JSON serialization overhead.
 
-4. **Driver Abstraction** - The `InferenceDriver` trait decouples all kernel logic from the physical inference engine. Swap between Native Candle and Ollama with a single config change. Add new backends by implementing 9 trait methods.
+5. **OS-Style Memory Management & Resource Limits** - Idle agent context is paged to SSD (`memory/` directory) and restored on demand. The kernel strictly enforces `memory_limits` to prevent OOM crashes (setting explicit caps on KV-cache VRAM and JSON context tokens) by triggering automatic background memory compaction. The `SemanticBus` can transparently freeze vector pipelines to SSD (`.pipe` files) and runs hourly garbage collection to evict stale embeddings.
 
-5. **Manifest-Driven Permissions** - Every agent declares its permissions in a TOML manifest. The kernel enforces these at the syscall level - not in the application. No manifest = no access.
+6. **Driver Abstraction** - The `InferenceDriver` trait decouples all kernel logic from the physical inference engine. Swap between Native Candle and Ollama with a single config change. Add new backends by implementing 9 trait methods.
+
+7. **Manifest-Driven Permissions** - Every agent declares its permissions in a TOML manifest. The kernel enforces these at the syscall level - not in the application. No manifest = no access.
 
 ---
 

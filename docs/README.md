@@ -14,6 +14,7 @@
 | **Hit the HTTP API** | [API Reference](./api-reference.md) |
 | **Write a secure manifest** | [Manifest Reference](./manifest-reference.md) |
 | **Understand the security model** | [Security Model](./security-model.md) |
+| **Build dynamic WASM plugins** | [Building Plugins](./building-plugins.md) |
 | **Add a new driver or model** | [Extending ORE](./extending-ore.md) |
 
 ## Kernel Internals

@@ -248,21 +248,37 @@ ore kill my_agent
 
 ## Tool Management
 
-### `ore mktool <filepath> --name <tool_name> --env <env>`
+### `ore mktool <filepath> [flags]`
 
-Compile a source file into a secure WASM Cartridge.
+Compile a source file or an entire project directory into a secure WASM Cartridge or dynamic Memory Fusion plugin.
 
 ```bash
-ore mktool script.py  # Uses the filename as the tool name
+# 1. Standard Tools (Executed by Sandbox)
+ore mktool script.py         # Compiles into ~/.ore/tools/script.wasm
+ore mktool .                 # Compiles entire directory
 
-ore mktool tool.rs --name my_tool # optional custom name for the output tool
+# 2. Host Tools (Tools that load Memory Fusion plugins)
+ore mktool host_agent.rs --host  # Surrenders table to the OS so kernel can hijack it
 
-ore mktool data_script.py --env data # Python only: compiles with NumPy, Pandas, etc.
+# 3. Dynamic Plugins (Loaded by Host Tools via ore_dlopen)
+ore mktool encryptor.rs --shared  # Compiles into ~/.ore/plugins/encryptor.wasi.so
+ore mktool . --shared             # Compiles entire directory
+
+# Options
+ore mktool tool.rs --name my_tool # Optional custom name for the output
+ore mktool script.py --env data   # Python only: compiles with NumPy, Pandas, etc.
 ```
 
+**Flags:**
+| Flag | Description |
+|---|---|
+| *(No flag)* | Compiles as a standard WASM Tool. Outputs to `~/.ore/tools`. |
+| `--host` | Compiles as a WASM Tool that intends to *load plugins* via Memory Fusion. |
+| `--shared` | Compiles as a dynamically loadable plugin (`.wasi.so`) for Memory Fusion. Outputs to `~/.ore/plugins`. |
+| `--name <name>` | Custom output name. Defaults to the filename or directory name. |
+| `--env <env>` | Python only: `pure` (RustPython AOT, ~25MB) or `data` (CPython 3.14 with Data Science libs, ~110MB). |
+
 Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).
-For Python scripts, the `--env` flag allows choosing between `pure` (RustPython AOT, ~25MB) and `data` (CPython 3.14 with Data Science libraries, ~110MB).
-The resulting `.wasm` file can be executed safely by any agent in the Zero-Trust WASM Sandbox.
 
 ---
 

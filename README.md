@@ -57,7 +57,12 @@ By decoupling the *tools* from the *agents*, ORE unlocks unprecedented capabilit
 > - **Rule of Thumb for ORE Tools:** WebAssembly is a pure compute environment. Your tools should take Data IN (via `STDIN` or File), crunch the math/text blazingly fast, use `ore.fetch` for network requests, and spit Data OUT (via `STDOUT` or File). Do not try to open raw TCP sockets or spawn OS threads. Thats all an agent tool needs to do ;).
 > - It is **NOT** a container for web browsers, GPU training loops, or raw database drivers.
 
-### 2. The VRAM Wall (Infinite Concurrency)
+### 2. Zero-Copy Cross-Language Memory Fusion (ore-ld)
+The absolute crown jewel of the ORE Sandbox is the **Native WebAssembly Dynamic Linker (`ore-ld`)**. 
+Standard microservices force you to serialize data to JSON and pipe it over STDOUT to share data between languages. ORE eliminates this.
+Using the built-in MMU, a Host Agent (e.g., written in Rust) can use `ore_dlopen` to load a plugin (e.g., written in C or Zig). The ORE Kernel dynamically expands the WebAssembly function table and injects the exact same linear memory space into both the host and the plugin. This means a Rust agent can pass a raw memory pointer to a C plugin, and the plugin mutates the data *in-place* at bare-metal speed with zero serialization overhead!
+
+### 3. The VRAM Wall (Infinite Concurrency)
 ![GPU Leverage](docs/img/GPU%20leverage.png)
 
 If you have a 24GB GPU, speed isn't your problem. **Space is.** 
@@ -297,9 +302,17 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║   └───────────────────────────────────────────────┘  ║
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
+║                                                      ║
+║   ┌──────────────────────────────────────────────┐   ║
 ║   │  Memory Management  (Agent Context Swap)     │   ║
 ║   │  · Page Out/In (RAM ↔ SSD JSON Freeze)       │   ║
 ║   │  · Page Out/In (KV-Cache .safetensors)       │   ║
+║   └──────────────────────────────────────────────┘   ║
+║                                                      ║
+║   ┌──────────────────────────────────────────────┐   ║
+║   │  Dynamic Linker (ore-ld) & Memory Fusion     │   ║
+║   │  · Table Hijacking (__indirect_function)     │   ║
+║   │  · Linear Memory Sharing (Zero-Copy FFI)     │   ║
 ║   └──────────────────────────────────────────────┘   ║
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
@@ -351,6 +364,12 @@ ore-system/
 │   ├── scheduler.rs         #   ├── GpuScheduler with RAII GpuLease + VRAM state
 │   ├── memory.rs            #   ├── Memory Management (context freezing & restoration)
 │   ├── registry.rs          #   ├── App manifest registry (TOML loader + cache)
+│   ├── sandbox.rs           #   ├── Zero-Trust WASM Sandbox (Wasmtime, WASI, ore-ld injection)
+│   ├── linker/              #   ├── WebAssembly Dynamic Linker (ore-ld)
+│   │   ├── mod.rs           #   │   ├── Linker module entrypoint
+│   │   ├── linker_state.rs  #   │   ├── Linker registry and Handle tracking
+│   │   ├── mmu.rs           #   │   ├── Memory Management Unit (memory.grow, -fPIC globals)
+│   │   └── syscalls.rs      #   │   └── ore_dlopen, ore_dlsym (Table expansion)
 │   ├── external/            #   ├── External inference drivers
 │   │   └── ollama.rs        #   │   └── OllamaDriver (HTTP proxy to Ollama daemon)
 │   └── native/              #   └── Native Candle Inference Engine
@@ -372,6 +391,12 @@ ore-system/
 │       ├── inference.rs     #       ├── ask_ai (secured + paged), run_process (streamed)
 │       └── ipc.rs           #       └── Semantic bus share/search, agent messaging
 ├── ore-cli/                 # Interactive CLI tool (clap + dialoguer + HuggingFace Hub)
+│   ├── src/syskit/          #   └── C/Zig SDK headers (ore.h, ore.zig) for building plugins
+├── ore-sys/                 # Rust SDK Crate for building WASM plugins (ore_bind!, ore_export!)
+│   └── src/                 #   ├── SDK Source Code
+│       ├── lib.rs           #   │   ├── Macro exports
+│       ├── host.rs          #   │   ├── Plugin loading (Plugin::load, ore_bind!)
+│       └── plugin.rs        #   │   └── Plugin exports (ore_export!)
 ├── manifests/               # App permission manifests (.toml files)
 │   ├── openclaw.toml
 │   ├── terminal_user.toml
@@ -385,6 +410,10 @@ ore-system/
 ├── memory/                  # Context history and SSD page files for agent context persistence
 ├── runtimes/                # Language runtime binaries for WASM sandbox execution (inception mode)
 ├── tools/                   # Pre-compiled WebAssembly tools (Console Cartridges)
+├── tests/                   # Extensive integration tests
+│   ├── linker_test/         #   ├── Validates dynamic table hijacking
+│   ├── memory_fusion/       #   ├── Cross-language FFI memory fusion tests (Rust, C, Zig, C++)
+│   └── wasm_sandbox_tools/  #   └── Security boundary tests (network interception, VFS security)
 ├── ore.toml                 # System configuration (engine + memory GC settings)
 ├── rust-toolchain.toml      # Pinned Rust version (1.93.0)
 ├── Cargo.toml               # Workspace configuration + release profile
@@ -521,8 +550,10 @@ ore pull system-embedder
 | `ore compact <app_id>` | Force background memory compaction for an agent |
 | `ore kill <app_id>` | Emergency kill-switch for runaway AI agents |
 | `ore manifest <app_id>` | Interactive wizard to generate a secure Agent Manifest (.toml) |
-| `ore mktool <filepath>` | Compile a source file (Rust, Go, Python, JS, TS, Zig, C, C++) into a secure WASM Cartridge |
-| `ore mktool <filepath> --name <NAME>` | Compile a source file to WASM Cartridge with a optional custom tool name |
+| `ore mktool <filepath>` | Compile a source file or full directory into a secure WASM Cartridge |
+| `ore mktool <filepath> --host` | Compile a WASM Cartridge that intends to *load plugins* via Memory Fusion |
+| `ore mktool <filepath> --shared` | Compile a source file or full directory into a dynamic `.wasi.so` plugin for Memory Fusion |
+| `ore mktool <filepath> --name <NAME>` | Compile with an optional custom output name |
 | `ore mktool <filepath> --env <ENV>` | Python only: Set compilation environment (`pure` for ~25MB pure Python, `data` for ~110MB CPython with NumPy/Pandas) |
 
 ---

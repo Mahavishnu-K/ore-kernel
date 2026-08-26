@@ -84,5 +84,11 @@ pub enum Commands {
         /// Python only: The compilation environment ("pure" or "data")
         #[arg(short, long, default_value = "pure")]
         env: String,
+        /// Compile as a dynamically loadable Plugin (.wasi.so)
+        #[arg(short, long, conflicts_with = "host")]
+        shared: bool,
+        /// Compile as a Host Tool that can load Plugins (Surrenders Table to OS)
+        #[arg(short = 'H', long, conflicts_with = "shared")]
+        host: bool,
     },
 }

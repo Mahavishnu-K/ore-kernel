@@ -6,6 +6,9 @@
 *.xml
 *.hash
 *.wasm
+*.wasi.so
+*.wat
+*.so
 
 /models/
 /runtimes/
