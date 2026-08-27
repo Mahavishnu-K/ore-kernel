@@ -279,6 +279,13 @@ impl WasmSandbox {
             .stderr(stderr_buf.clone())
             .args(&params.args);
 
+        if let Some(cmd) = params.args.first()
+            && (cmd == "python" || cmd.contains("system-py"))
+        {
+            wasi_builder.env("PYTHONUNBUFFERED", "1");
+            crate::kprintln!("-> [SANDBOX] Python runtime detected. Enabling unbuffered output.");
+        }
+
         if let Some(input_bytes) = params.stdin {
             let stdin_buf = MemoryInputPipe::new(bytes::Bytes::from(input_bytes));
             wasi_builder.stdin(stdin_buf);
