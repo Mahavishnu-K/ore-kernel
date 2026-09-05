@@ -61,7 +61,17 @@ By decoupling the *tools* from the *agents*, ORE unlocks unprecedented capabilit
 
 Standard WebAssembly tools (`.wasm`) are perfect for 90% of tasks, acting as the "hands" of an AI agent to safely scrape the web or query databases via isolated STDIN/STDOUT pipes. But for the final 10% of high-frequency Enterprise workloads, piping data through STDOUT is physically crippling. If an AI agent holds 5 Gigabytes of trading data in RAM and needs to compress it, serializing 5GB of JSON across isolated sandboxes incurs a massive performance tax.
 
-ORE solves this by introducing `ore-ld`, a custom POSIX-compliant Dynamic Linker built directly into the WebAssembly Kernel. It gives AI Agents **Brain Implants**.
+ORE introduces a new paradigm for cross-language execution called Memory Fusion, solving the historic trade-offs between FFI (Foreign Function Interface) and Microservices.
+
+- **Native FFI (Shared Memory)**: Fast, but highly unsafe. A segfault in a C++ library will instantly crash the host Python process. Furthermore, native libraries must be recompiled for every target OS (Windows, macOS, Linux).
+- **Microservices (Shared-Nothing)**: Safe and crash-isolated, but suffers from massive "Serialization Tax." Passing 1GB of data between a Python container and a Rust container via gRPC requires expensive network and memory-copy overhead.
+
+By utilizing WebAssembly as an intermediary architecture, ORE allows Host Agents (Any language) to dynamically load `.wasi.so` plugins (Rust, Zig, C/C++) at runtime into a shared linear memory space.
+- **It has the speed of FFI**: Data is mutated in-place via raw memory pointers (Zero-Copy).
+- **It has the safety of Microservices**: It executes inside the wasmtime JIT compiler. If a plugin commits a memory violation, the ORE Kernel traps the error safely. The Host OS never crashes.
+- **It has absolute portability**: A plugin compiled on a MacBook runs flawlessly on a Linux cloud server without recompilation.
+
+The dedicated subsystem `ore-ld`, a custom POSIX-compliant Dynamic Linker built directly into the WebAssembly Kernel. It gives AI Agents **Brain Implants**.
 
 Instead of standalone tools, developers can write Position Independent Code (`.wasi.so` Shared Objects). When a live Host Agent needs to process data, ORE dynamically allocates RAM, expands the WebAssembly routing tables on the fly, and physically fuses the foreign plugin directly into the Host Agent's live memory space.
 

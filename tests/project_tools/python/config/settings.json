@@ -1,0 +1,5 @@
+{
+  "agent_name": "Nexus",
+  "version": "2.0.4",
+  "max_retries": 3
+}

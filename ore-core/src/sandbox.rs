@@ -279,11 +279,16 @@ impl WasmSandbox {
             .stderr(stderr_buf.clone())
             .args(&params.args);
 
-        if let Some(cmd) = params.args.first()
-            && (cmd == "python" || cmd.contains("system-py"))
+        if params
+            .args
+            .iter()
+            .any(|arg| arg == "python" || arg.contains("system-py") || arg.ends_with(".py"))
         {
             wasi_builder.env("PYTHONUNBUFFERED", "1");
-            crate::kprintln!("-> [SANDBOX] Python runtime detected. Enabling unbuffered output.");
+            wasi_builder.env("PYTHONPATH", "/packages:/app");
+            crate::kprintln!(
+                "-> [SANDBOX] Python runtime detected. Enabling unbuffered output and setting PYTHONPATH to '/packages:/app'."
+            );
         }
 
         if let Some(input_bytes) = params.stdin {

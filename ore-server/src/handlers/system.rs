@@ -159,6 +159,20 @@ pub async fn execute_tool(
         // We look for the pre-compiled .wasm file in a local /tools directory
         wasm_path = base_dir.join("tools").join(format!("{}.wasm", tool));
         run_args.push(tool.clone()); // argv[0]
+
+        let args_path = base_dir.join("tools").join(format!("{}.args", tool));
+        if args_path.exists() {
+            if let Ok(default_args_str) = std::fs::read_to_string(&args_path) {
+                // We read line-by-line so arguments with spaces don't get broken
+                for line in default_args_str.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        run_args.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+
         if let Some(args) = &payload.args {
             run_args.extend(args.clone());
         }

@@ -677,9 +677,13 @@ async fn main() {
             );
 
             if path.is_dir() {
+                let is_python_project = ["__main__.py", "main.py", "app.py"]
+                    .iter()
+                    .any(|&ep| path.join(ep).exists());
+
                 if path.join("package.json").exists()
                     || path.join("go.mod").exists()
-                    || path.join("__main__.py").exists()
+                    || is_python_project
                 {
                     // THE PROJECT SAFETY BLOCKER
                     if *shared {
@@ -999,7 +1003,11 @@ async fn main() {
                         );
                         exit(1);
                     }
-                } else if path.join("__main__.py").exists() {
+                } else if let Some(entry_file) = ["__main__.py", "main.py", "app.py"]
+                    .iter()
+                    .find(|&&ep| path.join(ep).exists())
+                    .copied()
+                {
                     // ------------------------- PYTHON PROJECT -------------------------
                     println!(
                         "{} Detected Project: {}",
@@ -1007,29 +1015,20 @@ async fn main() {
                         "Python Directory".yellow().bold()
                     );
 
-                    if env != "data" {
-                        println!(
-                            "{} FATAL: Multi-file Python projects currently require the '--env data' flag.",
-                            "[-]".red().bold()
-                        );
-                        println!("    Please run: ore mktool {} --env data", filepath);
-                        exit(1);
-                    }
-
-                    let base_wasm_path = get_ore_dir().join("runtimes").join("system-py-data.wasm");
+                    let base_wasm_path = get_ore_dir().join("runtimes").join("system-py.wasm");
                     if !base_wasm_path.exists() {
                         println!(
-                            "{} Pulling 'system-py-data' wasm tool via ore-cli...",
+                            "{} Pulling 'system-py' wasm tool via ore-cli...",
                             "[*]".bright_blue()
                         );
                         let current_exe =
                             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ore"));
                         let install = std::process::Command::new(current_exe)
-                            .args(["pull", "system-py-data"])
+                            .args(["pull", "system-py"])
                             .output()
                             .unwrap();
                         if !install.status.success() {
-                            println!("{} Failed to auto-install system-py-data.", "[-]".red());
+                            println!("{} Failed to auto-install system-py.", "[-]".red());
                             exit(1);
                         }
                     }
@@ -1049,8 +1048,16 @@ async fn main() {
                             "[~]".yellow()
                         );
 
-                        let pip_install = std::process::Command::new("pip")
+                        let python_cmd = if cfg!(target_os = "windows") {
+                            "python"
+                        } else {
+                            "python3"
+                        };
+
+                        let pip_install = std::process::Command::new(python_cmd)
                             .args([
+                                "-m",
+                                "pip",
                                 "install",
                                 "-r",
                                 path.join("requirements.txt").to_str().unwrap(),
@@ -1058,16 +1065,28 @@ async fn main() {
                                 vendor_dir.to_str().unwrap(),
                                 "--upgrade", // Ensure fresh install
                             ])
-                            .output()
-                            .expect("Failed to execute pip.");
+                            .output();
 
-                        if !pip_install.status.success() {
-                            println!(
-                                "{} pip install failed:\n{}",
-                                "[-]".red(),
-                                String::from_utf8_lossy(&pip_install.stderr)
-                            );
-                            exit(1);
+                        match pip_install {
+                            Ok(output) => {
+                                if !output.status.success() {
+                                    println!(
+                                        "{} pip install failed:\n{}",
+                                        "[-]".red(),
+                                        String::from_utf8_lossy(&output.stderr)
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+                            Err(_) => {
+                                println!(
+                                    "{} FATAL: '{}' command not found in PATH.",
+                                    "[-]".red().bold(),
+                                    python_cmd
+                                );
+                                println!("    ORE requires Python installed on your host machine to resolve PIP dependencies during compilation.");
+                                std::process::exit(1);
+                            }
                         }
 
                         // The C-extension scanner (Fail-Fast Security)
@@ -1085,7 +1104,7 @@ async fn main() {
                                     .unwrap_or("");
                                 if ["so", "pyd", "dylib", "dll"].contains(&ext) {
                                     println!(
-                                        "{} FATAL: C-Extension detected in dependencies!",
+                                        "{} FATAL: C-Extension detected in dependencies.",
                                         "[-]".red().bold()
                                     );
                                     println!("    File: {}", entry.path().display());
@@ -1104,45 +1123,138 @@ async fn main() {
                     }
 
                     println!(
-                        "{} Zipping Python project into Fat Cartridge...",
+                        "{} Packing Python project into Standalone WASM via wasi-vfs...",
                         "[~]".yellow()
                     );
-                    let mut zip_buf = std::io::Cursor::new(Vec::new());
-                    {
-                        let mut zip = zip::ZipWriter::new(&mut zip_buf);
-                        let options = zip::write::SimpleFileOptions::default()
-                            .compression_method(zip::CompressionMethod::Stored);
 
-                        // Use WalkDir to Recursively grab all Python files in the directory to the ZIP
-                        for entry in walkdir::WalkDir::new(path) {
-                            let entry = entry.unwrap();
-                            let p = entry.path();
-
-                            if p.is_file() {
-                                // Get the relative path (so "utils/math.py" stays "utils/math.py" inside the zip)
-                                let relative_path = p.strip_prefix(path).unwrap().to_str().unwrap();
-
-                                // Convert Windows backslashes to Unix forward slashes for the Zip internal structure
-                                let zip_path = relative_path.replace("\\", "/");
-
-                                zip.start_file(zip_path, options).unwrap();
-                                let contents = fs::read(p).unwrap();
-                                use std::io::Write;
-                                zip.write_all(&contents).unwrap();
-                            }
-                        }
-                        zip.finish().unwrap();
+                    let ore_bin_dir = get_ore_dir().join("bin");
+                    if !ore_bin_dir.exists() {
+                        fs::create_dir_all(&ore_bin_dir).unwrap();
                     }
 
-                    let mut final_wasm = fs::read(&base_wasm_path).unwrap();
-                    final_wasm.extend(zip_buf.into_inner());
-                    fs::write(&dest_file, final_wasm).expect("Failed to write cartridge");
+                    let wasi_vfs_exe = if cfg!(target_os = "windows") {
+                        ore_bin_dir.join("wasi-vfs.exe")
+                    } else {
+                        ore_bin_dir.join("wasi-vfs")
+                    };
 
-                    println!(
-                        "{} Python Project frozen into WASM successfully!",
-                        "[+]".green()
-                    );
-                    println!("Path :: {}", display_path.bright_black());
+                    // Auto-download pre-compiled wasi-vfs if missing (NO CARGO REQUIRED!)
+                    if !wasi_vfs_exe.exists() {
+                        println!(
+                            "{} 'wasi-vfs' not found. Auto-downloading pre-compiled binary...",
+                            "[*]".bright_blue()
+                        );
+
+                        // Detect Host OS and Architecture
+                        let os = std::env::consts::OS;
+                        let arch = std::env::consts::ARCH;
+
+                        let target = match (os, arch) {
+                            ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+                            ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+                            ("macos", "x86_64") => "x86_64-apple-darwin",
+                            ("macos", "aarch64") => "aarch64-apple-darwin",
+                            ("windows", "x86_64") => "x86_64-pc-windows-gnu",
+                            _ => {
+                                println!(
+                                    "{} FATAL: Unsupported OS/Arch for pre-compiled wasi-vfs ({} {}).",
+                                    "[-]".red(),
+                                    os,
+                                    arch
+                                );
+                                println!("    Please install manually: cargo install wasi-vfs-cli");
+                                std::process::exit(1);
+                            }
+                        };
+
+                        let version = "v0.6.3";
+                        let url = format!(
+                            "https://github.com/kateinoigakukun/wasi-vfs/releases/download/{}/wasi-vfs-cli-{}.zip",
+                            version, target
+                        );
+                        let zip_path = ore_bin_dir.join("wasi-vfs.zip");
+
+                        // Download the zip file
+                        if let Err(e) = download_with_progress(&url, &zip_path, &None).await {
+                            println!("{} FATAL: Failed to download wasi-vfs: {}", "[-]".red(), e);
+                            std::process::exit(1);
+                        }
+
+                        // Extract the zip file directly into ~/.ore/bin/
+                        println!("{} Extracting binary...", "[~]".yellow());
+                        let zip_file = fs::File::open(&zip_path).unwrap();
+                        let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+
+                        for i in 0..archive.len() {
+                            let mut file = archive.by_index(i).unwrap();
+                            let outpath = match file.enclosed_name() {
+                                Some(path) => ore_bin_dir.join(path),
+                                None => continue,
+                            };
+
+                            if !file.is_dir() {
+                                let mut outfile = fs::File::create(&outpath).unwrap();
+                                std::io::copy(&mut file, &mut outfile).unwrap();
+                            }
+                        }
+
+                        // Make it executable on Linux/Mac
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mut perms = fs::metadata(&wasi_vfs_exe).unwrap().permissions();
+                            perms.set_mode(0x755); // rwxr-xr-x
+                            fs::set_permissions(&wasi_vfs_exe, perms).unwrap();
+                        }
+
+                        // Clean up the zip file
+                        let _ = fs::remove_file(zip_path);
+                        println!("{} Binary secured.", "[+]".green());
+                    }
+
+                    let mut pack_cmd = std::process::Command::new(&wasi_vfs_exe);
+                    pack_cmd.arg("pack").arg(&base_wasm_path);
+
+                    // Map the developer's source folder to /app inside the WASM binary
+                    pack_cmd
+                        .arg("--mapdir")
+                        .arg(format!("/app::{}", path.to_str().unwrap()));
+
+                    // Map the pip packages to /packages inside the WASM binary
+                    if path.join("requirements.txt").exists() {
+                        pack_cmd
+                            .arg("--mapdir")
+                            .arg(format!("/packages::{}", vendor_dir.to_str().unwrap()));
+                    }
+
+                    pack_cmd.arg("-o").arg(&dest_file);
+
+                    let pack_result = pack_cmd.output().expect("Failed to execute wasi-vfs");
+
+                    if pack_result.status.success() {
+                        let args_file = absolute_dest_dir.join(format!("{}.args", tool_name));
+                        let entry_arg = format!("/app/{}\n", entry_file);
+                        fs::write(&args_file, &entry_arg).expect("Failed to write .args file");
+
+                        println!(
+                            "{} Python Project frozen into WASM successfully!",
+                            "[+]".green()
+                        );
+                        println!("Path :: {}", display_path.bright_black());
+                        println!(
+                            "{} The entrypoint (/app/{}) has been auto-configured in {}.args",
+                            "[i]".cyan(),
+                            entry_file,
+                            tool_name
+                        );
+                    } else {
+                        println!(
+                            "{} Packaging failed:\n{}",
+                            "[-]".red(),
+                            String::from_utf8_lossy(&pack_result.stderr)
+                        );
+                        std::process::exit(1);
+                    }
                 } else if path.join("build.zig").exists() {
                     // ------------------------- ZIG PROJECT -------------------------
                     println!(
@@ -1496,117 +1608,176 @@ async fn main() {
                             );
                             println!("Path :: {}", display_path.bright_black());
                         } else {
-                            // MODE: Pure Python via RustPython AOT Compilation
+                            let base_wasm_path =
+                                get_ore_dir().join("runtimes").join("system-py.wasm");
+                            if !base_wasm_path.exists() {
+                                println!(
+                                    "{} Pulling 'system-py' wasm engine via ore-cli...",
+                                    "[*]".bright_blue()
+                                );
+                                let current_exe = std::env::current_exe()
+                                    .unwrap_or_else(|_| PathBuf::from("ore"));
+                                let install = std::process::Command::new(current_exe)
+                                    .args(["pull", "system-py"])
+                                    .output()
+                                    .unwrap();
+                                if !install.status.success() {
+                                    println!(
+                                        "{} Failed to auto-install system-py. Run 'ore pull system-py' manually.",
+                                        "[-]".red()
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+
                             println!(
-                                "{} Initiating RustPython AOT Compilation...",
+                                "{} Packing Python script into Standalone WASM via wasi-vfs...",
                                 "[~]".yellow()
                             );
-                            println!(
-                                "{} Note: The first compilation will take 1-2 minutes to build the Python engine.",
-                                "[i]".bright_black()
-                            );
-                            println!(
-                                "{} Note: Resulting cartridge will be ~25MB. Pure Python only.",
-                                "[i]".bright_black()
-                            );
 
-                            let _ = std::process::Command::new("rustup")
-                                .args(["target", "add", "wasm32-wasip1"])
-                                .output()
-                                .expect("Failed to execute rustup. Is Rust installed?");
+                            // 1. Create a temporary virtual directory for this single file
+                            let tmp_app_dir = get_ore_dir()
+                                .join(".tmp_build")
+                                .join(&tool_name)
+                                .join("app");
+                            fs::create_dir_all(&tmp_app_dir).unwrap();
 
-                            let build_dir = get_ore_dir().join(".tmp_build").join(&tool_name);
-                            if build_dir.exists() {
-                                fs::remove_dir_all(&build_dir).unwrap();
+                            let script_name = path.file_name().unwrap().to_str().unwrap();
+                            fs::copy(path, tmp_app_dir.join(script_name)).unwrap();
+
+                            // 2. Locate or Download wasi-vfs-cli
+                            let ore_bin_dir = get_ore_dir().join("bin");
+                            if !ore_bin_dir.exists() {
+                                fs::create_dir_all(&ore_bin_dir).unwrap();
                             }
-                            fs::create_dir_all(build_dir.join("src")).unwrap();
+                            let wasi_vfs_exe = if cfg!(target_os = "windows") {
+                                ore_bin_dir.join("wasi-vfs.exe")
+                            } else {
+                                ore_bin_dir.join("wasi-vfs")
+                            };
 
-                            // Copy the developer's python script
-                            let build_filename = tool_name.clone();
-                            let py_code =
-                                fs::read_to_string(filepath).expect("Failed to read Python file");
-                            fs::write(build_dir.join("src").join(build_filename), py_code).unwrap();
+                            // Auto-download pre-compiled wasi-vfs if missing (NO CARGO REQUIRED!)
+                            if !wasi_vfs_exe.exists() {
+                                println!(
+                                    "{} 'wasi-vfs' not found. Auto-downloading pre-compiled binary...",
+                                    "[*]".bright_blue()
+                                );
 
-                            // Write the Cargo.toml for the RustPython wrapper
-                            let cargo_toml = r#"
-[workspace]
-# Empty workspace table isolates this build from the host's Cargo workspace!
+                                // Detect Host OS and Architecture
+                                let os = std::env::consts::OS;
+                                let arch = std::env::consts::ARCH;
 
-[package]
-name = "ore_tool"
-version = "0.1.0"
-edition = "2024"
+                                let target = match (os, arch) {
+                                    ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+                                    ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+                                    ("macos", "x86_64") => "x86_64-apple-darwin",
+                                    ("macos", "aarch64") => "aarch64-apple-darwin",
+                                    ("windows", "x86_64") => "x86_64-pc-windows-gnu",
+                                    _ => {
+                                        println!(
+                                            "{} FATAL: Unsupported OS/Arch for pre-compiled wasi-vfs ({} {}).",
+                                            "[-]".red(),
+                                            os,
+                                            arch
+                                        );
+                                        println!(
+                                            "    Please install manually: cargo install wasi-vfs-cli"
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                };
 
-[dependencies]
-rustpython = "0.5.0"
+                                let version = "v0.6.3";
+                                let url = format!(
+                                    "https://github.com/kateinoigakukun/wasi-vfs/releases/download/{}/wasi-vfs-cli-{}.zip",
+                                    version, target
+                                );
+                                let zip_path = ore_bin_dir.join("wasi-vfs.zip");
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
-"#;
-                            fs::write(build_dir.join("Cargo.toml"), cargo_toml).unwrap();
+                                // Download the zip file
+                                if let Err(e) = download_with_progress(&url, &zip_path, &None).await
+                                {
+                                    println!(
+                                        "{} FATAL: Failed to download wasi-vfs: {}",
+                                        "[-]".red(),
+                                        e
+                                    );
+                                    std::process::exit(1);
+                                }
 
-                            // Write the Rust Execution Wrapper (RustPython 0.5.0 API)
-                            let main_rs = format!(
-                                r#"
-fn main() {{
-    use rustpython::{{InterpreterBuilder, InterpreterBuilderExt, vm}};
+                                // Extract the zip file directly into ~/.ore/bin/
+                                println!("{} Extracting binary...", "[~]".yellow());
+                                let zip_file = fs::File::open(&zip_path).unwrap();
+                                let mut archive = zip::ZipArchive::new(zip_file).unwrap();
 
-    // The official 0.5.0 builder automatically wires up the Standard Library for us!
-    let interp = InterpreterBuilder::new()
-        .init_stdlib()
-        .build();
+                                for i in 0..archive.len() {
+                                    let mut file = archive.by_index(i).unwrap();
+                                    let outpath = match file.enclosed_name() {
+                                        Some(path) => ore_bin_dir.join(path),
+                                        None => continue,
+                                    };
 
-    interp.enter(|vm| {{
-        let scope = vm.new_scope_with_builtins();
-        
-        // Bake the developer's exact script directly into the binary!
-        let script = include_str!("{}");
-        
-        // Compile the script text into Python Bytecode
-        let code_obj = vm.compile(script, vm::compiler::Mode::Exec, "<embedded>".to_owned())
-            .expect("Failed to compile Python syntax");
-        
-        // Run the script!
-        if let Err(e) = vm.run_code_obj(code_obj, scope) {{
-            vm.print_exception(e);
-            std::process::exit(1);
-        }}
-    }});
-}}
-"#,
-                                tool_name
+                                    if !file.is_dir() {
+                                        let mut outfile = fs::File::create(&outpath).unwrap();
+                                        std::io::copy(&mut file, &mut outfile).unwrap();
+                                    }
+                                }
+
+                                // Make it executable on Linux/Mac
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    let mut perms =
+                                        fs::metadata(&wasi_vfs_exe).unwrap().permissions();
+                                    perms.set_mode(0x755); // rwxr-xr-x
+                                    fs::set_permissions(&wasi_vfs_exe, perms).unwrap();
+                                }
+
+                                // Clean up the zip file
+                                let _ = fs::remove_file(zip_path);
+                                println!("{} Binary secured.", "[+]".green());
+                            }
+
+                            let mut pack_cmd = std::process::Command::new(&wasi_vfs_exe);
+                            pack_cmd.arg("pack").arg(&base_wasm_path);
+                            pack_cmd
+                                .arg("--mapdir")
+                                .arg(format!("/app::{}", tmp_app_dir.to_str().unwrap()));
+                            pack_cmd.arg("-o").arg(&dest_file);
+
+                            let pack_result =
+                                pack_cmd.output().expect("Failed to execute wasi-vfs");
+
+                            let _ = fs::remove_dir_all(
+                                get_ore_dir().join(".tmp_build").join(&tool_name),
                             );
-                            fs::write(build_dir.join("src").join("main.rs"), main_rs).unwrap();
 
-                            // Compile the wrapped Python script to WASM!
-                            let build = std::process::Command::new("cargo")
-                                .current_dir(&build_dir)
-                                .args(["build", "--target", "wasm32-wasip1", "--release"])
-                                .output()
-                                .expect("Failed to execute cargo build.");
+                            if pack_result.status.success() {
+                                // Generate the .args file dynamically!
+                                let args_file =
+                                    absolute_dest_dir.join(format!("{}.args", tool_name));
+                                let entry_arg = format!("/app/{}\n", script_name);
+                                fs::write(&args_file, &entry_arg)
+                                    .expect("Failed to write .args file");
 
-                            if build.status.success() {
-                                let compiled_wasm = build_dir
-                                    .join("target")
-                                    .join("wasm32-wasip1")
-                                    .join("release")
-                                    .join("ore_tool.wasm");
-                                fs::copy(&compiled_wasm, &dest_file)
-                                    .expect("Failed to copy compiled WASM to tools folder");
-                                fs::remove_dir_all(&build_dir).unwrap(); // Clean up the temp build folder
-
-                                println!("{} Python frozen into WASM successfully!", "[+]".green());
+                                println!(
+                                    "{} Python Script frozen into WASM successfully!",
+                                    "[+]".green()
+                                );
                                 println!("Path :: {}", display_path.bright_black());
+                                println!(
+                                    "{} The entrypoint (/app/{}) has been auto-configured in {}.args",
+                                    "[i]".cyan(),
+                                    script_name,
+                                    tool_name
+                                );
                             } else {
                                 println!(
-                                    "{} Compilation failed:\n{}",
+                                    "{} Packaging failed:\n{}",
                                     "[-]".red(),
-                                    String::from_utf8_lossy(&build.stderr)
+                                    String::from_utf8_lossy(&pack_result.stderr)
                                 );
-                                exit(1);
+                                std::process::exit(1);
                             }
                         }
                     }
