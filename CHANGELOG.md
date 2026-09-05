@@ -12,12 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ore mktool` compiler flags for Memory Fusion: `--shared` (to compile dynamic plugins) and `--host` (to compile host tools that load plugins).
 - `tests/cross_lang_memory_fusion/` test suite proving zero-copy data sharing between C->Rust, Rust->C++, and Zig->C.
 - Comprehensive SDK documentation for building plugins across Rust, C/C++, and Zig (`docs/building-plugins.md`).
+- **Python Execution Support:** Added capability to execute both single-file Python scripts (`simple_script.py`) and full Python project workspaces natively within the ORE WebAssembly sandbox using the pre-compiled Python WASI runtime.
+- Updated `.gitignore` to include `/memory/` and `/bin/` directories for cleaner builds.
 - Initial setup for the `ore-kernel` open-source repository.
 - Community standards: `CODE_OF_CONDUCT.md`.
 - Security policy: `SECURITY.md`.
 - Universal Polyglot Toolchain and cross-language Nano-Service orchestration.
 
 ### Changed
+- Enhanced `main.rs` to dynamically detect Python projects and manage their dependencies via `requirements.txt`.
+- Upgraded `sandbox.rs` to set the `PYTHONPATH` environment variable, enabling proper module resolution for the Python WASI runtime.
+- Improved `system.rs` to securely read and pass tool arguments from a dedicated `.args` file.
+- Modified `test_agent.toml` to officially allow Python as an executable tool.
 - Refactored path display logic during cartridge compilation in `ore-cli`.
 - Updated string formatting in `ore-server` IPC and system handlers.
 
