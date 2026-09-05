@@ -1084,7 +1084,9 @@ async fn main() {
                                     "[-]".red().bold(),
                                     python_cmd
                                 );
-                                println!("    ORE requires Python installed on your host machine to resolve PIP dependencies during compilation.");
+                                println!(
+                                    "    ORE requires Python installed on your host machine to resolve PIP dependencies during compilation."
+                                );
                                 std::process::exit(1);
                             }
                         }
