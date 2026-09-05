@@ -98,7 +98,22 @@ ore run qwen2.5:0.5b "Explain what a semaphore is in operating systems"
 ore run deepseek-r1:7b
 ```
 
-## 6. Register Your First Agent
+## 6. Compile and Run a Python Tool (WASM Sandbox)
+
+ORE can natively compile and execute tools written in Python, Rust, C, C++, Zig, JS, and TS within a Zero-Trust WebAssembly sandbox. 
+
+Create a quick Python script `hello.py`:
+```python
+import sys
+print(f"Hello from the ORE Sandbox! Arguments: {sys.argv[1:]}")
+```
+
+Compile it into a portable WebAssembly cartridge:
+```bash
+ore mktool hello.py
+```
+
+## 7. Register Your First Agent
 
 Every application that talks to ORE needs a manifest. Generate one interactively:
 
@@ -120,7 +135,7 @@ The wizard walks you through selecting subsystem permissions: privacy, resources
 
 See [Manifest Reference](./manifest-reference.md) for the full schema.
 
-## 7. Verify Everything Works
+## 8. Verify Everything Works
 
 ```bash
 ore status          # Kernel online?

@@ -29,14 +29,20 @@ Deep-dives into each subsystem for contributors who want to understand ORE's bra
 | IPC & Semantic Bus | `ore-core/src/ipc.rs` | [Deep Dive](./kernel-internals/ipc-and-semantic-bus.md) |
 | Hardware Abstraction Layer | `ore-core/src/driver.rs` | [Deep Dive](./kernel-internals/hardware-abstraction-layer.md) |
 | Native Candle Engine | `ore-core/src/native/` | [Deep Dive](./kernel-internals/native-candle-engine.md) |
+| Polyglot Memory Fusion | `ore-core/src/linker/` | [Deep Dive](./kernel-internals/polyglot-memory-fusion.md) |
 
 ## Crate Map
 
-```
+```text
 ore-system/
-├── ore-core/       Kernel logic (firewall, scheduler, IPC, drivers, native engine)
+├── ore-core/       Kernel logic (sandbox, MMU, firewall, wasmtime runtime)
+│   └── linker/     ore-ld: POSIX Dynamic Linker & Memory Fusion Engine
 ├── ore-server/     Axum HTTP daemon (routes, auth middleware, state)
-└── ore-cli/        Interactive CLI tool (clap + dialoguer + HuggingFace Hub)
+├── ore-cli/        Interactive CLI tool (ore init, ore mktool)
+├── ore-sys/        Rust SDK Macros (`ore_bind!`, `ore_export!`, `Plugin`)
+├── tests/          Polyglot Memory Fusion & Security boundary test suites
+├── plugins/        Pre-compiled `.wasi.so` dynamic plugins
+└── tools/          Pre-compiled `.wasm` Host Agents & Nano-Services
 ```
 
 ## Contributing
