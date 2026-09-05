@@ -1205,7 +1205,7 @@ async fn main() {
                         {
                             use std::os::unix::fs::PermissionsExt;
                             let mut perms = fs::metadata(&wasi_vfs_exe).unwrap().permissions();
-                            perms.set_mode(0x755); // rwxr-xr-x
+                            perms.set_mode(0o755); // rwxr-xr-x
                             fs::set_permissions(&wasi_vfs_exe, perms).unwrap();
                         }
 
@@ -1731,7 +1731,7 @@ async fn main() {
                                     use std::os::unix::fs::PermissionsExt;
                                     let mut perms =
                                         fs::metadata(&wasi_vfs_exe).unwrap().permissions();
-                                    perms.set_mode(0x755); // rwxr-xr-x
+                                    perms.set_mode(0o755); // rwxr-xr-x
                                     fs::set_permissions(&wasi_vfs_exe, perms).unwrap();
                                 }
 
