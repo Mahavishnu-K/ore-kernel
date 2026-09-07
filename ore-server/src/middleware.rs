@@ -15,12 +15,11 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Result<Response, StatusCode> {
     // 1. Extract the Authorization header
-    if let Some(auth_header) = headers.get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str == format!("Bearer {}", state.auth_token) {
-                return Ok(next.run(request).await);
-            }
-        }
+    if let Some(auth_header) = headers.get("Authorization")
+        && let Ok(auth_str) = auth_header.to_str()
+        && auth_str == format!("Bearer {}", state.auth_token)
+    {
+        return Ok(next.run(request).await);
     }
 
     kprintln!("-> [SECURITY ALERT] Blocked unauthorized network connection attempt!");

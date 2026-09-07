@@ -156,7 +156,9 @@ pub async fn sys_share_context(
             });
         }
     } else {
-        kprintln!("-> [SEMANTIC BUS] Ephemeral Mode: Data secured in RAM only. (semantic_persistence = false)");
+        kprintln!(
+            "-> [SEMANTIC BUS] Ephemeral Mode: Data secured in RAM only. (semantic_persistence = false)"
+        );
     }
 
     "SUCCESS: Knowledge processed and stored in Semantic Bus.".to_string()

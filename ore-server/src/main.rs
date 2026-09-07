@@ -4,9 +4,8 @@ pub mod payloads;
 pub mod state;
 
 use axum::{
-    middleware as axum_middleware,
+    Router, middleware as axum_middleware,
     routing::{get, post},
-    Router,
 };
 use std::fs;
 use std::sync::Arc;

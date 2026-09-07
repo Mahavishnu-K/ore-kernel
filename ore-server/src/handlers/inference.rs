@@ -10,8 +10,8 @@ use ore_core::firewall::ContextFirewall;
 use ore_core::kprintln;
 use ore_core::memory::Pager;
 use std::sync::Arc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 // inference engine (The Proxy & Firewall)
 pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<String>) -> String {
@@ -126,9 +126,19 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                 drop(lease);
 
                 if kv_cap_hit {
-                    kprintln!("-> [KERNEL] Agent '{}' KV cache cap reached ({} > {} MB). Triggering Background Compaction...", app_id, current_kv_mb, manifest.memory_limits.max_kv_cache_mb);
+                    kprintln!(
+                        "-> [KERNEL] Agent '{}' KV cache cap reached ({} > {} MB). Triggering Background Compaction...",
+                        app_id,
+                        current_kv_mb,
+                        manifest.memory_limits.max_kv_cache_mb
+                    );
                 } else {
-                    kprintln!("-> [KERNEL] Agent '{}' memory cap reached ({} > {} tokens). Triggering Background Compaction...", app_id, estimated_tokens, token_limit);
+                    kprintln!(
+                        "-> [KERNEL] Agent '{}' memory cap reached ({} > {} tokens). Triggering Background Compaction...",
+                        app_id,
+                        estimated_tokens,
+                        token_limit
+                    );
                 }
 
                 // Clone variables for the background thread so the user gets their response instantly
@@ -146,7 +156,7 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                         .join("\n");
 
                     let summary_prompt = format!(
-                        "You are a system memory compressor. Extract all factual information, user preferences, names, numbers, and core context from the following raw conversation log. Output ONLY a dense bulleted list of facts. Do not converse. Be crisp and concise:\n\n{}", 
+                        "You are a system memory compressor. Extract all factual information, user preferences, names, numbers, and core context from the following raw conversation log. Output ONLY a dense bulleted list of facts. Do not converse. Be crisp and concise:\n\n{}",
                         text_to_summarize
                     );
 
@@ -186,8 +196,12 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                     let max_summary_chars = safe_target * 4;
 
                     if summary.len() > max_summary_chars {
-                        kprintln!("-> [COMPACTION] [WARN] AI generated a bloated summary. Truncating mechanically.");
-                        kprintln!("-> [COMPACTION] ACTION REQUIRED: Increase 'max_json_tokens' in the Agent's manifest!");
+                        kprintln!(
+                            "-> [COMPACTION] [WARN] AI generated a bloated summary. Truncating mechanically."
+                        );
+                        kprintln!(
+                            "-> [COMPACTION] ACTION REQUIRED: Increase 'max_json_tokens' in the Agent's manifest!"
+                        );
 
                         // Safely slice the string at a valid UTF-8 character boundary
                         let safe_idx = summary
@@ -226,7 +240,9 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                         / 4) as u32;
 
                     if new_estimated_tokens > safe_target as u32 {
-                        kprintln!("-> [COMPACTION] [WARN] AI failed to compress below limit. Forcing brutal FIFO pruning.");
+                        kprintln!(
+                            "-> [COMPACTION] [WARN] AI failed to compress below limit. Forcing brutal FIFO pruning."
+                        );
                         while compacted_history
                             .iter()
                             .map(|m| m.content.len())
@@ -248,7 +264,9 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                         let _ = driver_clone.invalidate_agent_cache(&m_id).await;
                         kprintln!("-> [COMPACTION] KV-Cache invalidated and erased from disk.");
                     }
-                    kprintln!("-> [COMPACTION] Memory compressed successfully. VRAM footprint reset to 0.");
+                    kprintln!(
+                        "-> [COMPACTION] Memory compressed successfully. VRAM footprint reset to 0."
+                    );
                 });
             } else {
                 // If auto_summarize is OFF, we use brutal FIFO pruning
@@ -304,7 +322,7 @@ pub async fn run_process(
                 StatusCode::UNAUTHORIZED,
                 format!("ORE KERNEL ALERT: Unregistered User '{}'.", app_id),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -422,9 +440,19 @@ pub async fn run_process(
                     drop(lease);
 
                     if kv_cap_hit {
-                        kprintln!("-> [KERNEL] User '{}' VRAM/SSD cap reached ({}MB > {}MB). Triggering Compaction...", app_id_str, current_kv_mb, manifest.memory_limits.max_kv_cache_mb);
+                        kprintln!(
+                            "-> [KERNEL] User '{}' VRAM/SSD cap reached ({}MB > {}MB). Triggering Compaction...",
+                            app_id_str,
+                            current_kv_mb,
+                            manifest.memory_limits.max_kv_cache_mb
+                        );
                     } else {
-                        kprintln!("-> [KERNEL] User '{}' context cap reached ({} > {} tokens). Triggering Compaction...", app_id_str, estimated_tokens, token_limit);
+                        kprintln!(
+                            "-> [KERNEL] User '{}' context cap reached ({} > {} tokens). Triggering Compaction...",
+                            app_id_str,
+                            estimated_tokens,
+                            token_limit
+                        );
                     }
 
                     let text_to_summarize = new_history
@@ -434,7 +462,7 @@ pub async fn run_process(
                         .join("\n");
 
                     let summary_prompt = format!(
-                        "You are a system memory compressor. Extract all factual information, user preferences, names, numbers, and core context from the following raw conversation log. Output ONLY a dense bulleted list of facts. Do not converse:\n\n{}", 
+                        "You are a system memory compressor. Extract all factual information, user preferences, names, numbers, and core context from the following raw conversation log. Output ONLY a dense bulleted list of facts. Do not converse:\n\n{}",
                         text_to_summarize
                     );
 
@@ -472,8 +500,12 @@ pub async fn run_process(
                     let max_summary_chars = safe_target * 4;
 
                     if summary.len() > max_summary_chars {
-                        kprintln!("-> [COMPACTION] [WARN] AI generated a bloated summary. Truncating mechanically.");
-                        kprintln!("-> [COMPACTION] ACTION REQUIRED: Increase 'max_json_tokens' in the user manifest!");
+                        kprintln!(
+                            "-> [COMPACTION] [WARN] AI generated a bloated summary. Truncating mechanically."
+                        );
+                        kprintln!(
+                            "-> [COMPACTION] ACTION REQUIRED: Increase 'max_json_tokens' in the user manifest!"
+                        );
 
                         // Safely slice the string at a valid UTF-8 character boundary
                         let safe_idx = summary
@@ -509,7 +541,9 @@ pub async fn run_process(
                         / 4) as u32;
 
                     if new_estimated_tokens > safe_target as u32 {
-                        kprintln!("-> [COMPACTION] [WARN] AI failed to compress below limit. Forcing brutal FIFO pruning.");
+                        kprintln!(
+                            "-> [COMPACTION] [WARN] AI failed to compress below limit. Forcing brutal FIFO pruning."
+                        );
                         while compacted_history
                             .iter()
                             .map(|m| m.content.len())
@@ -532,7 +566,10 @@ pub async fn run_process(
                         );
                     }
                 } else {
-                    kprintln!("-> [KERNEL] User '{}' memory cap reached. Pruning oldest messages (FIFO)...", app_id_str);
+                    kprintln!(
+                        "-> [KERNEL] User '{}' memory cap reached. Pruning oldest messages (FIFO)...",
+                        app_id_str
+                    );
                     while new_history.iter().map(|m| m.content.len()).sum::<usize>() / 4
                         > token_limit as usize
                         && new_history.len() > 2

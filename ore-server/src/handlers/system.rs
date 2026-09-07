@@ -30,7 +30,7 @@ pub async fn execute_tool(
             return format!(
                 "KERNEL ALERT: Unregistered Agent '{}'. Access Denied.",
                 payload.app_id
-            )
+            );
         }
     };
 
@@ -161,14 +161,14 @@ pub async fn execute_tool(
         run_args.push(tool.clone()); // argv[0]
 
         let args_path = base_dir.join("tools").join(format!("{}.args", tool));
-        if args_path.exists() {
-            if let Ok(default_args_str) = std::fs::read_to_string(&args_path) {
-                // We read line-by-line so arguments with spaces don't get broken
-                for line in default_args_str.lines() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        run_args.push(trimmed.to_string());
-                    }
+        if args_path.exists()
+            && let Ok(default_args_str) = std::fs::read_to_string(&args_path)
+        {
+            // We read line-by-line so arguments with spaces don't get broken
+            for line in default_args_str.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    run_args.push(trimmed.to_string());
                 }
             }
         }
@@ -457,7 +457,7 @@ pub async fn compact_memory(
         .join("\n");
 
     let summary_prompt = format!(
-        "You are a system memory compressor. Condense the following conversation log into an ultra-short, dense summary. Keep ALL names, numbers, decisions, and strict facts. Discard all conversational filler. Output ONLY the raw facts in as few words as mathematically possible.\n\nRAW LOG:\n{}\n\nCOMPRESSED FACTS:", 
+        "You are a system memory compressor. Condense the following conversation log into an ultra-short, dense summary. Keep ALL names, numbers, decisions, and strict facts. Discard all conversational filler. Output ONLY the raw facts in as few words as mathematically possible.\n\nRAW LOG:\n{}\n\nCOMPRESSED FACTS:",
         text_to_summarize
     );
 
