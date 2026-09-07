@@ -2,6 +2,7 @@ use crate::linker::{HasLinkerState, LinkerState};
 use crate::registry::NetworkRule;
 
 use anyhow::{Error, Result};
+use dashmap::DashMap;
 use wasmtime::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, Table, TableType};
 use wasmtime_wasi::p1::{WasiP1Ctx, add_to_linker_sync};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
@@ -26,6 +27,7 @@ impl HasLinkerState for OreSandboxState {
 
 pub struct ExecuteParams {
     pub wasm_binary: Vec<u8>,
+    pub cache_key: String,
     pub fuel_limit: u64,
     pub args: Vec<String>,
     pub stdin: Option<Vec<u8>>,
@@ -51,6 +53,7 @@ impl Drop for TempDirGuard {
 
 pub struct WasmSandbox {
     engine: Engine,
+    module_cache: DashMap<String, Module>,
 }
 
 impl Default for WasmSandbox {
@@ -68,7 +71,10 @@ impl WasmSandbox {
         config.wasm_component_model(true);
 
         let engine = Engine::new(&config)?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            module_cache: DashMap::new(),
+        })
     }
 
     /// The "Inception" Execution (Happens per-request)
@@ -394,8 +400,17 @@ impl WasmSandbox {
         // Fuel Injection! Sandbox will panic if it exceeds this CPU instruction limit.
         store.set_fuel(params.fuel_limit)?;
 
-        // JIT Compilation (Near-Instantaneous)
-        let module = Module::new(&self.engine, &params.wasm_binary)?;
+        // JIT Compilation & Caching. Instant O(1) Cache Lookup.
+        let module = if let Some(cached_module) = self.module_cache.get(&params.cache_key) {
+            crate::kprintln!("-> [SANDBOX] JIT Cache Hit. Bypassing compilation.");
+            cached_module.clone()
+        } else {
+            crate::kprintln!("-> [SANDBOX] JIT Compiling WASM to native machine code...");
+            let new_module = Module::new(&self.engine, &params.wasm_binary)?;
+            self.module_cache
+                .insert(params.cache_key.clone(), new_module.clone());
+            new_module
+        };
 
         // THE SYSCALL STUBBER (Fixes WasmEdge and proprietary imports)
         // Automatically stubs out any unknown host functions with safe Traps so the VM can boot!
