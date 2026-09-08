@@ -33,6 +33,7 @@ pub struct ExecuteParams {
     pub fuel_limit: u64,
     pub args: Vec<String>,
     pub stdin: Option<Vec<u8>>,
+    pub inception: Option<(String, String)>,
     pub allowed_read_paths: Vec<String>,
     pub allowed_write_paths: Vec<String>,
     pub network_enabled: bool,
@@ -101,6 +102,15 @@ impl WasmSandbox {
         let _cleanup_guard = TempDirGuard {
             path: host_tmp_dir.clone(),
         };
+
+        if let Some((filename, content)) = &params.inception {
+            let script_path = host_tmp_dir.join(filename);
+            std::fs::write(&script_path, content)?;
+            crate::kprintln!(
+                "-> [INCEPTION] Dynamic AI script materialized to VFS: /ore_tmp/{}",
+                filename
+            );
+        }
 
         // We clone the path so the closure can use it
         let closure_tmp_dir = host_tmp_dir.clone();
@@ -353,6 +363,8 @@ impl WasmSandbox {
 
         // HOST READ PATHS (STRICTLY READ-ONLY inside /workspace) - NEVER DELETED
         for path in &params.allowed_read_paths {
+            std::fs::create_dir_all(path).unwrap_or_default();
+
             let folder_name = std::path::Path::new(path)
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -424,6 +436,33 @@ impl WasmSandbox {
             );
             new_module
         };
+
+        // THE WASMEDGE SOCKET FIX (DYNAMIC SHADOWING)
+        // WasmEdge's QuickJS binary expects legacy socket signatures. Wasmtime 45.0
+        // rejects this. We dynamically read what signature it wants and stub it out!
+        linker.allow_shadowing(true); // Allow the Kernel to override WASI defaults
+
+        for import in module.imports() {
+            if import.module() == "wasi_snapshot_preview1"
+                && import.name() == "sock_accept"
+                && let Some(func_ty) = import.ty().func()
+            {
+                let dummy_func =
+                    wasmtime::Func::new(&mut store, func_ty.clone(), |_, _, results| {
+                        // WASI functions return i32 status codes. 52 = ENOSYS (Function Not Implemented)
+                        if !results.is_empty() {
+                            results[0] = wasmtime::Val::I32(52);
+                        }
+                        Ok(())
+                    });
+                linker.define(&mut store, import.module(), import.name(), dummy_func)?;
+                crate::kprintln!(
+                    "-> [SANDBOX] Dynamically shadowed legacy WasmEdge socket: 'sock_accept'"
+                );
+            }
+        }
+
+        linker.allow_shadowing(false);
 
         // THE SYSCALL STUBBER (Fixes WasmEdge and proprietary imports)
         // Automatically stubs out any unknown host functions with safe Traps so the VM can boot!

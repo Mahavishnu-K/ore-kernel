@@ -31,5 +31,5 @@ allowed_paths = ["*"]
 can_execute_shell = false
 can_execute_wasm = true
 allowed_tools = ["rust_cruncher", "ts_generator", "fibonacci_benchmark", "infinite_loop_trap", "network_interception", "vfs_security_check", "go_hasher", "js_formatter"]
-allowed_language_runtimes = ["python", "js"]
+allowed_language_runtimes = ["python", "js", "ts"]
 max_cpu_instructions = 5_000_000_000

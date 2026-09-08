@@ -875,12 +875,12 @@ pub fn get_asset_map(alias: &str) -> Option<OreAsset> {
         //     folder: "runtimes",
         //     filename: "system-py-data.wasm",
         // }),
-        // "system-js" => Some(OreAsset::Wasm {
-        //     // WasmEdge QuickJS (A lightning-fast Javascript Engine compiled to WASI)
-        //     url: "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/system-js.wasm",
-        //     folder: "runtimes",
-        //     filename: "system-js.wasm",
-        // }),
+        "system-js" => Some(OreAsset::Wasm {
+            // WasmEdge QuickJS (A lightning-fast Javascript Engine compiled to WASI)
+            url: "https://github.com/second-state/wasmedge-quickjs/releases/download/v0.6.1-alpha/wasmedge_quickjs.wasm",
+            folder: "runtimes",
+            filename: "system-js.wasm",
+        }),
 
         // --- SYSTEM EMBEDDERS (SAFETENSORS) ---
         "system-embedder" => Some(OreAsset::Safetensors {

@@ -105,6 +105,7 @@ pub async fn execute_tool(
     let base_dir = ore_core::get_ore_dir();
     let wasm_path: std::path::PathBuf;
     let mut run_args = vec![];
+    let mut inception_data = None;
 
     if let Some(script) = &payload.script {
         let lang = payload.language.as_deref().unwrap_or("python");
@@ -132,13 +133,21 @@ pub async fn execute_tool(
         if lang == "python" || lang == "py" {
             wasm_path = base_dir.join("runtimes").join("system-py.wasm");
             run_args.push("python".to_string());
-            run_args.push("-c".to_string());
-            run_args.push(script.clone());
-        } else if lang == "javascript" || lang == "js" {
+            run_args.push("/ore_tmp/inception.py".to_string()); // Point interpreter to VFS
+            inception_data = Some(("inception.py".to_string(), script.clone()));
+        } else if lang == "javascript" || lang == "js" || lang == "ts" || lang == "typescript" {
             wasm_path = base_dir.join("runtimes").join("system-js.wasm");
-            run_args.push("js".to_string());
-            run_args.push("-e".to_string());
-            run_args.push(script.clone());
+            run_args.push("quickjs".to_string());
+
+            let ext = if lang.starts_with("ts") || lang == "typescript" {
+                "ts"
+            } else {
+                "js"
+            };
+            let filename = format!("inception.{}", ext);
+
+            run_args.push(format!("/ore_tmp/{}", filename)); // Point QuickJS to VFS
+            inception_data = Some((filename, script.clone()));
         } else {
             return format!("KERNEL ERROR: Unsupported language '{}'", lang);
         }
@@ -214,6 +223,30 @@ pub async fn execute_tool(
         "unknown_static".to_string()
     };
 
+    let resolve_path = |p: &String| -> String {
+        let path = std::path::Path::new(p);
+        if path.is_absolute() {
+            p.clone()
+        } else {
+            // Anchor relative paths to the ORE Base Dir!
+            base_dir.join(path).to_string_lossy().to_string()
+        }
+    };
+
+    let resolved_read_paths: Vec<String> = manifest
+        .file_system
+        .allowed_read_paths
+        .iter()
+        .map(resolve_path)
+        .collect();
+
+    let resolved_write_paths: Vec<String> = manifest
+        .file_system
+        .allowed_write_paths
+        .iter()
+        .map(resolve_path)
+        .collect();
+
     let params = ExecuteParams {
         tool_name: wasm_path.file_stem().unwrap().to_str().unwrap().to_string(),
         wasm_binary,
@@ -221,8 +254,9 @@ pub async fn execute_tool(
         fuel_limit: manifest.execution.max_cpu_instructions, // Dynamic fuel limit per manifest (Default: 5 Billion ≈ 2 seconds of pure compute)
         args: run_args,
         stdin: payload.input_data.map(|s| s.into_bytes()),
-        allowed_read_paths: manifest.file_system.allowed_read_paths.clone(),
-        allowed_write_paths: manifest.file_system.allowed_write_paths.clone(),
+        inception: inception_data,
+        allowed_read_paths: resolved_read_paths,
+        allowed_write_paths: resolved_write_paths,
         network_enabled: manifest.network.network_enabled,
         allow_localhost_access: manifest.network.allow_localhost_access,
         network_rules: manifest.network.rules.clone(),
