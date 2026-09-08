@@ -29,6 +29,12 @@ fn default_embedder() -> String {
 pub struct MemoryConfig {
     pub cache_ttl_hours: u64,
     pub pipe_ttl_hours: u64,
+    #[serde(default = "default_wasm_timeout")]
+    pub wasm_idle_timeout_mins: u64,
+}
+
+fn default_wasm_timeout() -> u64 {
+    5 // Fallback to 5 minutes if not present in the .toml
 }
 
 // kernel state shared across handlers

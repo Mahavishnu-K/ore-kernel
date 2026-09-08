@@ -3,6 +3,7 @@ use crate::registry::NetworkRule;
 
 use anyhow::{Error, Result};
 use dashmap::DashMap;
+use std::time::Instant;
 use wasmtime::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, Table, TableType};
 use wasmtime_wasi::p1::{WasiP1Ctx, add_to_linker_sync};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
@@ -26,6 +27,7 @@ impl HasLinkerState for OreSandboxState {
 }
 
 pub struct ExecuteParams {
+    pub tool_name: String,
     pub wasm_binary: Vec<u8>,
     pub cache_key: String,
     pub fuel_limit: u64,
@@ -53,7 +55,7 @@ impl Drop for TempDirGuard {
 
 pub struct WasmSandbox {
     engine: Engine,
-    module_cache: DashMap<String, Module>,
+    module_cache: dashmap::DashMap<String, (Module, Instant)>,
 }
 
 impl Default for WasmSandbox {
@@ -401,14 +403,25 @@ impl WasmSandbox {
         store.set_fuel(params.fuel_limit)?;
 
         // JIT Compilation & Caching. Instant O(1) Cache Lookup.
-        let module = if let Some(cached_module) = self.module_cache.get(&params.cache_key) {
+        let module = if let Some(mut cached_entry) = self.module_cache.get_mut(&params.cache_key) {
             crate::kprintln!("-> [SANDBOX] JIT Cache Hit. Bypassing compilation.");
-            cached_module.clone()
+
+            cached_entry.1 = Instant::now();
+            cached_entry.0.clone()
         } else {
             crate::kprintln!("-> [SANDBOX] JIT Compiling WASM to native machine code...");
             let new_module = Module::new(&self.engine, &params.wasm_binary)?;
+
+            let tool_prefix = format!("{}_", params.tool_name);
+
+            // Remove any old cached modules for this tool to prevent memory bloat
             self.module_cache
-                .insert(params.cache_key.clone(), new_module.clone());
+                .retain(|key, _| !key.starts_with(&tool_prefix) || key == &params.cache_key);
+
+            self.module_cache.insert(
+                params.cache_key.clone(),
+                (new_module.clone(), Instant::now()),
+            );
             new_module
         };
 
@@ -468,6 +481,23 @@ impl WasmSandbox {
                     Ok(final_output)
                 }
             }
+        }
+    }
+
+    pub fn flush_idle_modules(&self, idle_timeout_mins: u64) {
+        let before_count = self.module_cache.len();
+
+        self.module_cache.retain(|_, entry| {
+            // KEEP it if it has been used within the timeout window
+            entry.1.elapsed().as_secs() < (idle_timeout_mins * 60)
+        });
+
+        let removed = before_count - self.module_cache.len();
+        if removed > 0 {
+            crate::kprintln!(
+                "-> [SANDBOX GC] Evicted {} dormant WASM modules from RAM. Zero-Idle State Restored.",
+                removed
+            );
         }
     }
 }

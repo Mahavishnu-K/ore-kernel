@@ -187,6 +187,11 @@ pub async fn execute_tool(
         );
     }
 
+    let wasm_binary = match fs::read(&wasm_path) {
+        Ok(b) => b,
+        Err(e) => return format!("KERNEL ERROR: Failed to read WASM binary: {}", e),
+    };
+
     let cache_key = if let Ok(metadata) = fs::metadata(&wasm_path) {
         if let Ok(modified) = metadata.modified() {
             let duration = modified
@@ -209,12 +214,8 @@ pub async fn execute_tool(
         "unknown_static".to_string()
     };
 
-    let wasm_binary = match fs::read(&wasm_path) {
-        Ok(b) => b,
-        Err(e) => return format!("KERNEL ERROR: Failed to read WASM binary: {}", e),
-    };
-
     let params = ExecuteParams {
+        tool_name: wasm_path.file_stem().unwrap().to_str().unwrap().to_string(),
         wasm_binary,
         cache_key,
         fuel_limit: manifest.execution.max_cpu_instructions, // Dynamic fuel limit per manifest (Default: 5 Billion ≈ 2 seconds of pure compute)

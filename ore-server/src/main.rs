@@ -103,6 +103,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let gc_bus = shared_state.semantic_bus.clone();
     let gc_driver = shared_state.driver.clone();
+    let gc_sandbox = shared_state.sandbox.clone();
+    let wasm_timeout = config.memory.wasm_idle_timeout_mins;
 
     // Background GC Loop
     tokio::spawn(async move {
@@ -111,11 +113,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Wake up every 1 minute
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
-            // 1. Flush agents idle for > 5 minutes
+            // Flush agents idle for > 5 minutes
             let _ = gc_driver.flush_idle_memory(5).await;
 
+            if wasm_timeout > 0 {
+                gc_sandbox.flush_idle_modules(wasm_timeout);
+            }
+
             tick_count += 1;
-            // 2. Run Semantic Bus GC every 60 minutes
+            // Run Semantic Bus GC every 60 minutes
             if tick_count >= 60 {
                 println!("-> [SYSTEM] Running routine Semantic Memory GC...");
                 gc_bus.run_garbage_collection();

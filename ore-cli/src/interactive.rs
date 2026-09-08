@@ -45,8 +45,8 @@ pub fn run_init_wizard() {
         .unwrap_or_else(|_| exit(0));
 
     let embedders = vec![
-        "all-minilm      (Fast & Lightweight, 90MB - Best for laptops)",
-        "system-embedder (Nomic v1.5, High Accuracy, 500MB - Best for desktops)",
+        "all-minilm      (Fast & Lightweight, ~90MB - Best for laptops)",
+        "system-embedder (Nomic v1.5, High Accuracy, ~500MB - Best for servers/desktops)",
     ];
 
     let embedder_selection = Select::new("Select your Semantic Bus Embedder:", embedders)
@@ -108,9 +108,17 @@ pub fn run_init_wizard() {
         .prompt()
         .unwrap_or_else(|_| exit(0));
 
+    let wasm_idle_timeout =
+        CustomType::<u64>::new("WASM Module Idle Timeout (minutes) [0 = Disabled]:")
+            .with_default(5)
+            .with_render_config(theme)
+            .prompt()
+            .unwrap_or_else(|_| exit(0));
+
     toml_output.push_str("[memory]\n");
     toml_output.push_str(&format!("cache_ttl_hours = {}\n", cache_ttl));
     toml_output.push_str(&format!("pipe_ttl_hours = {}\n", pipe_ttl));
+    toml_output.push_str(&format!("wasm_idle_timeout_mins = {}\n", wasm_idle_timeout));
 
     // Save to the root directory
     let base_dir = get_ore_dir();

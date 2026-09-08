@@ -8,3 +8,4 @@ default_model = "llama3.2:1b"
 [memory]
 cache_ttl_hours = 24
 pipe_ttl_hours = 32
+wasm_idle_timeout_mins = 5
