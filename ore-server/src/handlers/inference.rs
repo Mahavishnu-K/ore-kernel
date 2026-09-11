@@ -51,7 +51,13 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
         .unwrap_or("llama3.2:1b");
 
     // the GPU scheduler
-    let lease = state.scheduler.request_gpu(target_model, app_id).await;
+    let lease = match state.scheduler.request_gpu(target_model, app_id).await {
+        Ok(l) => l,
+        Err(e) => {
+            crate::kprintln!("-> [SCHEDULER REJECTED] {}", e);
+            return format!("ORE KERNEL ALERT: GPU unavailable - {}", e);
+        }
+    };
     kprintln!(
         "-> GPU Lease Granted for '{}'. Routing to Driver...",
         lease.model
@@ -161,7 +167,13 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                     );
 
                     // Grab the GPU Lock to do the heavy compression
-                    let comp_lease = scheduler_clone.request_gpu(&model_to_use, app_id).await;
+                    let comp_lease = match scheduler_clone.request_gpu(&model_to_use, app_id).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            crate::kprintln!("-> [COMPACTION FAILED] GPU unavailable: {}", e);
+                            return;
+                        }
+                    };
                     kprintln!("-> [COMPACTION] GPU Lease acquired for background summarization.");
 
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -352,7 +364,13 @@ pub async fn run_process(
     kprintln!("-> Waiting for GPU Scheduler...");
 
     // request a GPU lease for the specified model
-    let lease = state.scheduler.request_gpu(&payload.model, app_id).await;
+    let lease = match state.scheduler.request_gpu(&payload.model, app_id).await {
+        Ok(l) => l,
+        Err(e) => {
+            crate::kprintln!("-> [SCHEDULER REJECTED] {}", e);
+            return (StatusCode::SERVICE_UNAVAILABLE, format!("ORE KERNEL ALERT: GPU unavailable - {}", e)).into_response();
+        }
+    };
     kprintln!(
         "-> GPU Lease Granted. Executing natively via {}...",
         state.driver.engine_name()
@@ -466,7 +484,13 @@ pub async fn run_process(
                         text_to_summarize
                     );
 
-                    let comp_lease = scheduler_clone.request_gpu(&model_name, &app_id_str).await;
+                    let comp_lease = match scheduler_clone.request_gpu(&model_name, &app_id_str).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            crate::kprintln!("-> [COMPACTION FAILED] GPU unavailable: {}", e);
+                            return;
+                        }
+                    };
                     kprintln!("-> [COMPACTION] GPU Lease acquired for background summarization.");
 
                     let (tx_comp, mut rx_comp) = tokio::sync::mpsc::unbounded_channel::<String>();
