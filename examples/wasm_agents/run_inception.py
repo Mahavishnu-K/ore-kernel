@@ -69,16 +69,30 @@ def main():
     
     # The AI hallucinates this script on the fly
     ai_generated_js = """
-    console.log("Hello from WasmEdge QuickJS inside the ORE OS!");
-    
-    // Let's do some math
-    const numbers = [10, 20, 30, 40, 42];
-    const sum = numbers.reduce((a, b) => a + b, 0);
-    
-    console.log(`The calculated sum is: ${sum}`);
-    
-    // Prove we are in the VFS
-    console.log("Script executed securely from the Ephemeral VFS.");
+        import os from 'os';
+        import path from 'path';
+        import { Buffer } from 'buffer';
+
+        console.log("--- INSIDE QUICKJS INCEPTION SANDBOX ---");
+
+        // 1. Pure ES6 Compute
+        const numbers = [10, 20, 30, 40, 42];
+        const sum = numbers.reduce((acc, curr) => acc + curr, 0);
+        console.log(`Array Reduce Math : ${sum}`);
+
+        // 2. Custom ORE Fork Test: Default import on 'os'
+        console.log(`OS Type           : ${os.type()}`);
+        console.log(`OS Architecture   : ${os.arch()}`);
+
+        // 3. Custom ORE Fork Test: Default import on 'path'
+        const fakeFilePath = path.join("/workspace", "models", "data.json");
+        console.log(`Path Resolution   : ${fakeFilePath}`);
+
+        // 4. Binary/Base64 manipulation via Buffer
+        const encoded = Buffer.from("ORE Kernel Inception Matrix").toString("base64");
+        console.log(`Base64 Encoding   : ${encoded}`);
+
+        console.log("STATUS: SUCCESS");
     """
     
     print("[*] Sending payload to ORE Kernel...\n")

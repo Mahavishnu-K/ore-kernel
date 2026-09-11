@@ -361,6 +361,27 @@ impl WasmSandbox {
             }
         }
 
+        // GLOBAL STANDARD LIBRARY MOUNT (For JS/TS Node.js API Polyfills)
+        // We mount ~/.ore/runtimes/js_modules to /modules in the sandbox (Read-Only)
+        if params.args.iter().any(|arg| arg == "quickjs") {
+            let js_modules_dir = crate::get_ore_dir().join("runtimes").join("js_modules");
+            if js_modules_dir.exists() {
+                match wasi_builder.preopened_dir(
+                    &js_modules_dir,
+                    "/modules",
+                    DirPerms::READ,
+                    FilePerms::READ,
+                ) {
+                    Ok(_) => crate::kprintln!(
+                        "-> [SANDBOX] Mounted JS Standard Library (Node.js Polyfills) to '/modules'"
+                    ),
+                    Err(e) => {
+                        crate::kprintln!("-> [SANDBOX WARN] Failed to mount JS Modules: {}", e)
+                    }
+                }
+            }
+        }
+
         // HOST READ PATHS (STRICTLY READ-ONLY inside /workspace) - NEVER DELETED
         for path in &params.allowed_read_paths {
             std::fs::create_dir_all(path).unwrap_or_default();

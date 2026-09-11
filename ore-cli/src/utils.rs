@@ -167,6 +167,7 @@ pub enum OreAsset {
         url: &'static str,
         folder: &'static str,
         filename: &'static str,
+        modules_zip_url: Option<&'static str>,
     },
 }
 
@@ -864,9 +865,10 @@ pub fn get_asset_map(alias: &str) -> Option<OreAsset> {
         // --- WASM RUNTIMES (The Inception Interpreters) ---
         "system-py" => Some(OreAsset::Wasm {
             // Official VMware Labs CPython 3.12 (Compiled to WASI)
-            url: "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/system-py.wasm",
+            url: "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/python-3.12.0.wasm",
             folder: "runtimes",
             filename: "system-py.wasm",
+            modules_zip_url: None,
         }),
 
         // "system-py-data" => Some(OreAsset::Wasm {
@@ -874,12 +876,16 @@ pub fn get_asset_map(alias: &str) -> Option<OreAsset> {
         //     url: "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/system-py-data.wasm",
         //     folder: "runtimes",
         //     filename: "system-py-data.wasm",
+        //     modules_zip_url: None,
         // }),
         "system-js" => Some(OreAsset::Wasm {
             // WasmEdge QuickJS (A lightning-fast Javascript Engine compiled to WASI)
-            url: "https://github.com/second-state/wasmedge-quickjs/releases/download/v0.6.1-alpha/wasmedge_quickjs.wasm",
+            url: "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/quickjs.wasm",
             folder: "runtimes",
             filename: "system-js.wasm",
+            modules_zip_url: Some(
+                "https://github.com/Mahavishnu-K/ore-community/releases/download/v0.1.0-alpha/quickjs_modules.zip",
+            ),
         }),
 
         // --- SYSTEM EMBEDDERS (SAFETENSORS) ---

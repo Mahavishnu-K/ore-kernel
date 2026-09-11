@@ -327,6 +327,7 @@ async fn main() {
                         url,
                         folder,
                         filename,
+                        modules_zip_url,
                     } => {
                         println!("{} Architecture: WebAssembly (WASM/WASI)", "[i]".cyan());
 
@@ -355,6 +356,48 @@ async fn main() {
                         }
 
                         println!("{} Binary secured.", "[+]".green());
+
+                        if let Some(zip_url) = modules_zip_url {
+                            println!(
+                                "{} Pulling Standard Library (modules.zip)...",
+                                "[~]".yellow()
+                            );
+
+                            let zip_dest = target_dir.join("modules.tmp.zip");
+                            if let Err(e) = download_with_progress(zip_url, &zip_dest, &None).await
+                            {
+                                println!(
+                                    "{} FATAL: Failed to download modules: {}",
+                                    "[-]".red(),
+                                    e
+                                );
+                                std::process::exit(1);
+                            }
+
+                            println!(
+                                "{} Extracting Standard Library to {}/js_modules...",
+                                "[~]".yellow(),
+                                folder
+                            );
+
+                            let modules_dir = target_dir.join("js_modules");
+                            if modules_dir.exists() {
+                                fs::remove_dir_all(&modules_dir).unwrap(); // Clear old modules
+                            }
+                            fs::create_dir_all(&modules_dir).unwrap();
+
+                            // Use the `zip` crate to unpack it instantly
+                            let file = fs::File::open(&zip_dest).unwrap();
+                            let mut archive = zip::ZipArchive::new(file).unwrap();
+                            archive
+                                .extract(&modules_dir)
+                                .expect("Failed to extract zip archive");
+
+                            // Cleanup the temp zip file
+                            fs::remove_file(&zip_dest).unwrap();
+                            println!("{} Standard Library secured.", "[+]".green());
+                        }
+
                         println!(
                             "\n{} '{}' INSTALLED NATIVELY.",
                             "[OK]".green(),
