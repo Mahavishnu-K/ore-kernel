@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **VRAM Bin-Packing (Multi-Tenancy)**: The `GpuScheduler` was fully re-architected to support multiple models co-residing in VRAM. Replaced the single-model `Semaphore(1)` with a `ModelRegistry`, `MemoryAccountant`, and `NvmlGpuMemoryProvider` to enable physical VRAM tracking, dynamic KV cache estimation, and LRU eviction.
 - **Polyglot Memory Fusion (`ore-ld`)**: A custom POSIX-compliant WebAssembly dynamic linker allowing AI agents to physically share linear memory space with loaded plugins (`.wasi.so`) for zero-copy, cross-language data mutation.
 - `ore mktool` compiler flags for Memory Fusion: `--shared` (to compile dynamic plugins) and `--host` (to compile host tools that load plugins).
 - `tests/cross_lang_memory_fusion/` test suite proving zero-copy data sharing between C->Rust, Rust->C++, and Zig->C.
