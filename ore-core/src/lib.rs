@@ -45,6 +45,7 @@ pub fn get_ore_dir() -> PathBuf {
     ore_path
 }
 
+pub mod crypto;
 pub mod driver;
 pub mod external;
 pub mod firewall;
