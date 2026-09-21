@@ -17,8 +17,8 @@ use super::nn::kv_cache::ConcatKvCache;
 use super::transformers::quantized_nn::RmsNorm;
 use super::utils::repeat_kv;
 use super::utils::with_tracing::QMatMul;
+use crate::inference::native::engine::{ModelConfig, OreEngine};
 use crate::memory::ContextMessage;
-use crate::native::engine::{ModelConfig, OreEngine};
 
 pub fn load<R: Read + Seek>(
     _model_name: &str,

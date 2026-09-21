@@ -45,13 +45,13 @@ pub fn get_ore_dir() -> PathBuf {
     ore_path
 }
 
+pub mod crypto;
 pub mod driver;
-pub mod external;
 pub mod firewall;
+pub mod inference;
 pub mod ipc;
 pub mod linker;
 pub mod memory;
-pub mod native;
 pub mod registry;
 pub mod sandbox;
 pub mod scheduler;

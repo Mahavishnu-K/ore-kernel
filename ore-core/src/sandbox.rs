@@ -1,3 +1,4 @@
+use crate::crypto::KernelCrypto;
 use crate::linker::{HasLinkerState, LinkerState};
 use crate::registry::NetworkRule;
 
@@ -39,6 +40,7 @@ pub struct ExecuteParams {
     pub network_enabled: bool,
     pub allow_localhost_access: bool,
     pub network_rules: Vec<NetworkRule>,
+    pub dynamic_vfs_path: Option<String>,
 }
 
 struct TempDirGuard {
@@ -50,6 +52,20 @@ impl Drop for TempDirGuard {
         if self.path.exists() {
             let _ = std::fs::remove_dir_all(&self.path);
             crate::kprintln!("-> [SANDBOX VFS] Ephemeral directory destroyed.");
+        }
+    }
+}
+
+struct ThreadJoinGuard {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for ThreadJoinGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
         }
     }
 }
@@ -96,8 +112,90 @@ impl WasmSandbox {
 
         // CREATE A DEDICATED TEMP DIRECTORY FOR THIS EXECUTION
         let exec_id = uuid::Uuid::new_v4().to_string();
-        let host_tmp_dir = crate::get_ore_dir().join("tmp").join(&exec_id);
+        let mut host_tmp_dir = crate::get_ore_dir().join("tmp").join(&exec_id);
         std::fs::create_dir_all(&host_tmp_dir)?;
+
+        let sanitize_unc = |p: std::path::PathBuf| -> std::path::PathBuf {
+            let s = p.to_string_lossy().to_string();
+            if let Some(stripped) = s.strip_prefix(r#"\\?\"#) {
+                std::path::PathBuf::from(stripped)
+            } else {
+                p
+            }
+        };
+
+        // CRITICAL WINDOWS FIX: Canonicalize path for Windows WASI compatibility
+        let canon_tmp = std::fs::canonicalize(&host_tmp_dir).unwrap_or(host_tmp_dir);
+        host_tmp_dir = sanitize_unc(canon_tmp);
+
+        let crypto_dir = host_tmp_dir.join(".ore_crypto");
+        std::fs::create_dir_all(&crypto_dir)?;
+
+        // ORE INCEPTION CRYPTO PORTAL (HOST BACKEND)
+        let portal_req = crypto_dir.join("req.bin");
+        let portal_res = crypto_dir.join("res.bin");
+        let portal_tmp_res = crypto_dir.join("res.tmp");
+
+        // Pre-create the files to prevent O_CREAT ENOTSUP issues in QuickJS on Windows
+        let _ = std::fs::write(&portal_req, b"");
+        let _ = std::fs::write(&portal_res, b"");
+
+        let stop_signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let watcher_req = portal_req.clone();
+        let watcher_res = portal_res.clone();
+        let watcher_tmp_res = portal_tmp_res.clone();
+        let watcher_stop = stop_signal.clone();
+
+        // Spawn a low-latency thread polling the VFS crypto queue while WASM executes
+        let crypto_thread = std::thread::spawn(move || {
+            crate::kprintln!(
+                "-> [SANDBOX] Crypto Portal Thread started. Polling for requests in {}...",
+                watcher_req.display()
+            );
+            while !watcher_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                // Read the request file
+                if let Ok(meta) = std::fs::metadata(&watcher_req)
+                    && meta.len() > 0
+                    && let Ok(data) = std::fs::read(&watcher_req)
+                {
+                    crate::kprintln!("-> [SANDBOX] Detected Crypto Portal request. Processing...");
+                    // Truncate immediately to acknowledge read to JS
+                    let _ = std::fs::write(&watcher_req, b"");
+
+                    let response = match KernelCrypto::process_portal_request(&data) {
+                        Ok(res_bytes) => {
+                            let mut out = vec![0u8]; // 0 = SUCCESS
+                            out.extend_from_slice(&res_bytes);
+                            out
+                        }
+                        Err(err_str) => {
+                            let mut out = vec![1u8]; // 1 = ERROR
+                            out.extend_from_slice(err_str.as_bytes());
+                            out
+                        }
+                    };
+
+                    // prevent partial host writes from being read by the guest (atomicity)
+
+                    // writes the response to a temporary file first, then renames it to ensure atomicity
+                    let _ = std::fs::write(&watcher_tmp_res, response);
+                    crate::kprintln!(
+                        "-> [SANDBOX] Crypto Portal response written to temporary file."
+                    );
+
+                    // Windows NTFS safety: windows atomic rename is not guaranteed to be atomic, so we remove the old file first
+                    let _ = std::fs::remove_file(&watcher_res);
+                    let _ = std::fs::rename(&watcher_tmp_res, &watcher_res);
+                    crate::kprintln!(
+                        "-> [SANDBOX] Crypto Portal response moved to final destination: {}",
+                        watcher_res.display()
+                    );
+                }
+                // Sleep 50 microseconds to minimize CPU usage while keeping latency negligible
+                std::thread::sleep(std::time::Duration::from_micros(50));
+            }
+        });
 
         let _cleanup_guard = TempDirGuard {
             path: host_tmp_dir.clone(),
@@ -303,9 +401,21 @@ impl WasmSandbox {
             .any(|arg| arg == "python" || arg.contains("system-py") || arg.ends_with(".py"))
         {
             wasi_builder.env("PYTHONUNBUFFERED", "1");
-            wasi_builder.env("PYTHONPATH", "/packages:/app");
+
+            // If it's a Bundled Tool (wasi-vfs)
+            let mut pypath = String::from("/packages:/app");
+
+            // If it's Inception Mode with JIT Requirements (Mounted VFS)
+            if let Some(dyn_path) = params.dynamic_vfs_path {
+                pypath.push(':');
+                pypath.push_str(&dyn_path);
+            }
+
+            wasi_builder.env("PYTHONPATH", &pypath);
+
             crate::kprintln!(
-                "-> [SANDBOX] Python runtime detected. Enabling unbuffered output and setting PYTHONPATH to '/packages:/app'."
+                "-> [SANDBOX] Python runtime detected. Enabling unbuffered output and setting PYTHONPATH to '{}'.",
+                pypath
             );
         }
 
@@ -343,7 +453,16 @@ impl WasmSandbox {
 
             let guest_path = format!("/workspace/{}", folder_name);
 
-            match wasi_builder.preopened_dir(path, &guest_path, DirPerms::all(), FilePerms::all()) {
+            let canon_path = std::fs::canonicalize(path).unwrap_or(std::path::PathBuf::from(path));
+
+            let safe_path = sanitize_unc(canon_path);
+
+            match wasi_builder.preopened_dir(
+                &safe_path,
+                &guest_path,
+                DirPerms::all(),
+                FilePerms::all(),
+            ) {
                 Ok(_) => {
                     crate::kprintln!(
                         "-> [SANDBOX] Mounted Host Write Path '{}' to Guest '{}'",
@@ -361,6 +480,33 @@ impl WasmSandbox {
             }
         }
 
+        // GLOBAL STANDARD LIBRARY MOUNT (For JS/TS Node.js API Polyfills)
+        // We mount ~/.ore/runtimes/js_modules to /modules in the sandbox (Read-Only)
+        if params.args.iter().any(|arg| arg == "quickjs") {
+            let js_modules_dir = crate::get_ore_dir().join("runtimes").join("js_modules");
+            if js_modules_dir.exists() {
+                let canon_modules =
+                    std::fs::canonicalize(&js_modules_dir).unwrap_or(js_modules_dir);
+                let safe_modules = sanitize_unc(canon_modules);
+                match wasi_builder.preopened_dir(
+                    &safe_modules,
+                    "/modules",
+                    DirPerms::READ,
+                    FilePerms::READ,
+                ) {
+                    Ok(_) => crate::kprintln!(
+                        "-> [SANDBOX] Mounted JS Standard Library (Node.js Polyfills) to '/modules'"
+                    ),
+                    Err(e) => {
+                        crate::kprintln!("-> [SANDBOX WARN] Failed to mount JS Modules: {}", e)
+                    }
+                }
+            }
+
+            wasi_builder.env("QUICKJS_MODULE_PATH", "/modules");
+            wasi_builder.env("NODE_PATH", "/modules");
+        }
+
         // HOST READ PATHS (STRICTLY READ-ONLY inside /workspace) - NEVER DELETED
         for path in &params.allowed_read_paths {
             std::fs::create_dir_all(path).unwrap_or_default();
@@ -372,8 +518,16 @@ impl WasmSandbox {
 
             let guest_path = format!("/workspace/{}", folder_name);
 
+            let canon_path = std::fs::canonicalize(path).unwrap_or(std::path::PathBuf::from(path));
+            let safe_path = sanitize_unc(canon_path);
+
             // Manually inject with stripped permissions!
-            match wasi_builder.preopened_dir(path, &guest_path, DirPerms::READ, FilePerms::READ) {
+            match wasi_builder.preopened_dir(
+                &safe_path,
+                &guest_path,
+                DirPerms::READ,
+                FilePerms::READ,
+            ) {
                 Ok(_) => {
                     crate::kprintln!(
                         "-> [SANDBOX] Mounted Host Read Path (STRICT READ-ONLY): '{}' to '{}'",
@@ -476,7 +630,15 @@ impl WasmSandbox {
             params.fuel_limit
         );
 
+        let thread_guard = ThreadJoinGuard {
+            stop: stop_signal.clone(),
+            handle: Some(crypto_thread),
+        };
+
         let exec_result = start_func.call(&mut store, ());
+
+        // Stop the crypto thread and wait for it to finish
+        drop(thread_guard);
 
         // Extraction & Destruction
         // Drop the store explicitly so the WritePipes finish cleanly
