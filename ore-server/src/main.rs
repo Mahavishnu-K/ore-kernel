@@ -61,10 +61,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sandbox = WasmSandbox::new().expect("FATAL: Failed to boot WASM Sandbox");
     let shared_sandbox = Arc::new(sandbox);
 
+    let mut scheduler_config = ore_core::scheduler::SchedulerConfig::default();
+    for (model_name, model_config) in &config.models {
+        if let Some(kv_override) = model_config.kv_cache_mb_per_1k {
+            scheduler_config.model_overrides.insert(model_name.clone(), kv_override);
+        }
+    }
+
+    let memory_provider: Box<dyn ore_core::scheduler::GpuMemoryProvider> = match ore_core::scheduler::NvmlGpuMemoryProvider::new(0) {
+        Ok(nvml) => {
+            crate::kprintln!("-> [BOOT] Connected to NVIDIA GPU (NVML active)");
+            Box::new(nvml)
+        },
+        Err(e) => {
+            crate::kprintln!("-> [BOOT] NVML not available ({}). Falling back to Mock GPU Provider.", e);
+            Box::new(ore_core::scheduler::MockGpuMemoryProvider::default())
+        }
+    };
+
+    let scheduler = Arc::new(GpuScheduler::new(Arc::clone(&driver), memory_provider, scheduler_config));
+
     // configuration
     let shared_state = Arc::new(KernelState {
         driver,
-        scheduler: Arc::new(GpuScheduler::new()),
+        scheduler,
         embedder_lock: Arc::new(Mutex::new(())),
         registry: app_registry,
         semantic_bus: Arc::clone(&shared_semantic_bus),

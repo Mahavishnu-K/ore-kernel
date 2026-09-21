@@ -832,7 +832,10 @@ pub async fn compact_memory(
         .first()
         .map(|s| s.as_str())
         .unwrap_or("llama3.2:1b");
-    let lease = state.scheduler.request_gpu(target_model, &app_id).await;
+    let lease = match state.scheduler.request_gpu(target_model, &app_id).await {
+        Ok(l) => l,
+        Err(e) => return format!("ORE KERNEL ALERT: GPU unavailable - {}", e),
+    };
 
     let text_to_summarize = history
         .iter()
