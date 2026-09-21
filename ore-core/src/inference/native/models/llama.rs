@@ -18,8 +18,8 @@
 
 use super::llama::ModelWeights as LlamaModel;
 use super::nn::kv_cache::ConcatKvCache;
+use crate::inference::native::engine::{ModelConfig, OreEngine};
 use crate::memory::ContextMessage;
-use crate::native::engine::{ModelConfig, OreEngine};
 use candle_core::quantized::QTensor;
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, IndexOp, Result, Tensor};

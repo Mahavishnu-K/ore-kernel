@@ -56,6 +56,7 @@ pub struct ExecuteRequest {
     // Autonomous Mode ("Inception")
     pub language: Option<String>,
     pub script: Option<String>,
+    pub dependencies: Option<Vec<String>>,
 
     pub shell_command: Option<String>,
 }

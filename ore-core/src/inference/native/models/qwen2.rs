@@ -15,8 +15,8 @@
 
 use super::nn::kv_cache::ConcatKvCache;
 use super::qwen2::ModelWeights as Qwen2Model;
+use crate::inference::native::engine::{ModelConfig, OreEngine};
 use crate::memory::ContextMessage;
-use crate::native::engine::{ModelConfig, OreEngine};
 use candle_core::{
     DType, Device, IndexOp, Result, Tensor,
     quantized::{QMatMul, gguf_file},
