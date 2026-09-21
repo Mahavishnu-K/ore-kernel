@@ -163,7 +163,7 @@ pub struct GpuScheduler {
 impl GpuScheduler {
     pub fn new(driver: Arc<dyn crate::driver::InferenceDriver>, memory_provider: Box<dyn GpuMemoryProvider>, config: SchedulerConfig) -> Self {
         Self {
-            execution_lock: Arc::new(Semaphore::new(1)),
+            execution_lock: Arc::new(Semaphore::new(32)),
             state: Arc::new(Mutex::new(GpuState {
                 registry: ModelRegistry::new(),
                 memory_provider,
