@@ -1276,6 +1276,8 @@ async fn main() {
 
                     let pack_result = pack_cmd.output().expect("Failed to execute wasi-vfs");
 
+                    let _ = fs::remove_dir_all(get_ore_dir().join(".tmp_build").join(&tool_name));
+
                     if pack_result.status.success() {
                         let args_file = absolute_dest_dir.join(format!("{}.args", tool_name));
                         let entry_arg = format!("/app/{}\n", entry_file);
