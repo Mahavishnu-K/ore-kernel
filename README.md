@@ -32,7 +32,7 @@
 
 Instead of wrapping Rust, Go, C++, or any other language in bloated Docker containers and REST APIs just so a Python agent can call them, ORE compiles them directly into WebAssembly Nano-Services. 
 
-By bringing enterprise microservice architecture down to the binary level, ORE strips away TCP network latency and executes language-agnostic `.wasm` cartridges in-process, booting in **~50 microseconds**. 
+By bringing enterprise microservice architecture down to the binary level, ORE strips away TCP network latency and executes language-agnostic `.wasm` cartridges in-process. Standalone tools boot in **~10 milliseconds**, while Memory Fusion plugins link in **~50 microseconds**. 
 
 You get the modularity and decoupling of microservices with the raw memory-speed of a monolith.
 
@@ -50,10 +50,11 @@ By decoupling the *tools* from the *agents*, ORE unlocks unprecedented capabilit
 - **Zero-RAM Layer 7 Network Firewall:** The sandbox has no raw TCP/UDP socket access. Instead, all outbound network calls are routed through a kernel-level Layer 7 proxy. Requests are validated against strict domain and HTTP method whitelists in the Agent Manifest, and responses are streamed directly to the SSD.
 - **Virtual File System (VFS):** Granular, manifest-driven permissions define exactly which host directories the AI can read (strictly Read-Only) or write to.
 - **Elimination of Cloud VMs:** Instead of spinning up an expensive, heavy EC2 instance or cloud container just to give an agent a safe environment to run code, ORE allows you to execute untrusted AI code securely and instantly on any server, on-prem or in the cloud, without the need for Docker or other containerization technologies.
+- **Zero-RAM AOT Caching (`.cwasm`):** WebAssembly tools are JIT compiled into native machine code on their first run. Subsequent runs dynamically bypass the JIT compiler and `mmap` the pre-compiled `.cwasm` file directly from the OS Page Cache into the CPU. ORE can execute a 15MB Go tool 10,000 times concurrently without exhausting host RAM.
 - **Absolute Tool Portability:** Tools compiled to WASM cartridges are universally portable. You can write a tool once, distribute it as a single `.wasm` file, and any ORE user on any OS (Windows, macOS, Linux) can run it instantly without worrying about Python environments, dependency trees, or CUDA driver conflicts.
 
 > [!IMPORTANT]
-> - **Performance Note:** Because ORE utilizes WASM instead of Docker, spinning up a secure, isolated sandbox for an AI agent takes **less than 5 milliseconds**. This allows for massive swarms of autonomous agents to execute hundreds of tools concurrently with near-zero overhead. <br/>
+> - **Performance Note:** Because ORE utilizes AOT WASM instead of Docker, spinning up a secure, isolated sandbox for an AI agent takes **~10 milliseconds**. This allows for massive Polyglot Swarms of autonomous agents to execute hundreds of tools concurrently with near-zero memory overhead. <br/>
 > - **Rule of Thumb for ORE Tools:** WebAssembly is a pure compute environment. Your tools should take Data IN (via `STDIN` or File), crunch the math/text blazingly fast, use `ore.fetch` for network requests, and spit Data OUT (via `STDOUT` or File). Do not try to open raw TCP sockets or spawn OS threads. Thats all an agent tool needs to do ;).
 > - It is **NOT** a container for web browsers, GPU training loops, or raw database drivers.
 
@@ -395,22 +396,24 @@ ore-system/
 │   ├── memory.rs            #   ├── Memory Management (context freezing & restoration)
 │   ├── registry.rs          #   ├── App manifest registry (TOML loader + cache)
 │   ├── sandbox.rs           #   ├── Zero-Trust WASM Sandbox (Wasmtime, WASI, ore-ld injection)
+│   ├── crypto.rs            #   ├── Cryptographic subsystem (VFS mapped)
 │   ├── linker/              #   ├── WebAssembly Dynamic Linker (ore-ld)
 │   │   ├── mod.rs           #   │   ├── Linker module entrypoint
 │   │   ├── linker_state.rs  #   │   ├── Linker registry and Handle tracking
 │   │   ├── mmu.rs           #   │   ├── Memory Management Unit (memory.grow, -fPIC globals)
 │   │   └── syscalls.rs      #   │   └── ore_dlopen, ore_dlsym (Table expansion)
-│   ├── external/            #   ├── External inference drivers
-│   │   └── ollama.rs        #   │   └── OllamaDriver (HTTP proxy to Ollama daemon)
-│   └── native/              #   └── Native Candle Inference Engine
-│       ├── mod.rs           #       ├── NativeDriver (GGUF loading + hardware detection)
-│       ├── engine.rs        #       ├── OreEngine enum (Llama/Qwen) + ActiveEngine
-│       ├── gguf_tokenizer.rs#       ├── GGUF metadata tokenizer extractor
-│       └── models/          #       └── Architecture-specific model loaders
-│           ├── llama.rs     #           ├── Llama family loader
-│           ├── qwen.rs      #           ├── Qwen2 family loader
-│           ├── bert.rs      #           ├── BERT embedder (all-MiniLM)
-│           └── nomic.rs     #           └── Nomic v1.5 embedder
+│   └── inference/           #   └── Inference Engine Implementations
+│       ├── external/        #       ├── External inference drivers
+│       │   └── ollama.rs    #       │   └── OllamaDriver (HTTP proxy to Ollama daemon)
+│       └── native/          #       └── Native Candle Inference Engine
+│           ├── mod.rs       #           ├── NativeDriver (GGUF loading + hardware detection)
+│           ├── engine.rs    #           ├── OreEngine enum (Llama/Qwen) + ActiveEngine
+│           ├── gguf_tokenizer.rs#       ├── GGUF metadata tokenizer extractor
+│           └── models/      #           └── Architecture-specific model loaders
+│               ├── llama.rs #               ├── Llama family loader
+│               ├── qwen.rs  #               ├── Qwen2 family loader
+│               ├── bert.rs  #               ├── BERT embedder (all-MiniLM)
+│               └── nomic.rs #               └── Nomic v1.5 embedder
 ├── ore-server/              # Axum HTTP daemon (modular handler architecture)
 │   ├── main.rs              #   ├── Boot sequence, router setup, GC scheduler
 │   ├── state.rs             #   ├── KernelState + OreConfig (shared app state)

@@ -160,22 +160,24 @@ ore-system/
 │   ├── memory.rs            Memory Management (context persistence)
 │   ├── registry.rs          App manifest registry
 │   ├── sandbox.rs           Zero-Trust WASM Sandbox (Wasmtime, WASI)
+│   ├── crypto.rs            Cryptographic subsystem (VFS mapped)
 │   ├── linker/              WebAssembly Dynamic Linker (ore-ld)
 │   │   ├── mod.rs           Linker module entrypoint
 │   │   ├── linker_state.rs  Linker registry and Handle tracking
 │   │   ├── mmu.rs           Memory Management Unit (memory.grow, -fPIC globals)
 │   │   └── syscalls.rs      Table expansion & plugin loading (ore_dlopen, ore_dlsym)
-│   ├── external/            External inference drivers
-│   │   └── ollama.rs        OllamaDriver (HTTP proxy)
-│   └── native/              Native Candle Engine
-│       ├── mod.rs           NativeDriver (GGUF loading + hardware detection)
-│       ├── engine.rs        OreEngine enum (Llama/Qwen2/Qwen3) + ActiveEngine
-│       ├── gguf_tokenizer.rs GGUF metadata tokenizer extractor
-│       └── models/          Architecture-specific model loaders
-│           ├── llama.rs     Llama family loader
-│           ├── qwen2.rs     Qwen2 family loader
-│           ├── qwen3.rs     Qwen3 MoE family loader
-│           └── bert.rs      BERT embedder (Safetensors)
+│   └── inference/           Inference Engine Implementations
+│       ├── external/        External inference drivers
+│       │   └── ollama.rs    OllamaDriver (HTTP proxy)
+│       └── native/          Native Candle Engine
+│           ├── mod.rs       NativeDriver (GGUF loading + hardware detection)
+│           ├── engine.rs    OreEngine enum (Llama/Qwen2/Qwen3) + ActiveEngine
+│           ├── gguf_tokenizer.rs GGUF metadata tokenizer extractor
+│           └── models/      Architecture-specific model loaders
+│               ├── llama.rs Llama family loader
+│               ├── qwen2.rs Qwen2 family loader
+│               ├── qwen3.rs Qwen3 MoE family loader
+│               └── bert.rs  BERT embedder (Safetensors)
 ├── ore-server/              HTTP daemon
 │   ├── main.rs              Boot sequence, router, GC scheduler
 │   ├── state.rs             KernelState + OreConfig
