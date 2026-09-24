@@ -28,7 +28,6 @@ impl HasLinkerState for OreSandboxState {
 pub struct ExecuteParams {
     pub tool_name: String,
     pub wasm_binary: Vec<u8>,
-    pub cache_key: String,
     pub fuel_limit: u64,
     pub args: Vec<String>,
     pub stdin: Option<Vec<u8>>,
@@ -566,7 +565,25 @@ impl WasmSandbox {
         // THE AOT (AHEAD-OF-TIME) COMPILATION CACHE
         let cwasm_path = params.wasm_path.with_extension("cwasm");
 
-        let module = if cwasm_path.exists() {
+        let mut use_cache = false;
+        if cwasm_path.exists()
+            && let (Ok(wasm_meta), Ok(cwasm_meta)) = (
+                std::fs::metadata(&params.wasm_path),
+                std::fs::metadata(&cwasm_path),
+            )
+        {
+            if let (Ok(wasm_time), Ok(cwasm_time)) = (wasm_meta.modified(), cwasm_meta.modified())
+                && cwasm_time >= wasm_time
+            {
+                use_cache = true;
+            } else {
+                crate::kprintln!(
+                    "-> [SANDBOX] .wasm is newer than .cwasm. Invalidating AOT Cache..."
+                );
+            }
+        }
+
+        let module = if use_cache {
             crate::kprintln!("-> [SANDBOX] AOT Cache Hit. Bypassing JIT Compiler...");
 
             // deserialize_file uses OS `mmap` under the hood. ZERO RAM BLOAT.

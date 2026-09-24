@@ -523,28 +523,6 @@ pub async fn execute_tool(
         Err(e) => return format!("KERNEL ERROR: Failed to read WASM binary: {}", e),
     };
 
-    let cache_key = if let Ok(metadata) = fs::metadata(&wasm_path) {
-        if let Ok(modified) = metadata.modified() {
-            let duration = modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            // e.g., "python_vfs_test_1710429100"
-            format!(
-                "{}_{}",
-                wasm_path.file_stem().unwrap().to_str().unwrap(),
-                duration.as_secs()
-            )
-        } else {
-            // Fallback if OS doesn't support modified times
-            format!(
-                "{}_static",
-                wasm_path.file_stem().unwrap().to_str().unwrap()
-            )
-        }
-    } else {
-        "unknown_static".to_string()
-    };
-
     let resolve_path = |p: &String| -> String {
         let path = std::path::Path::new(p);
         if path.is_absolute() {
@@ -574,7 +552,6 @@ pub async fn execute_tool(
     let params = ExecuteParams {
         tool_name: wasm_path.file_stem().unwrap().to_str().unwrap().to_string(),
         wasm_binary,
-        cache_key,
         fuel_limit: manifest.execution.max_cpu_instructions, // Dynamic fuel limit per manifest (Default: 5 Billion ≈ 2 seconds of pure compute)
         args: run_args,
         stdin: payload.input_data.map(|s| s.into_bytes()),
