@@ -584,8 +584,8 @@ pub async fn execute_tool(
         network_enabled: manifest.network.network_enabled,
         allow_localhost_access: manifest.network.allow_localhost_access,
         network_rules: manifest.network.rules.clone(),
-
         dynamic_vfs_path: resolved_req_hash.map(|hash| format!("/workspace/{}", hash)),
+        wasm_path: wasm_path.clone(),
     };
 
     let sandbox = state.sandbox.clone();

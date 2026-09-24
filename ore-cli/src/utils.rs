@@ -1021,3 +1021,84 @@ pub fn build_secure_client() -> Client {
         .build()
         .expect("Failed to build HTTP client")
 }
+
+pub async fn ensure_wasi_vfs() -> std::path::PathBuf {
+    let ore_bin_dir = get_ore_dir().join("bin");
+    std::fs::create_dir_all(&ore_bin_dir).unwrap_or_default();
+
+    let wasi_vfs_exe = if cfg!(target_os = "windows") {
+        ore_bin_dir.join("wasi-vfs.exe")
+    } else {
+        ore_bin_dir.join("wasi-vfs")
+    };
+
+    if !wasi_vfs_exe.exists() {
+        println!(
+            "{} 'wasi-vfs' not found. Auto-downloading pre-compiled binary...",
+            "[*]".bright_blue()
+        );
+
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+
+        let target = match (os, arch) {
+            ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+            ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+            ("macos", "x86_64") => "x86_64-apple-darwin",
+            ("macos", "aarch64") => "aarch64-apple-darwin",
+            ("windows", "x86_64") => "x86_64-pc-windows-gnu",
+            _ => {
+                println!(
+                    "{} FATAL: Unsupported OS/Arch for pre-compiled wasi-vfs ({} {}).",
+                    "[-]".red(),
+                    os,
+                    arch
+                );
+                println!("    Please install manually: cargo install wasi-vfs-cli");
+                std::process::exit(1);
+            }
+        };
+
+        let version = "v0.6.3";
+        let url = format!(
+            "https://github.com/kateinoigakukun/wasi-vfs/releases/download/{}/wasi-vfs-cli-{}.zip",
+            version, target
+        );
+        let zip_path = ore_bin_dir.join("wasi-vfs.zip");
+
+        if let Err(e) = download_with_progress(&url, &zip_path, &None).await {
+            println!("{} FATAL: Failed to download wasi-vfs: {}", "[-]".red(), e);
+            std::process::exit(1);
+        }
+
+        println!("{} Extracting binary...", "[~]".yellow());
+        let zip_file = fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).unwrap();
+            let outpath = match file.enclosed_name() {
+                Some(path) => ore_bin_dir.join(path),
+                None => continue,
+            };
+
+            if !file.is_dir() {
+                let mut outfile = fs::File::create(&outpath).unwrap();
+                std::io::copy(&mut file, &mut outfile).unwrap();
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&wasi_vfs_exe).unwrap().permissions();
+            perms.set_mode(0o755); // rwxr-xr-x
+            fs::set_permissions(&wasi_vfs_exe, perms).unwrap();
+        }
+
+        let _ = fs::remove_file(zip_path);
+        println!("{} Binary secured.", "[+]".green());
+    }
+
+    wasi_vfs_exe
+}

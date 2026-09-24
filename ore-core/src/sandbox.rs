@@ -3,8 +3,6 @@ use crate::linker::{HasLinkerState, LinkerState};
 use crate::registry::NetworkRule;
 
 use anyhow::{Error, Result};
-use dashmap::DashMap;
-use std::time::Instant;
 use wasmtime::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, Table, TableType};
 use wasmtime_wasi::p1::{WasiP1Ctx, add_to_linker_sync};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
@@ -41,6 +39,7 @@ pub struct ExecuteParams {
     pub allow_localhost_access: bool,
     pub network_rules: Vec<NetworkRule>,
     pub dynamic_vfs_path: Option<String>,
+    pub wasm_path: std::path::PathBuf,
 }
 
 struct TempDirGuard {
@@ -72,7 +71,6 @@ impl Drop for ThreadJoinGuard {
 
 pub struct WasmSandbox {
     engine: Engine,
-    module_cache: dashmap::DashMap<String, (Module, Instant)>,
 }
 
 impl Default for WasmSandbox {
@@ -90,10 +88,7 @@ impl WasmSandbox {
         config.wasm_component_model(true);
 
         let engine = Engine::new(&config)?;
-        Ok(Self {
-            engine,
-            module_cache: DashMap::new(),
-        })
+        Ok(Self { engine })
     }
 
     /// The "Inception" Execution (Happens per-request)
@@ -568,27 +563,28 @@ impl WasmSandbox {
         // Fuel Injection! Sandbox will panic if it exceeds this CPU instruction limit.
         store.set_fuel(params.fuel_limit)?;
 
-        // JIT Compilation & Caching. Instant O(1) Cache Lookup.
-        let module = if let Some(mut cached_entry) = self.module_cache.get_mut(&params.cache_key) {
-            crate::kprintln!("-> [SANDBOX] JIT Cache Hit. Bypassing compilation.");
+        // THE AOT (AHEAD-OF-TIME) COMPILATION CACHE
+        let cwasm_path = params.wasm_path.with_extension("cwasm");
 
-            cached_entry.1 = Instant::now();
-            cached_entry.0.clone()
+        let module = if cwasm_path.exists() {
+            crate::kprintln!("-> [SANDBOX] AOT Cache Hit. Bypassing JIT Compiler...");
+
+            // deserialize_file uses OS `mmap` under the hood. ZERO RAM BLOAT.
+            unsafe { Module::deserialize_file(&self.engine, &cwasm_path)? }
         } else {
-            crate::kprintln!("-> [SANDBOX] JIT Compiling WASM to native machine code...");
-            let new_module = Module::new(&self.engine, &params.wasm_binary)?;
-
-            let tool_prefix = format!("{}_", params.tool_name);
-
-            // Remove any old cached modules for this tool to prevent memory bloat
-            self.module_cache
-                .retain(|key, _| !key.starts_with(&tool_prefix) || key == &params.cache_key);
-
-            self.module_cache.insert(
-                params.cache_key.clone(),
-                (new_module.clone(), Instant::now()),
+            crate::kprintln!(
+                "-> [SANDBOX] Cold Start. JIT Compiling WASM to Native Machine Code..."
             );
-            new_module
+            let compiled_module = Module::new(&self.engine, &params.wasm_binary)?;
+
+            crate::kprintln!(
+                "-> [SANDBOX] Saving AOT .cwasm cache to disk for future executions..."
+            );
+            if let Ok(serialized_bytes) = compiled_module.serialize() {
+                let _ = std::fs::write(&cwasm_path, serialized_bytes);
+            }
+
+            compiled_module
         };
 
         // THE WASMEDGE SOCKET FIX (DYNAMIC SHADOWING)
@@ -682,23 +678,6 @@ impl WasmSandbox {
                     Ok(final_output)
                 }
             }
-        }
-    }
-
-    pub fn flush_idle_modules(&self, idle_timeout_mins: u64) {
-        let before_count = self.module_cache.len();
-
-        self.module_cache.retain(|_, entry| {
-            // KEEP it if it has been used within the timeout window
-            entry.1.elapsed().as_secs() < (idle_timeout_mins * 60)
-        });
-
-        let removed = before_count - self.module_cache.len();
-        if removed > 0 {
-            crate::kprintln!(
-                "-> [SANDBOX GC] Evicted {} dormant WASM modules from RAM. Zero-Idle State Restored.",
-                removed
-            );
         }
     }
 }
