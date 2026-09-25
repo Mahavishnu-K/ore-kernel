@@ -37,7 +37,8 @@ pub async fn execute_tool(
 
     let has_wasm_tool =
         payload.tool_name.is_some() || payload.args.is_some() || payload.input_data.is_some();
-    let has_wasm_script = payload.language.is_some() || payload.script.is_some();
+    let has_wasm_script =
+        payload.language.is_some() || payload.script.is_some() || payload.dependencies.is_some();
     let has_shell = payload.shell_command.is_some();
 
     if (has_wasm_tool as u8 + has_wasm_script as u8 + has_shell as u8) > 1 {
