@@ -68,14 +68,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let memory_provider: Box<dyn ore_core::scheduler::GpuMemoryProvider> = match ore_core::scheduler::NvmlGpuMemoryProvider::new(0) {
+    let gpu_id: u32 = std::env::var("ORE_GPU_ID").unwrap_or("0".to_string()).parse().unwrap_or(0);
+    let memory_provider: Box<dyn ore_core::scheduler::GpuMemoryProvider> = match ore_core::scheduler::NvmlGpuMemoryProvider::new(gpu_id) {
         Ok(nvml) => {
-            crate::kprintln!("-> [BOOT] Connected to NVIDIA GPU (NVML active)");
+            crate::kprintln!("-> [BOOT] Hardware Detected: NVIDIA GPU (NVML VRAM Accounting Active)");
             Box::new(nvml)
         },
-        Err(e) => {
-            crate::kprintln!("-> [BOOT] NVML not available ({}). Falling back to Mock GPU Provider.", e);
-            Box::new(ore_core::scheduler::MockGpuMemoryProvider::default())
+        Err(_) => {
+            crate::kprintln!("-> [BOOT] Hardware Detected: Apple Silicon / CPU (Unified Memory Accounting Active)");
+            Box::new(ore_core::scheduler::SystemMemoryProvider::new())
         }
     };
 
