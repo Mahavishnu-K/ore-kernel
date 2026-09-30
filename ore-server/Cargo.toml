@@ -15,3 +15,7 @@ toml = "1.0.7"
 tokio-stream = "0.1.18"
 walkdir = "2.5.0"
 regex = "1.12.3"
+
+[features]
+default = []
+cuda = ["ore-core/cuda"]

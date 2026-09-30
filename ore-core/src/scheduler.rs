@@ -27,29 +27,39 @@ pub trait GpuMemoryProvider: Send + Sync {
     fn free_vram_mb(&self) -> u64;
 }
 
-pub struct MockGpuMemoryProvider {
-    pub total_vram: u64,
-    pub used_vram: u64,
+use sysinfo::System;
+use std::sync::Mutex as StdMutex;
+
+// THE UNIVERSAL FALLBACK (For Apple Metal, Intel, AMD, and CPU-only Cloud Servers)
+pub struct SystemMemoryProvider {
+    sys: StdMutex<System>,
 }
 
-impl Default for MockGpuMemoryProvider {
-    fn default() -> Self {
+impl SystemMemoryProvider {
+    pub fn new() -> Self {
+        let mut sys = System::new_all();
+        sys.refresh_memory();
         Self {
-            total_vram: 24576, // 24GB default mock
-            used_vram: 1024,   // 1GB base usage mock
+            sys: StdMutex::new(sys),
         }
     }
 }
 
-impl GpuMemoryProvider for MockGpuMemoryProvider {
+impl GpuMemoryProvider for SystemMemoryProvider {
     fn total_vram_mb(&self) -> u64 {
-        self.total_vram
+        let mut sys = self.sys.lock().unwrap();
+        sys.refresh_memory();
+        sys.total_memory() / (1024 * 1024)
     }
     fn used_vram_mb(&self) -> u64 {
-        self.used_vram
+        let mut sys = self.sys.lock().unwrap();
+        sys.refresh_memory();
+        sys.used_memory() / (1024 * 1024)
     }
     fn free_vram_mb(&self) -> u64 {
-        self.total_vram.saturating_sub(self.used_vram)
+        let mut sys = self.sys.lock().unwrap();
+        sys.refresh_memory();
+        sys.available_memory() / (1024 * 1024)
     }
 }
 
@@ -151,6 +161,7 @@ struct GpuState {
     registry: ModelRegistry,
     memory_provider: Box<dyn GpuMemoryProvider>,
     accountant: MemoryAccountant,
+    active_app_id: Option<String>,
 }
 
 pub struct GpuScheduler {
@@ -168,6 +179,7 @@ impl GpuScheduler {
                 registry: ModelRegistry::new(),
                 memory_provider,
                 accountant: MemoryAccountant::new(),
+                active_app_id: None,
             })),
             driver,
             config,
@@ -181,47 +193,102 @@ impl GpuScheduler {
             .await
             .unwrap();
 
-        let mut state = self.state.lock().await;
+        let model_path = crate::get_ore_dir().join("models").join(requested_model).join("model.gguf");
 
-        let mut required_kv_cache_mb = 256; // Fallback heuristic
+        let mut estimated_model_mb = 2048;
+        let mut required_kv_cache_mb = 256;
+
+        if let Ok(mut file) = std::fs::File::open(&model_path) {
+            // 1. EXACT MODEL WEIGHTS SIZE
+            if let Ok(meta) = file.metadata() {
+                estimated_model_mb = meta.len() / (1024 * 1024);
+            }
+
+            // 2. EXACT KV-CACHE SIZE CALCULATION
+            if let Ok(content) = candle_core::quantized::gguf_file::Content::read(&mut file) {
+                let md_get_u32 = |s: &str| -> Option<u32> {
+                    content.metadata.get(s).and_then(|v| v.to_u32().ok())
+                };
+
+                let arch = content.metadata.get("general.architecture")
+                    .and_then(|v| v.to_string().ok())
+                    .cloned()
+                    .unwrap_or_else(|| "llama".to_string());
+
+                // Extract the physical network dimensions
+                let layers = md_get_u32(&format!("{}.block_count", arch)).unwrap_or(32) as u64;
+                let kv_heads = md_get_u32(&format!("{}.attention.head_count_kv", arch)).unwrap_or(8) as u64;
+
+                let head_dim = if let Some(hd) = md_get_u32(&format!("{}.attention.key_length", arch)) {
+                    hd as u64
+                } else {
+                    let heads = md_get_u32(&format!("{}.attention.head_count", arch)).unwrap_or(32) as u64;
+                    let emb_len = md_get_u32(&format!("{}.embedding_length", arch)).unwrap_or(4096) as u64;
+                    emb_len / heads
+                };
+
+                // Bytes per Token = 2 (K & V) * Layers * KV_Heads * Head_Dim * 2 (f16 bytes)
+                let bytes_per_token = 2 * layers * kv_heads * head_dim * 2;
+
+                // Multiply by the Manifest's Max Token Limit!
+                let max_tokens = 8192; // Default limit fallback
+                let total_kv_bytes = bytes_per_token * max_tokens;
+
+                required_kv_cache_mb = (total_kv_bytes / (1024 * 1024)).max(1); // Ensure at least 1MB
+
+                crate::kprintln!(
+                    "-> [SCHEDULER MATH] Model: {} | Layers: {} | KV Heads: {} | Head Dim: {} | Max Tokens: {}",
+                    requested_model, layers, kv_heads, head_dim, max_tokens
+                );
+                crate::kprintln!("-> [SCHEDULER MATH] Exact KV-Cache Requirement: {} MB", required_kv_cache_mb);
+            }
+        }
+
         if let Some(override_mb) = self.config.model_overrides.get(requested_model) {
             required_kv_cache_mb = *override_mb;
         }
-        
+
         let mut required_vram_mb = required_kv_cache_mb;
-        let is_cold_start = !state.registry.models.contains_key(requested_model);
-
-        let mut estimated_model_mb = 2048; // Fallback
-
-        if is_cold_start {
-            // Check driver for model sizes
-            if let Ok(models) = self.driver.get_running_models().await {
-                if let Some(vram_process) = models.iter().find(|m| m.model_name == requested_model) {
-                    estimated_model_mb = vram_process.size_vram_bytes / (1024 * 1024);
-                }
-            }
+        
+        let is_same_model = {
+            let state = self.state.lock().await;
+            state.registry.models.contains_key(requested_model)
+        };
+        
+        if !is_same_model {
             required_vram_mb += estimated_model_mb;
         }
 
-        // Admission Control & LRU Eviction
-        while !state.accountant.can_admit(&*state.memory_provider, required_vram_mb) {
-            let mut lru_model_id: Option<String> = None;
-            let mut oldest_time = Instant::now();
+        // Admission Control & LRU Eviction Loop
+        loop {
+            let lru_model_id = {
+                let state = self.state.lock().await;
+                if state.accountant.can_admit(&*state.memory_provider, required_vram_mb) {
+                    break;
+                }
 
-            for (id, model) in &state.registry.models {
-                if model.active_requests == 0 && model.status == ModelStatus::Loaded {
-                    if model.last_used <= oldest_time {
-                        oldest_time = model.last_used;
-                        lru_model_id = Some(id.clone());
+                let mut oldest_id = None;
+                let mut oldest_time = Instant::now();
+
+                for (id, model) in &state.registry.models {
+                    if model.active_requests == 0 && model.status == ModelStatus::Loaded {
+                        if model.last_used <= oldest_time {
+                            oldest_time = model.last_used;
+                            oldest_id = Some(id.clone());
+                        }
                     }
                 }
-            }
+                oldest_id
+            };
 
             if let Some(id) = lru_model_id {
                 println!("-> [SCHEDULER] Memory Pressure: Evicting idle model '{}'.", id);
+                // Lock is dropped! Safe to do slow I/O.
                 if let Err(e) = self.driver.unload_model(&id).await {
                     println!("-> [SCHEDULER] WARNING: Failed to unload model '{}': {}", id, e);
                 }
+                
+                let mut state = self.state.lock().await;
                 state.registry.models.remove(&id);
             } else {
                 return Err(format!(
@@ -231,14 +298,28 @@ impl GpuScheduler {
             }
         }
 
-        // Reserve memory for the incoming request
+        // Reacquire state lock for final operations
+        let mut state = self.state.lock().await;
+        
+        let is_same_model = state.registry.models.contains_key(requested_model);
+        let is_same_agent = state.active_app_id.as_deref() == Some(app_id);
+
         state.accountant.reserve(required_kv_cache_mb);
 
-        if is_cold_start {
-            println!(
-                "-> [SCHEDULER] Cold Start: Loading '{}' into VRAM for '{}'.",
-                requested_model, app_id
-            );
+        if is_same_model && is_same_agent {
+            println!("-> [SCHEDULER] Perfect Hit! '{}' is already loaded for Agent '{}'.", requested_model, app_id);
+            let model = state.registry.models.get_mut(requested_model).unwrap();
+            model.active_requests += 1;
+            model.last_used = Instant::now();
+        } else if is_same_model && !is_same_agent {
+            println!("-> [SCHEDULER] TIER 2: AGENT SWAP! Keep weights, swap KV-Cache for '{}'.", app_id);
+            state.active_app_id = Some(app_id.to_string());
+            let model = state.registry.models.get_mut(requested_model).unwrap();
+            model.active_requests += 1;
+            model.last_used = Instant::now();
+        } else {
+            println!("-> [SCHEDULER] TIER 3: COLD START. Loading '{}' into VRAM for '{}'.", requested_model, app_id);
+            state.active_app_id = Some(app_id.to_string());
             
             // Preload the model
             if let Err(e) = self.driver.preload_model(requested_model).await {
@@ -257,14 +338,6 @@ impl GpuScheduler {
             };
             
             state.registry.models.insert(requested_model.to_string(), new_model);
-        } else {
-            println!(
-                "-> [SCHEDULER] Hot Hit! '{}' is already loaded for Agent '{}'.",
-                requested_model, app_id
-            );
-            let model = state.registry.models.get_mut(requested_model).unwrap();
-            model.active_requests += 1;
-            model.last_used = Instant::now();
         }
 
         Ok(GpuLease {
@@ -277,7 +350,7 @@ impl GpuScheduler {
 
     /// Reconcile logical memory accounting with physical GPU memory
     pub async fn reconcile_memory(&self) {
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         let actual_used = state.memory_provider.used_vram_mb();
         
         let accounted: u64 = state.registry.models.values()
