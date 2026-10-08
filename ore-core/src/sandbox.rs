@@ -830,7 +830,10 @@ impl WasmSandbox {
         // Global Network Checks
         if !network_enabled {
             crate::kprintln!("-> [FIREWALL] Network access globally disabled.");
-            return Err((-1, "ORE Firewall: Network access globally disabled".to_string()));
+            return Err((
+                -1,
+                "ORE Firewall: Network access globally disabled".to_string(),
+            ));
         }
 
         // Security: Path Traversal Check
@@ -854,7 +857,10 @@ impl WasmSandbox {
 
         if !localhost_access && is_local {
             crate::kprintln!("-> [FIREWALL] Localhost access is disabled.");
-            return Err((-1, format!("ORE Firewall: Localhost access blocked for '{}'", host_only)));
+            return Err((
+                -1,
+                format!("ORE Firewall: Localhost access blocked for '{}'", host_only),
+            ));
         }
 
         // Domain & Method Whitelist Check
@@ -872,14 +878,23 @@ impl WasmSandbox {
                         method,
                         rule.allowed_methods
                     );
-                    return Err((-2, format!("ORE Firewall: Method '{}' not allowed for '{}'", method, host_only)));
+                    return Err((
+                        -2,
+                        format!(
+                            "ORE Firewall: Method '{}' not allowed for '{}'",
+                            method, host_only
+                        ),
+                    ));
                 }
             }
         }
 
         if !is_allowed {
             crate::kprintln!("-> [FIREWALL] Domain '{}' is not whitelisted.", host_only);
-            return Err((-1, format!("ORE Firewall: Domain '{}' is not whitelisted", host_only)));
+            return Err((
+                -1,
+                format!("ORE Firewall: Domain '{}' is not whitelisted", host_only),
+            ));
         }
 
         crate::kprintln!(
@@ -903,7 +918,11 @@ impl WasmSandbox {
         let http_method = match reqwest::Method::from_bytes(method.as_bytes()) {
             Ok(m) => m,
             Err(e) => {
-                crate::kprintln!("-> [SANDBOX HTTP ERROR] Invalid HTTP method '{}': {}", method, e);
+                crate::kprintln!(
+                    "-> [SANDBOX HTTP ERROR] Invalid HTTP method '{}': {}",
+                    method,
+                    e
+                );
                 return Err((-2, format!("Invalid HTTP method: {}", method)));
             }
         };
@@ -951,12 +970,12 @@ impl WasmSandbox {
 
         let mut cookies_map = std::collections::HashMap::new();
         for val in response.headers().get_all(reqwest::header::SET_COOKIE) {
-            if let Ok(val_str) = val.to_str() {
-                if let Some(cookie_pair) = val_str.split(';').next() {
-                    let mut parts = cookie_pair.splitn(2, '=');
-                    if let (Some(name), Some(value)) = (parts.next(), parts.next()) {
-                        cookies_map.insert(name.trim().to_string(), value.trim().to_string());
-                    }
+            if let Ok(val_str) = val.to_str()
+                && let Some(cookie_pair) = val_str.split(';').next()
+            {
+                let mut parts = cookie_pair.splitn(2, '=');
+                if let (Some(name), Some(value)) = (parts.next(), parts.next()) {
+                    cookies_map.insert(name.trim().to_string(), value.trim().to_string());
                 }
             }
         }
