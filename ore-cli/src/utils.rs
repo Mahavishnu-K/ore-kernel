@@ -1025,7 +1025,7 @@ pub fn build_secure_client() -> Client {
         "../ore-kernel.token",
         "../ore-server/ore-kernel.token",
     ];
-    
+
     let mut auth_token = String::new();
     for path in token_paths.iter() {
         if let Ok(t) = fs::read_to_string(path) {
@@ -1033,7 +1033,7 @@ pub fn build_secure_client() -> Client {
             break;
         }
     }
-    
+
     if auth_token.is_empty() {
         println!(
             "{} FATAL: Could not read Kernel Security Token.",

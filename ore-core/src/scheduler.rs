@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use std::sync::Mutex as StdMutex;
 use std::time::Instant;
+use sysinfo::System;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelStatus {
@@ -27,9 +29,6 @@ pub trait GpuMemoryProvider: Send + Sync {
     fn free_vram_mb(&self) -> u64;
 }
 
-use sysinfo::System;
-use std::sync::Mutex as StdMutex;
-
 // THE UNIVERSAL FALLBACK (For Apple Metal, Intel, AMD, and CPU-only Cloud Servers)
 pub struct SystemMemoryProvider {
     sys: StdMutex<System>,
@@ -42,6 +41,12 @@ impl SystemMemoryProvider {
         Self {
             sys: StdMutex::new(sys),
         }
+    }
+}
+
+impl Default for SystemMemoryProvider {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -77,26 +82,26 @@ impl NvmlGpuMemoryProvider {
 
 impl GpuMemoryProvider for NvmlGpuMemoryProvider {
     fn total_vram_mb(&self) -> u64 {
-        if let Ok(device) = self.nvml.device_by_index(self.device_index) {
-            if let Ok(info) = device.memory_info() {
-                return info.total / (1024 * 1024);
-            }
+        if let Ok(device) = self.nvml.device_by_index(self.device_index)
+            && let Ok(info) = device.memory_info()
+        {
+            return info.total / (1024 * 1024);
         }
         0
     }
     fn used_vram_mb(&self) -> u64 {
-        if let Ok(device) = self.nvml.device_by_index(self.device_index) {
-            if let Ok(info) = device.memory_info() {
-                return info.used / (1024 * 1024);
-            }
+        if let Ok(device) = self.nvml.device_by_index(self.device_index)
+            && let Ok(info) = device.memory_info()
+        {
+            return info.used / (1024 * 1024);
         }
         0
     }
     fn free_vram_mb(&self) -> u64 {
-        if let Ok(device) = self.nvml.device_by_index(self.device_index) {
-            if let Ok(info) = device.memory_info() {
-                return info.free / (1024 * 1024);
-            }
+        if let Ok(device) = self.nvml.device_by_index(self.device_index)
+            && let Ok(info) = device.memory_info()
+        {
+            return info.free / (1024 * 1024);
         }
         0
     }
@@ -120,7 +125,9 @@ impl MemoryAccountant {
         memory_provider: &dyn GpuMemoryProvider,
         required_vram_mb: u64,
     ) -> bool {
-        let available = memory_provider.free_vram_mb().saturating_sub(self.reserved_vram_mb);
+        let available = memory_provider
+            .free_vram_mb()
+            .saturating_sub(self.reserved_vram_mb);
         available >= required_vram_mb + self.safety_margin_mb
     }
 
@@ -133,6 +140,11 @@ impl MemoryAccountant {
     }
 }
 
+impl Default for MemoryAccountant {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 pub struct ModelRegistry {
     pub models: HashMap<String, LoadedModel>,
 }
@@ -145,16 +157,15 @@ impl ModelRegistry {
     }
 }
 
-pub struct SchedulerConfig {
-    pub model_overrides: HashMap<String, u64>, // KV cache MB per 1k context
+impl Default for ModelRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-impl Default for SchedulerConfig {
-    fn default() -> Self {
-        Self {
-            model_overrides: HashMap::new(),
-        }
-    }
+#[derive(Default)]
+pub struct SchedulerConfig {
+    pub model_overrides: HashMap<String, u64>, // KV cache MB per 1k context
 }
 
 struct GpuState {
@@ -172,7 +183,11 @@ pub struct GpuScheduler {
 }
 
 impl GpuScheduler {
-    pub fn new(driver: Arc<dyn crate::driver::InferenceDriver>, memory_provider: Box<dyn GpuMemoryProvider>, config: SchedulerConfig) -> Self {
+    pub fn new(
+        driver: Arc<dyn crate::driver::InferenceDriver>,
+        memory_provider: Box<dyn GpuMemoryProvider>,
+        config: SchedulerConfig,
+    ) -> Self {
         Self {
             execution_lock: Arc::new(Semaphore::new(32)),
             state: Arc::new(Mutex::new(GpuState {
@@ -186,14 +201,21 @@ impl GpuScheduler {
         }
     }
 
-    pub async fn request_gpu(&self, requested_model: &str, app_id: &str) -> Result<GpuLease, String> {
+    pub async fn request_gpu(
+        &self,
+        requested_model: &str,
+        app_id: &str,
+    ) -> Result<GpuLease, String> {
         // Keep the global execution lock as per the plan
         let permit = Arc::clone(&self.execution_lock)
             .acquire_owned()
             .await
             .unwrap();
 
-        let model_path = crate::get_ore_dir().join("models").join(requested_model).join("model.gguf");
+        let model_path = crate::get_ore_dir()
+            .join("models")
+            .join(requested_model)
+            .join("model.gguf");
 
         let mut estimated_model_mb = 2048;
         let mut required_kv_cache_mb = 256;
@@ -210,22 +232,28 @@ impl GpuScheduler {
                     content.metadata.get(s).and_then(|v| v.to_u32().ok())
                 };
 
-                let arch = content.metadata.get("general.architecture")
+                let arch = content
+                    .metadata
+                    .get("general.architecture")
                     .and_then(|v| v.to_string().ok())
                     .cloned()
                     .unwrap_or_else(|| "llama".to_string());
 
                 // Extract the physical network dimensions
                 let layers = md_get_u32(&format!("{}.block_count", arch)).unwrap_or(32) as u64;
-                let kv_heads = md_get_u32(&format!("{}.attention.head_count_kv", arch)).unwrap_or(8) as u64;
+                let kv_heads =
+                    md_get_u32(&format!("{}.attention.head_count_kv", arch)).unwrap_or(8) as u64;
 
-                let head_dim = if let Some(hd) = md_get_u32(&format!("{}.attention.key_length", arch)) {
-                    hd as u64
-                } else {
-                    let heads = md_get_u32(&format!("{}.attention.head_count", arch)).unwrap_or(32) as u64;
-                    let emb_len = md_get_u32(&format!("{}.embedding_length", arch)).unwrap_or(4096) as u64;
-                    emb_len / heads
-                };
+                let head_dim =
+                    if let Some(hd) = md_get_u32(&format!("{}.attention.key_length", arch)) {
+                        hd as u64
+                    } else {
+                        let heads = md_get_u32(&format!("{}.attention.head_count", arch))
+                            .unwrap_or(32) as u64;
+                        let emb_len = md_get_u32(&format!("{}.embedding_length", arch))
+                            .unwrap_or(4096) as u64;
+                        emb_len / heads
+                    };
 
                 // Bytes per Token = 2 (K & V) * Layers * KV_Heads * Head_Dim * 2 (f16 bytes)
                 let bytes_per_token = 2 * layers * kv_heads * head_dim * 2;
@@ -238,9 +266,16 @@ impl GpuScheduler {
 
                 crate::kprintln!(
                     "-> [SCHEDULER MATH] Model: {} | Layers: {} | KV Heads: {} | Head Dim: {} | Max Tokens: {}",
-                    requested_model, layers, kv_heads, head_dim, max_tokens
+                    requested_model,
+                    layers,
+                    kv_heads,
+                    head_dim,
+                    max_tokens
                 );
-                crate::kprintln!("-> [SCHEDULER MATH] Exact KV-Cache Requirement: {} MB", required_kv_cache_mb);
+                crate::kprintln!(
+                    "-> [SCHEDULER MATH] Exact KV-Cache Requirement: {} MB",
+                    required_kv_cache_mb
+                );
             }
         }
 
@@ -249,12 +284,12 @@ impl GpuScheduler {
         }
 
         let mut required_vram_mb = required_kv_cache_mb;
-        
+
         let is_same_model = {
             let state = self.state.lock().await;
             state.registry.models.contains_key(requested_model)
         };
-        
+
         if !is_same_model {
             required_vram_mb += estimated_model_mb;
         }
@@ -263,7 +298,10 @@ impl GpuScheduler {
         loop {
             let lru_model_id = {
                 let state = self.state.lock().await;
-                if state.accountant.can_admit(&*state.memory_provider, required_vram_mb) {
+                if state
+                    .accountant
+                    .can_admit(&*state.memory_provider, required_vram_mb)
+                {
                     break;
                 }
 
@@ -271,23 +309,30 @@ impl GpuScheduler {
                 let mut oldest_time = Instant::now();
 
                 for (id, model) in &state.registry.models {
-                    if model.active_requests == 0 && model.status == ModelStatus::Loaded {
-                        if model.last_used <= oldest_time {
-                            oldest_time = model.last_used;
-                            oldest_id = Some(id.clone());
-                        }
+                    if model.active_requests == 0
+                        && model.status == ModelStatus::Loaded
+                        && model.last_used <= oldest_time
+                    {
+                        oldest_time = model.last_used;
+                        oldest_id = Some(id.clone());
                     }
                 }
                 oldest_id
             };
 
             if let Some(id) = lru_model_id {
-                println!("-> [SCHEDULER] Memory Pressure: Evicting idle model '{}'.", id);
+                println!(
+                    "-> [SCHEDULER] Memory Pressure: Evicting idle model '{}'.",
+                    id
+                );
                 // Lock is dropped! Safe to do slow I/O.
                 if let Err(e) = self.driver.unload_model(&id).await {
-                    println!("-> [SCHEDULER] WARNING: Failed to unload model '{}': {}", id, e);
+                    println!(
+                        "-> [SCHEDULER] WARNING: Failed to unload model '{}': {}",
+                        id, e
+                    );
                 }
-                
+
                 let mut state = self.state.lock().await;
                 state.registry.models.remove(&id);
             } else {
@@ -300,27 +345,36 @@ impl GpuScheduler {
 
         // Reacquire state lock for final operations
         let mut state = self.state.lock().await;
-        
+
         let is_same_model = state.registry.models.contains_key(requested_model);
         let is_same_agent = state.active_app_id.as_deref() == Some(app_id);
 
         state.accountant.reserve(required_kv_cache_mb);
 
         if is_same_model && is_same_agent {
-            println!("-> [SCHEDULER] Perfect Hit! '{}' is already loaded for Agent '{}'.", requested_model, app_id);
+            println!(
+                "-> [SCHEDULER] Perfect Hit! '{}' is already loaded for Agent '{}'.",
+                requested_model, app_id
+            );
             let model = state.registry.models.get_mut(requested_model).unwrap();
             model.active_requests += 1;
             model.last_used = Instant::now();
         } else if is_same_model && !is_same_agent {
-            println!("-> [SCHEDULER] TIER 2: AGENT SWAP! Keep weights, swap KV-Cache for '{}'.", app_id);
+            println!(
+                "-> [SCHEDULER] TIER 2: AGENT SWAP! Keep weights, swap KV-Cache for '{}'.",
+                app_id
+            );
             state.active_app_id = Some(app_id.to_string());
             let model = state.registry.models.get_mut(requested_model).unwrap();
             model.active_requests += 1;
             model.last_used = Instant::now();
         } else {
-            println!("-> [SCHEDULER] TIER 3: COLD START. Loading '{}' into VRAM for '{}'.", requested_model, app_id);
+            println!(
+                "-> [SCHEDULER] TIER 3: COLD START. Loading '{}' into VRAM for '{}'.",
+                requested_model, app_id
+            );
             state.active_app_id = Some(app_id.to_string());
-            
+
             // Preload the model
             if let Err(e) = self.driver.preload_model(requested_model).await {
                 // Release reservation on failure
@@ -336,8 +390,11 @@ impl GpuScheduler {
                 last_used: Instant::now(),
                 status: ModelStatus::Loaded,
             };
-            
-            state.registry.models.insert(requested_model.to_string(), new_model);
+
+            state
+                .registry
+                .models
+                .insert(requested_model.to_string(), new_model);
         }
 
         Ok(GpuLease {
@@ -352,18 +409,29 @@ impl GpuScheduler {
     pub async fn reconcile_memory(&self) {
         let state = self.state.lock().await;
         let actual_used = state.memory_provider.used_vram_mb();
-        
-        let accounted: u64 = state.registry.models.values()
+
+        let accounted: u64 = state
+            .registry
+            .models
+            .values()
             .filter(|m| m.status == ModelStatus::Loaded)
             .map(|m| m.observed_load_delta_mb.unwrap_or(m.estimated_vram_mb))
-            .sum::<u64>() + state.accountant.reserved_vram_mb;
+            .sum::<u64>()
+            + state.accountant.reserved_vram_mb;
 
-        println!("-> [SCHEDULER] Reconciliation: Actual VRAM Used: {}MB | Accounted: {}MB", actual_used, accounted);
+        println!(
+            "-> [SCHEDULER] Reconciliation: Actual VRAM Used: {}MB | Accounted: {}MB",
+            actual_used, accounted
+        );
 
         let drift = (actual_used as i64) - (accounted as i64);
 
-        if drift.abs() > 1024 { // 1GB drift warning
-            println!("-> [SCHEDULER] WARNING: Large VRAM drift detected ({}MB).", drift);
+        if drift.abs() > 1024 {
+            // 1GB drift warning
+            println!(
+                "-> [SCHEDULER] WARNING: Large VRAM drift detected ({}MB).",
+                drift
+            );
         }
     }
 
@@ -372,14 +440,17 @@ impl GpuScheduler {
         let mut state = self.state.lock().await;
         println!("-> [SCHEDULER] ALERT: CUDA OOM detected! Reconciling state...");
         // Re-check real memory, drop failed models, maybe reclaim idle ones immediately
-        state.registry.models.retain(|_, model| model.status == ModelStatus::Loaded);
+        state
+            .registry
+            .models
+            .retain(|_, model| model.status == ModelStatus::Loaded);
     }
 
     pub async fn get_status(&self) -> String {
         let state = self.state.lock().await;
-        
+
         let mut status = format!(
-            "VRAM Free: {}MB, Reserved: {}MB\n", 
+            "VRAM Free: {}MB, Reserved: {}MB\n",
             state.memory_provider.free_vram_mb(),
             state.accountant.reserved_vram_mb
         );
@@ -411,7 +482,7 @@ impl Drop for GpuLease {
         let model_id = self.model.clone();
         let state = Arc::clone(&self.state);
         let reserved_kv_cache = self.reserved_kv_cache_mb;
-        
+
         // Decrement active requests and release reservation when the lease is dropped
         tokio::spawn(async move {
             let mut state = state.lock().await;
