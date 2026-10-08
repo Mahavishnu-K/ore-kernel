@@ -155,6 +155,15 @@ def main():
         // 5. OS & PROCESS
         console.log(`[OK] 'os' and 'process' linked (Platform: ${os.platform()}, PID: ${process.pid})`);
 
+        // Test 1: Raw ANSI Escape Codes
+        console.log("\x1b[32m[OK] Raw ANSI Green is working!\x1b[0m");
+        console.log("\x1b[31m[ERROR] Raw ANSI Red is working!\x1b[0m");
+        console.log("\x1b[34m[INFO] Raw ANSI Blue is working!\x1b[0m");
+
+        // Test 2: Verify Chalk compatibility checks
+        console.log("Stdout hasColors:", process.stdout.hasColors());
+        console.log("Color Depth:", process.stdout.getColorDepth());
+
         // 6. QUERYSTRING
         const qs = querystring.stringify({ os: 'ore', version: 1 });
         assert.strictEqual(qs, 'os=ore&version=1');
@@ -172,6 +181,7 @@ def main():
         console.error(err.stack);
     }
     """
+
     print("[*] Sending payload to ORE Kernel...\n")
     
     try:

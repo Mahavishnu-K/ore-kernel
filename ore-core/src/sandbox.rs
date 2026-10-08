@@ -56,13 +56,17 @@ impl Drop for TempDirGuard {
 
 struct ThreadJoinGuard {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    handle: Option<std::thread::JoinHandle<()>>,
+    crypto_handle: Option<std::thread::JoinHandle<()>>,
+    net_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for ThreadJoinGuard {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
+        if let Some(handle) = self.crypto_handle.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.net_handle.take() {
             let _ = handle.join();
         }
     }
@@ -191,6 +195,143 @@ impl WasmSandbox {
             }
         });
 
+        // ORE INCEPTION NETWORK PORTAL (For JS/Python VFS Routing)
+        let network_dir = host_tmp_dir.join(".ore_network");
+        std::fs::create_dir_all(&network_dir)?;
+
+        // Pre-create legacy registers for backward compatibility
+        let legacy_req = network_dir.join("req.json");
+        let legacy_res = network_dir.join("res.bin");
+
+        let _ = std::fs::write(&legacy_req, b"");
+        let _ = std::fs::write(&legacy_res, b"");
+
+        let net_watcher_dir = network_dir.clone();
+
+        let net_stop = stop_signal.clone();
+
+        let net_rules = rules.clone();
+        let net_enabled = network_enabled;
+        let net_localhost = localhost_access;
+        let net_closure_tmp = host_tmp_dir.clone();
+
+        let network_thread = std::thread::spawn(move || {
+            crate::kprintln!("-> [SANDBOX] Concurrent Network Portal Watcher started...");
+
+            #[derive(serde::Deserialize)]
+            struct JsFetch {
+                method: String,
+                url: String,
+                body: String,
+                filename: String,
+            }
+
+            while !net_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(entries) = std::fs::read_dir(&net_watcher_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if !path.is_file() {
+                            continue;
+                        }
+
+                        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+                            Some(name) => name.to_string(),
+                            None => continue,
+                        };
+
+                        // Match both concurrent 'req_<id>.json' and legacy 'req.json'
+                        let is_concurrent =
+                            file_name.starts_with("req_") && file_name.ends_with(".json");
+                        let is_legacy = file_name == "req.json";
+
+                        if !is_concurrent && !is_legacy {
+                            continue;
+                        }
+
+                        // Ensure file is populated
+                        if let Ok(meta) = std::fs::metadata(&path)
+                            && meta.len() > 0
+                            && let Ok(data) = std::fs::read_to_string(&path)
+                        {
+                            // Parse JSON safely
+                            let req = match serde_json::from_str::<JsFetch>(&data) {
+                                Ok(r) => r,
+                                Err(_) => continue, // Still being written by guest; retry next loop
+                            };
+
+                            // Determine target response file
+                            let res_path = if is_concurrent {
+                                let id_part = file_name
+                                    .strip_prefix("req_")
+                                    .and_then(|s| s.strip_suffix(".json"))
+                                    .unwrap_or("");
+
+                                // Delete request file immediately to acknowledge receipt
+                                let _ = std::fs::remove_file(&path);
+                                net_watcher_dir.join(format!("res_{}.bin", id_part))
+                            } else {
+                                // Legacy single register
+                                let _ = std::fs::write(&path, b""); // Clear register
+                                net_watcher_dir.join("res.bin")
+                            };
+
+                            // Clone parameters for background execution
+                            let rules_clone = net_rules.clone();
+                            let closure_tmp = net_closure_tmp.clone();
+
+                            // Spawn host worker for true concurrent downloading
+                            std::thread::spawn(move || {
+                                let parsed_url = match reqwest::Url::parse(&req.url) {
+                                    Ok(u) => u,
+                                    Err(e) => {
+                                        crate::kprintln!(
+                                            "-> [SANDBOX BLOCKED] Invalid URL format provided by Agent: {}",
+                                            e
+                                        );
+                                        let _ = std::fs::write(&res_path, b"1|Invalid URL");
+                                        return;
+                                    }
+                                };
+
+                                let host_only = parsed_url.host_str().unwrap_or("").to_string();
+
+                                crate::kprintln!(
+                                    "-> [CONCURRENT NET INTERCEPT] Processing {} to {}",
+                                    req.method.to_uppercase(),
+                                    host_only
+                                );
+
+                                let result_code = WasmSandbox::execute_ore_fetch(
+                                    &req.method.to_uppercase(),
+                                    &parsed_url,
+                                    req.body.as_bytes(),
+                                    &req.filename,
+                                    net_enabled,
+                                    net_localhost,
+                                    &rules_clone,
+                                    &closure_tmp,
+                                );
+
+                                let response_data = if result_code == 0 {
+                                    "0".to_string()
+                                } else {
+                                    format!("1|Kernel Error Code: {}", result_code)
+                                };
+
+                                // Atomic write for response
+                                let tmp_res = res_path.with_extension("tmp");
+                                let _ = std::fs::write(&tmp_res, response_data.as_bytes());
+                                let _ = std::fs::rename(&tmp_res, &res_path);
+                            });
+                        }
+                    }
+                }
+
+                // 1ms sleep preserves host CPU while keeping network latency minimal
+                std::thread::sleep(std::time::Duration::from_micros(1000));
+            }
+        });
+
         let _cleanup_guard = TempDirGuard {
             path: host_tmp_dir.clone(),
         };
@@ -205,28 +346,41 @@ impl WasmSandbox {
         }
 
         // We clone the path so the closure can use it
+        let closure_rules = rules.clone();
         let closure_tmp_dir = host_tmp_dir.clone();
 
         linker.func_wrap(
             "ore",
             "fetch",
             move |mut caller: Caller<'_, OreSandboxState>,
-                  method_ptr: u32, method_len: u32,
-                  url_ptr: u32, url_len: u32,
-                  body_ptr: u32, body_len: u32,
-                  filename_ptr: u32, filename_len: u32| -> i32 {
-
+                  method_ptr: u32,
+                  method_len: u32,
+                  url_ptr: u32,
+                  url_len: u32,
+                  body_ptr: u32,
+                  body_len: u32,
+                  filename_ptr: u32,
+                  filename_len: u32|
+                  -> i32 {
                 let memory = match caller.get_export("memory") {
                     Some(Extern::Memory(mem)) => mem,
                     _ => {
-                        crate::kprintln!("-> [SANDBOX ERROR] Failed to find 'memory' export. Invalid WASM.");
+                        crate::kprintln!(
+                            "-> [SANDBOX ERROR] Failed to find 'memory' export. Invalid WASM."
+                        );
                         return -1;
                     }
                 };
 
                 // Helper closure to safely read a byte array from WASM memory
-                let read_bytes = |mem: &Memory, caller: &mut Caller<'_, OreSandboxState>, ptr: u32, len: u32| -> Option<Vec<u8>> {
-                    if len == 0 { return Some(vec![]); }
+                let read_bytes = |mem: &Memory,
+                                  caller: &mut Caller<'_, OreSandboxState>,
+                                  ptr: u32,
+                                  len: u32|
+                 -> Option<Vec<u8>> {
+                    if len == 0 {
+                        return Some(vec![]);
+                    }
                     let data = mem.data(caller);
                     let start = ptr as usize;
                     let end = start.checked_add(len as usize)?;
@@ -240,37 +394,40 @@ impl WasmSandbox {
                 };
 
                 // Helper closure to safely convert a byte array to a string from WASM memory
-                let read_string = |mem: &Memory, caller: &mut Caller<'_, OreSandboxState>, ptr: u32, len: u32| -> Option<String> {
+                let read_string = |mem: &Memory,
+                                   caller: &mut Caller<'_, OreSandboxState>,
+                                   ptr: u32,
+                                   len: u32|
+                 -> Option<String> {
                     let bytes = read_bytes(mem, caller, ptr, len)?;
                     String::from_utf8(bytes).ok()
                 };
 
                 // Extract the LIVE parameters from the Agent's code!
-                let requested_method = match read_string(&memory, &mut caller, method_ptr, method_len) {
+                let method = match read_string(&memory, &mut caller, method_ptr, method_len) {
                     Some(m) => m.to_uppercase(),
                     None => return -1, // Memory error
                 };
 
-                let raw_requested_url = match read_string(&memory, &mut caller, url_ptr, url_len) {
+                let url = match read_string(&memory, &mut caller, url_ptr, url_len) {
                     Some(u) => u,
                     None => return -1, // Memory error
                 };
 
-                let target_filename = match read_string(&memory, &mut caller, filename_ptr, filename_len) {
+                let filename = match read_string(&memory, &mut caller, filename_ptr, filename_len) {
                     Some(f) => f,
                     None => return -1, // Memory error
                 };
 
-                // Path Traversal Security: Prevent the guest from writing outside the tmp dir!
-                if target_filename.contains('/') || target_filename.contains('\\') || target_filename.contains("..") {
-                    crate::kprintln!("-> [SANDBOX ERROR] Invalid filename. Path traversal blocked.");
-                    return -1;
-                }
+                let body = read_bytes(&memory, &mut caller, body_ptr, body_len).unwrap_or_default();
 
-                let parsed_url = match reqwest::Url::parse(&raw_requested_url) {
+                let parsed_url = match reqwest::Url::parse(&url) {
                     Ok(u) => u,
                     Err(e) => {
-                        crate::kprintln!("-> [SANDBOX BLOCKED] Invalid URL format provided by Agent: {}", e);
+                        crate::kprintln!(
+                            "-> [SANDBOX BLOCKED] Invalid URL format provided by Agent: {}",
+                            e
+                        );
                         return -1; // 400 Bad Request
                     }
                 };
@@ -278,102 +435,21 @@ impl WasmSandbox {
                 let host_only = parsed_url.host_str().unwrap_or("");
 
                 crate::kprintln!(
-                    "-> [SANDBOX INTERCEPT] Guest requested {} to {}", 
-                    requested_method, host_only
+                    "-> [SANDBOX INTERCEPT] Guest requested {} to {}",
+                    method,
+                    host_only
                 );
 
-                if !network_enabled {
-                    crate::kprintln!("-> [SANDBOX BLOCKED] Network access globally disabled.");
-                    return -1; // 403 Forbidden
-                }
-
-                // Catch all common loopback/local addresses
-                let is_local = host_only == "localhost" 
-                    || host_only == "127.0.0.1" 
-                    || host_only == "0.0.0.0" 
-                    || host_only == "[::1]";
-
-                if !localhost_access && is_local {
-                    crate::kprintln!("-> [SANDBOX BLOCKED] Localhost access is disabled.");
-                    return -1; // 403 Forbidden
-                }
-
-                // Scan the Manifest Rules
-                let mut is_allowed = false;
-                for rule in &rules {
-                    if rule.domain == host_only || rule.domain == "*" {
-                        if rule.allowed_methods.contains(&requested_method.to_string()) || rule.allowed_methods.contains(&"*".to_string()) {
-                            is_allowed = true;
-                            break;
-                        } else {
-                            crate::kprintln!(
-                                "-> [SANDBOX BLOCKED] Domain matched, but Method '{}' is FORBIDDEN. (Allowed: {:?})", 
-                                requested_method, rule.allowed_methods
-                            );
-                            return -2; // 405 Method Not Allowed
-                        }
-                    }
-                }
-
-                if !is_allowed {
-                    crate::kprintln!("-> [SANDBOX BLOCKED] Domain '{}' is not whitelisted.", host_only);
-                    return -1;
-                }
-
-                crate::kprintln!("-> [SANDBOX APPROVED] Routing {} request to {} safely via ORE...", requested_method, raw_requested_url);
-
-                let client = match reqwest::blocking::Client::builder()
-                    .timeout(std::time::Duration::from_secs(30))
-                    .build()
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        crate::kprintln!("-> [SANDBOX HTTP ERROR] Could not build HTTP client: {}", e);
-                        return -3; // Network error
-                    }
-                };
-
-                let req_body = read_bytes(&memory, &mut caller, body_ptr, body_len).unwrap_or_default();
-
-                let request = match requested_method.as_str() {
-                    "GET" => client.get(&raw_requested_url),
-                    "POST" => client.post(&raw_requested_url).body(req_body),
-                    "PUT" => client.put(&raw_requested_url).body(req_body),
-                    "DELETE" => client.delete(&raw_requested_url),
-                    _ => return -2, // Method not allowed
-                };
-
-                let mut response = match request.send() {
-                    Ok(res) => res,
-                    Err(e) => {
-                        crate::kprintln!("-> [SANDBOX HTTP ERROR] {}", e);
-                        return -3; // Network error
-                    }
-                };
-
-                // ZERO-RAM STREAMING DIRECTLY TO THE SSD!
-                let file_dest = closure_tmp_dir.join(&target_filename);
-                let mut file =  match std::fs::File::create(&file_dest) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        crate::kprintln!(
-                            "-> [SANDBOX I/O ERROR] Error creating network request file: {}",
-                            e
-                        );
-                        return -4;
-                    }
-                };
-
-                // std::io::copy pulls bytes from the network and writes them straight to the disk.
-                // It NEVER loads the whole file into RAM!
-                if let Err(e) = std::io::copy(&mut response, &mut file) {
-                    crate::kprintln!("-> [SANDBOX I/O ERROR] Failed to save file: {}", e);
-                    return -4;
-                }
-
-                crate::kprintln!("-> [SANDBOX HTTP] Success. Saved response securely to VFS as '{}'.", target_filename);
-
-                0 // 200 OK!
+                WasmSandbox::execute_ore_fetch(
+                    &method,
+                    &parsed_url,
+                    &body,
+                    &filename,
+                    network_enabled,
+                    localhost_access,
+                    &closure_rules,
+                    &closure_tmp_dir,
+                )
             },
         )?;
 
@@ -477,7 +553,7 @@ impl WasmSandbox {
         // GLOBAL STANDARD LIBRARY MOUNT (For JS/TS Node.js API Polyfills)
         // We mount ~/.ore/runtimes/js_modules to /modules in the sandbox (Read-Only)
         if params.args.iter().any(|arg| arg == "quickjs") {
-            let js_modules_dir = crate::get_ore_dir().join("runtimes").join("js_modules");
+            let js_modules_dir = crate::get_ore_dir().join("runtimes").join("modules");
             if js_modules_dir.exists() {
                 let canon_modules =
                     std::fs::canonicalize(&js_modules_dir).unwrap_or(js_modules_dir);
@@ -645,7 +721,8 @@ impl WasmSandbox {
 
         let thread_guard = ThreadJoinGuard {
             stop: stop_signal.clone(),
-            handle: Some(crypto_thread),
+            crypto_handle: Some(crypto_thread),
+            net_handle: Some(network_thread),
         };
 
         let exec_result = start_func.call(&mut store, ());
@@ -696,5 +773,133 @@ impl WasmSandbox {
                 }
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_ore_fetch(
+        method: &str,
+        parsed_url: &reqwest::Url,
+        body: &[u8],
+        target_filename: &str,
+        network_enabled: bool,
+        localhost_access: bool,
+        rules: &[NetworkRule],
+        tmp_dir: &std::path::Path,
+    ) -> i32 {
+        // Global Network Checks
+        if !network_enabled {
+            crate::kprintln!("-> [FIREWALL] Network access globally disabled.");
+            return -1;
+        }
+
+        // Security: Path Traversal Check
+        let safe_filename = target_filename
+            .strip_prefix(".ore_network/")
+            .unwrap_or(target_filename);
+
+        if safe_filename.contains('/')
+            || safe_filename.contains('\\')
+            || safe_filename.contains("..")
+        {
+            crate::kprintln!("-> [SANDBOX ERROR] Invalid filename. Path traversal blocked.");
+            return -1;
+        }
+
+        let host_only = parsed_url.host_str().unwrap_or("");
+        let is_local = host_only == "localhost"
+            || host_only == "127.0.0.1"
+            || host_only == "0.0.0.0"
+            || host_only == "[::1]";
+
+        if !localhost_access && is_local {
+            crate::kprintln!("-> [FIREWALL] Localhost access is disabled.");
+            return -1;
+        }
+
+        // Domain & Method Whitelist Check
+        let mut is_allowed = false;
+        for rule in rules {
+            if rule.domain == host_only || rule.domain == "*" {
+                if rule.allowed_methods.contains(&method.to_string())
+                    || rule.allowed_methods.contains(&"*".to_string())
+                {
+                    is_allowed = true;
+                    break;
+                } else {
+                    crate::kprintln!(
+                        "-> [FIREWALL] Domain matched, but Method '{}' is FORBIDDEN. (Allowed: {:?})",
+                        method,
+                        rule.allowed_methods
+                    );
+                    return -2; // Method Not Allowed
+                }
+            }
+        }
+
+        if !is_allowed {
+            crate::kprintln!("-> [FIREWALL] Domain '{}' is not whitelisted.", host_only);
+            return -1;
+        }
+
+        crate::kprintln!(
+            "-> [SANDBOX APPROVED] Routing {} to {} safely via ORE...",
+            method,
+            parsed_url
+        );
+
+        // Execute Request
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                crate::kprintln!("-> [SANDBOX HTTP ERROR] Could not build HTTP client: {}", e);
+                return -3; // Network error
+            }
+        };
+
+        let request = match method {
+            "GET" => client.get(parsed_url.clone()),
+            "POST" => client.post(parsed_url.clone()).body(body.to_vec()),
+            "PUT" => client.put(parsed_url.clone()).body(body.to_vec()),
+            "DELETE" => client.delete(parsed_url.clone()),
+            _ => return -2, // Method Not Allowed
+        };
+
+        let mut response = match request.send() {
+            Ok(res) => res,
+            Err(e) => {
+                crate::kprintln!("-> [SANDBOX HTTP ERROR] {}", e);
+                return -3;
+            }
+        };
+
+        // Zero-RAM Streaming to VFS
+        let file_dest = tmp_dir.join(target_filename);
+        let mut file = match std::fs::File::create(&file_dest) {
+            Ok(f) => f,
+            Err(e) => {
+                crate::kprintln!(
+                    "-> [SANDBOX I/O ERROR] Error creating network request file: {}",
+                    e
+                );
+                return -4;
+            }
+        };
+
+        // std::io::copy pulls bytes from the network and writes them straight to the disk.
+        // It NEVER loads the whole file into RAM!
+        if let Err(e) = std::io::copy(&mut response, &mut file) {
+            crate::kprintln!("-> [SANDBOX I/O ERROR] Failed to save file: {}", e);
+            return -4;
+        }
+
+        crate::kprintln!(
+            "-> [SANDBOX HTTP] Success. Saved response securely to VFS as '{}'.",
+            target_filename
+        );
+
+        0 // 200 OK!
     }
 }

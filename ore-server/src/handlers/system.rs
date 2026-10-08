@@ -196,11 +196,6 @@ pub async fn execute_tool(
 
                     crate::kprintln!("-> [JIT PIP] Target directory: {}", cache_path);
 
-                    crate::kprintln!(
-                        "-> [JIT PIP] PATH: {}",
-                        std::env::var("PATH").unwrap_or_else(|_| "<PATH unavailable>".to_string())
-                    );
-
                     let mut pip_install = std::process::Command::new(python_cmd);
 
                     pip_install
@@ -230,8 +225,10 @@ pub async fn execute_tool(
                     }
 
                     // C-Extension Scanner (Fail-Fast Security)
-                    for entry in walkdir::WalkDir::new(&cache_dir) {
-                        let entry = entry.unwrap();
+                    for entry in walkdir::WalkDir::new(&cache_dir)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                    {
                         if entry.path().is_file() {
                             let ext = entry
                                 .path()
@@ -239,11 +236,19 @@ pub async fn execute_tool(
                                 .and_then(|e| e.to_str())
                                 .unwrap_or("");
                             if ["so", "pyd", "dylib", "dll"].contains(&ext) {
-                                let _ = fs::remove_dir_all(&cache_dir);
-                                return format!(
+                                crate::kprintln!(
                                     "KERNEL ALERT: The AI requested a package containing illegal C-Extensions ({}). Denied.",
                                     entry.path().display()
                                 );
+
+                                crate::kprintln!(
+                                    "-> [JIT PIP] Stripping host binary to force Pure Python fallback: {}",
+                                    entry.path().display()
+                                );
+
+                                // We don't crash! We just delete the illegal binary.
+                                // Python will gracefully fall back to pure .py files!
+                                let _ = std::fs::remove_file(entry.path());
                             }
                         }
                     }
@@ -256,9 +261,309 @@ pub async fn execute_tool(
                 dynamic_vfs_mounts.push(cache_dir.to_string_lossy().to_string());
             }
 
+            let mut final_script = String::new();
+
+            // We inject the Python VFS driver at the top of the script!
+            final_script.push_str(r#"
+import sys, os, json, time, random, asyncio, urllib.parse, selectors
+from asyncio import events
+
+# WASI ASYNCIO EVENT LOOP COMPATIBILITY SHIM (Bypasses socketpair completely)
+try:
+    class WasiSelector(selectors.BaseSelector):
+        def __init__(self):
+            super().__init__()
+            self._map = {}
+        def register(self, fileobj, events, data=None):
+            key = selectors.SelectorKey(fileobj, 0, events, data)
+            self._map[fileobj] = key
+            return key
+        def unregister(self, fileobj):
+            return self._map.pop(fileobj, None)
+        def select(self, timeout=None):
+            if timeout and timeout > 0:
+                time.sleep(timeout) # WASI poll_oneoff: Suspends VM without burning CPU fuel
+            return []
+        def get_map(self):
+            return self._map
+        def close(self):
+            self._map.clear()
+            super().close()
+
+    class WasiEventLoop(asyncio.SelectorEventLoop):
+        def __init__(self, selector=None):
+            if selector is None:
+                selector = WasiSelector()
+            super().__init__(selector)
+
+        def _make_self_pipe(self):
+            # No-op: WASI has no socketpair; self-pipe is not needed for single-threaded WASM
+            self._ssock = None
+            self._csock = None
+            self._internal_fds = 0
+
+        def _close_self_pipe(self):
+            pass
+
+        def _write_to_self(self):
+            pass
+
+    class WasiEventLoopPolicy(events.BaseDefaultEventLoopPolicy):
+        _loop_factory = WasiEventLoop
+
+    asyncio.set_event_loop_policy(WasiEventLoopPolicy())
+
+except Exception:
+    pass
+
+class ORE_Network_Portal:
+    @staticmethod
+    def _prepare_payload(method, url, kwargs):
+        headers = dict(kwargs.get('headers') or {})
+        data = kwargs.get('data', '')
+        json_data = kwargs.get('json', None)
+
+        if json_data is not None:
+            data = json.dumps(json_data)
+            headers['Content-Type'] = 'application/json'
+        elif isinstance(data, dict):
+            data = urllib.parse.urlencode(data)
+            headers.setdefault('Content-Type', 'application/x-www-form-urlencoded')
+
+        req_id = f"{int(time.time())}_{random.randint(0, 1000000)}"
+        target_filename = f".ore_network/dl_{req_id}.bin"
+        req_payload = json.dumps({
+            "method": method.upper(),
+            "url": str(url),
+            "headers": headers,
+            "body": str(data) if data else "",
+            "filename": target_filename
+        })
+
+        req_file = f'/ore_tmp/.ore_network/req_{req_id}.json'
+        res_file = f'/ore_tmp/.ore_network/res_{req_id}.bin'
+
+        return req_payload, req_file, res_file, target_filename
+
+    # Synchronous fetch
+    @staticmethod
+    def fetch(method, url, **kwargs):
+        req_payload, req_file, res_file, target_filename = ORE_Network_Portal._prepare_payload(method, url, kwargs)
+
+        with open(req_file, 'w') as f:
+            f.write(req_payload)
+
+        attempts = 0
+        while attempts < 3000:
+            raw_res = None
+            try:
+                if os.path.exists(res_file) and os.path.getsize(res_file) > 0:
+                    with open(res_file, 'rb') as f:
+                        raw_res = f.read()
+                    try: os.remove(res_file)
+                    except Exception: pass
+            except (OSError, IOError):
+                pass
+
+            # Checked OUTSIDE of try/except so firewall errors are NEVER swallowed!
+            if raw_res:
+                if raw_res[0:1] != b'0':
+                    raise Exception(f"ORE Firewall Blocked Request: {raw_res[1:].decode('utf-8', errors='ignore')}")
+                return ORE_Response(f"/ore_tmp/{target_filename}")
+
+            time.sleep(0.01)
+            attempts += 1
+
+        raise Exception(f"ORE Network Portal Timeout on {url}")
+
+    # Asynchronous fetch
+    @staticmethod
+    async def async_fetch(method, url, **kwargs):
+        req_payload, req_file, res_file, target_filename = ORE_Network_Portal._prepare_payload(method, url, kwargs)
+
+        with open(req_file, 'w') as f:
+            f.write(req_payload)
+
+        attempts = 0
+        while attempts < 3000:
+            raw_res = None
+            try:
+                if os.path.exists(res_file) and os.path.getsize(res_file) > 0:
+                    with open(res_file, 'rb') as f:
+                        raw_res = f.read()
+                    try: os.remove(res_file)
+                    except Exception: pass
+            except (OSError, IOError):
+                pass
+
+            if raw_res:
+                if raw_res[0:1] != b'0':
+                    raise Exception(f"ORE Firewall Blocked Request: {raw_res[1:].decode('utf-8', errors='ignore')}")
+                return ORE_Response(f"/ore_tmp/{target_filename}")
+
+            await asyncio.sleep(0.01)
+            attempts += 1
+
+        raise Exception(f"ORE Network Portal Timeout on {url}")
+
+
+class ORE_Response:
+    def __init__(self, path, status_code=200):
+        self.status_code = status_code
+        self.status = status_code
+        self.ok = (200 <= status_code < 300)
+        self.is_success = self.ok
+        self._path = path
+        self.headers = {'content-type': 'application/json'}
+        self.reason = "OK"
+        self.reason_phrase = "OK"
+
+    @property
+    def text(self):
+        with open(self._path, 'r', encoding='utf-8', errors='replace') as f: return f.read()
+
+    def json(self):
+        return json.loads(self.text)
+
+    @property
+    def content(self):
+        with open(self._path, 'rb') as f: return f.read()
+
+    def read(self):
+        return self.content
+
+    def raise_for_status(self):
+        if not self.ok:
+            raise Exception(f"HTTP Error: {self.status_code}")
+
+    # Supports both 'with' and 'async with' patterns
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    async def __aenter__(self): return self
+    async def __aexit__(self, *args): pass
+
+# TRANSPARENT 'requests' MODULE SHIM
+class ORE_Requests_Module:
+    @staticmethod
+    def request(method, url, **kwargs): return ORE_Network_Portal.fetch(method, url, **kwargs)
+    @staticmethod
+    def get(url, **kwargs): return ORE_Network_Portal.fetch('GET', url, **kwargs)
+    @staticmethod
+    def post(url, **kwargs): return ORE_Network_Portal.fetch('POST', url, **kwargs)
+    @staticmethod
+    def put(url, **kwargs): return ORE_Network_Portal.fetch('PUT', url, **kwargs)
+    @staticmethod
+    def delete(url, **kwargs): return ORE_Network_Portal.fetch('DELETE', url, **kwargs)
+    @staticmethod
+    def patch(url, **kwargs): return ORE_Network_Portal.fetch('PATCH', url, **kwargs)
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            self.headers = {}
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def request(self, method, url, **kwargs):
+            kw = dict(kwargs)
+            kw['headers'] = {**self.headers, **(kw.get('headers') or {})}
+            return ORE_Network_Portal.fetch(method, url, **kw)
+        def get(self, url, **kwargs): return self.request('GET', url, **kwargs)
+        def post(self, url, **kwargs): return self.request('POST', url, **kwargs)
+        def put(self, url, **kwargs): return self.request('PUT', url, **kwargs)
+        def delete(self, url, **kwargs): return self.request('DELETE', url, **kwargs)
+        def patch(self, url, **kwargs): return self.request('PATCH', url, **kwargs)
+
+    # Prevents crashes when scripts do: except requests.exceptions.RequestException:
+    class exceptions:
+        class RequestException(Exception): pass
+        class HTTPError(Exception): pass
+        class ConnectionError(Exception): pass
+        class Timeout(Exception): pass
+
+sys.modules['requests'] = ORE_Requests_Module()
+
+# TRANSPARENT 'httpx' MODULE SHIM (Sync Client + AsyncClient)
+class ORE_HTTPX_Module:
+    @staticmethod
+    def request(method, url, **kwargs): return ORE_Network_Portal.fetch(method, url, **kwargs)
+    @staticmethod
+    def get(url, **kwargs): return ORE_Network_Portal.fetch('GET', url, **kwargs)
+    @staticmethod
+    def post(url, **kwargs): return ORE_Network_Portal.fetch('POST', url, **kwargs)
+    @staticmethod
+    def put(url, **kwargs): return ORE_Network_Portal.fetch('PUT', url, **kwargs)
+    @staticmethod
+    def delete(url, **kwargs): return ORE_Network_Portal.fetch('DELETE', url, **kwargs)
+    @staticmethod
+    def patch(url, **kwargs): return ORE_Network_Portal.fetch('PATCH', url, **kwargs)
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            self.headers = dict(kwargs.get('headers') or {})
+            self.base_url = kwargs.get('base_url', '')
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def _build_url(self, url):
+            return f"{self.base_url.rstrip('/')}/{str(url).lstrip('/')}" if self.base_url else str(url)
+        def request(self, method, url, **kwargs):
+            kw = dict(kwargs)
+            kw['headers'] = {**self.headers, **(kw.get('headers') or {})}
+            return ORE_Network_Portal.fetch(method, self._build_url(url), **kw)
+        def get(self, url, **kwargs): return self.request('GET', url, **kwargs)
+        def post(self, url, **kwargs): return self.request('POST', url, **kwargs)
+        def put(self, url, **kwargs): return self.request('PUT', url, **kwargs)
+        def delete(self, url, **kwargs): return self.request('DELETE', url, **kwargs)
+        def patch(self, url, **kwargs): return self.request('PATCH', url, **kwargs)
+
+    class AsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.headers = dict(kwargs.get('headers') or {})
+            self.base_url = kwargs.get('base_url', '')
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        def _build_url(self, url):
+            return f"{self.base_url.rstrip('/')}/{str(url).lstrip('/')}" if self.base_url else str(url)
+        async def request(self, method, url, **kwargs):
+            kw = dict(kwargs)
+            kw['headers'] = {**self.headers, **(kw.get('headers') or {})}
+            return await ORE_Network_Portal.async_fetch(method, self._build_url(url), **kw)
+        async def get(self, url, **kwargs): return await self.request('GET', url, **kwargs)
+        async def post(self, url, **kwargs): return await self.request('POST', url, **kwargs)
+        async def put(self, url, **kwargs): return await self.request('PUT', url, **kwargs)
+        async def delete(self, url, **kwargs): return await self.request('DELETE', url, **kwargs)
+        async def patch(self, url, **kwargs): return await self.request('PATCH', url, **kwargs)
+
+    class HTTPError(Exception): pass
+    class RequestError(Exception): pass
+
+sys.modules['httpx'] = ORE_HTTPX_Module()
+
+
+# TRANSPARENT 'urllib.request' SHIM
+import urllib.request
+class ORE_Urllib_Response:
+    def __init__(self, res): self.res = res
+    def read(self): return self.res.content
+    def decode(self, *args): return self.res.text
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+
+def ore_urlopen(url, data=None, timeout=None, **kwargs):
+    method = 'POST' if data else 'GET'
+    res = ORE_Network_Portal.fetch(method, url, data=data)
+    return ORE_Urllib_Response(res)
+
+urllib.request.urlopen = ore_urlopen
+
+# ==================== AI AGENT SCRIPT BEGINS ====================
+
+"#);
+
+            // Append the actual AI script below our hijack
+            final_script.push_str(script);
+
             run_args.push("python".to_string());
             run_args.push("/ore_tmp/inception.py".to_string()); // Point interpreter to VFS
-            inception_data = Some(("inception.py".to_string(), script.clone()));
+            inception_data = Some(("inception.py".to_string(), final_script));
         } else if lang == "javascript" || lang == "js" || lang == "ts" || lang == "typescript" {
             wasm_path = base_dir.join("runtimes").join("system-js.wasm");
             run_args.push("quickjs".to_string());
@@ -275,6 +580,7 @@ pub async fn execute_tool(
             let core_modules: std::collections::HashSet<&str> = [
                 "assert",
                 "buffer",
+                "constants",
                 "crypto",
                 "encoding",
                 "events",
@@ -282,6 +588,7 @@ pub async fn execute_tool(
                 "fs/promises",
                 "http",
                 "https",
+                "node-fetch",
                 "os",
                 "path",
                 "process",
@@ -331,10 +638,121 @@ pub async fn execute_tool(
                 })
                 .to_string();
 
-            let mut final_script = routed_script.clone();
+            // Inject an unhandled rejection catcher and full CJS require shim
+            let cjs_bridge = r#"
+import * as _ore_constants from '/modules/constants.js';
+import * as _ore_http from '/modules/http.js';
+import * as _ore_node_fetch from '/modules/node-fetch.js';
+import * as _ore_fs from '/modules/fs.js';
+import * as _ore_fs_promises from '/modules/fs/promises.js';
+import * as _ore_path from '/modules/path.js';
+import * as _ore_crypto from '/modules/crypto.js';
+import * as _ore_buffer from '/modules/buffer.js';
+import * as _ore_events from '/modules/events.js';
+import * as _ore_util from '/modules/util.js';
+import * as _ore_util_types from '/modules/util/types.js';
+import * as _ore_os from '/modules/os.js';
+import * as _ore_url from '/modules/url.js';
+import * as _ore_stream from '/modules/stream.js';
+import * as _ore_stream_promises from '/modules/stream/promises.js';
+import * as _ore_stream_consumers from '/modules/stream/consumers.js';
+import * as _ore_assert from '/modules/assert.js';
+import * as _ore_qs from '/modules/querystring.js';
+import * as _ore_process from '/modules/process.js';
+import * as _ore_string_decoder from '/modules/string_decoder.js';
+import * as _ore_timers from '/modules/timers.js';
+import * as _ore_timers_promises from '/modules/timers/promises.js';
+import * as _ore_punycode from '/modules/punycode.js';
+import * as _ore_encoding from '/modules/encoding.js';
+
+// Establish Node.js Core Globals
+globalThis.nextTick = (fn, ...args) => {
+    if (typeof queueMicrotask === 'function') {
+        queueMicrotask(() => fn(...args));
+    } else {
+        Promise.resolve().then(() => fn(...args));
+    }
+};
+globalThis.process = _ore_process.default || _ore_process;
+globalThis.Buffer = _ore_buffer.Buffer || _ore_buffer.default?.Buffer || _ore_buffer;
+globalThis.fetch = _ore_http.fetch;
+globalThis.Headers = _ore_node_fetch.Headers;
+globalThis.Request = _ore_node_fetch.Request;
+globalThis.Response = _ore_node_fetch.Response;
+globalThis.TextEncoder = _ore_encoding.TextEncoder || _ore_encoding.default?.TextEncoder;
+globalThis.TextDecoder = _ore_encoding.TextDecoder || _ore_encoding.default?.TextDecoder;
+globalThis.URL = _ore_url.URL || _ore_url.default?.URL;
+globalThis.URLSearchParams = _ore_url.URLSearchParams || _ore_url.default?.URLSearchParams;
+globalThis.setImmediate = globalThis.setImmediate || _ore_timers.setImmediate || ((fn, ...args) => setTimeout(fn, 0, ...args));
+globalThis.clearImmediate = globalThis.clearImmediate || _ore_timers.clearImmediate || clearTimeout;
+
+// The Master Dynamic Linker Table
+const _ore_c_mods = {
+    'constants': _ore_constants.default || _ore_constants,
+    'http': _ore_http,
+    'https': _ore_http,
+    "node-fetch": _ore_node_fetch,
+    'fs': _ore_fs,
+    'fs/promises': _ore_fs_promises,
+    'path': _ore_path,
+    'path/posix': _ore_path,
+    'crypto': _ore_crypto,
+    'buffer': _ore_buffer,
+    'events': _ore_events,
+    'util': _ore_util,
+    'util/types': _ore_util_types,
+    'os': _ore_os,
+    'url': _ore_url,
+    'stream': _ore_stream,
+    'stream/promises': _ore_stream_promises,
+    'stream/consumers': _ore_stream_consumers,
+    'assert': _ore_assert,
+    'querystring': _ore_qs,
+    'process': _ore_process,
+    'string_decoder': _ore_string_decoder,
+    'timers': _ore_timers,
+    'timers/promises': _ore_timers_promises,
+    'punycode': _ore_punycode,
+    'encoding': _ore_encoding,
+};
+
+// Fallback Proxy for Unsupported Optional Built-ins (e.g. tty, zlib, cluster)
+const _emptyProxy = new Proxy(() => false, {
+    get: (target, prop) => {
+        // Critical: Never report as a Thenable, or 'await require(...)' freezes forever!
+        if (prop === 'then') return undefined;
+        if (prop === Symbol.iterator) return undefined;
+        if (prop === 'isatty' || prop === 'isIP') return () => false;
+        if (prop === Symbol.toPrimitive) return () => '';
+        if (prop === 'default') return _emptyProxy;
+        return _emptyProxy;
+    },
+    apply: () => _emptyProxy,
+    construct: () => _emptyProxy
+});
+
+// Universal CommonJS require() Bridge
+globalThis.require = function(name) {
+    if (typeof name !== 'string') return _emptyProxy;
+
+    // Normalizes:
+    // 1. 'node:fs'           -> 'fs'
+    // 2. '/modules/fs.js'    -> 'fs' (Matches what your Rust regex injects!)
+    // 3. 'fs/promises'       -> 'fs/promises'
+    let clean = name.replace(/^node:/, '');
+    if (clean.startsWith('/modules/')) {
+        clean = clean.slice(9).replace(/\.js$/, '');
+    }
+
+    const m = _ore_c_mods[clean] || _ore_c_mods[name];
+    if (m) return m.default || m;
+    return _emptyProxy;
+};
+"#;
 
             // JAVASCRIPT: JIT NPM CACHING & ESBUILD INJECTION
-            if let Some(deps) = &payload.dependencies
+            // Direct expression evaluation (Eliminates unused assignment warning & redundant clone)
+            let final_script = if let Some(deps) = &payload.dependencies
                 && !deps.is_empty()
             {
                 crate::kprintln!("-> [JIT NPM] AI requested dependencies: {:?}", deps);
@@ -343,13 +761,10 @@ pub async fn execute_tool(
                 sorted.sort();
                 let req_string = sorted.join(",");
 
-                // Mathematically perfect SHA-256
                 let hash_bytes = KernelCrypto::sha256(req_string.as_bytes());
-                // Native Rust Hex Conversion
                 let req_hash: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
                 let cache_dir = base_dir.join("cache").join("npm").join(&req_hash);
 
-                // Download to Cache (Only if missing!)
                 if !cache_dir.exists() {
                     crate::kprintln!("-> [JIT NPM] Cache miss. Host OS downloading packages...");
                     fs::create_dir_all(&cache_dir).unwrap();
@@ -359,7 +774,6 @@ pub async fn execute_tool(
                     )
                     .unwrap();
 
-                    // THE BULLETPROOF WINDOWS SUBPROCESS LAUNCHER
                     let mut npm_install = if cfg!(target_os = "windows") {
                         let mut cmd = std::process::Command::new("cmd");
                         cmd.arg("/C").arg("npm").arg("install");
@@ -379,9 +793,7 @@ pub async fn execute_tool(
                         Ok(output) => output,
                         Err(e) => {
                             let _ = fs::remove_dir_all(&cache_dir);
-
                             crate::kprintln!("-> [JIT NPM ERROR] Failed to launch npm: {}", e);
-
                             return format!(
                                 "KERNEL ERROR: Failed to launch npm: {}. \
                                 Make sure Node.js/npm is installed and available in the ORE server PATH.",
@@ -392,13 +804,11 @@ pub async fn execute_tool(
 
                     if !npm_output.status.success() {
                         let _ = fs::remove_dir_all(&cache_dir);
-
                         crate::kprintln!(
                             "-> [JIT NPM ERROR] npm install failed.\nSTDOUT:\n{}\nSTDERR:\n{}",
                             String::from_utf8_lossy(&npm_output.stdout),
                             String::from_utf8_lossy(&npm_output.stderr),
                         );
-
                         return format!(
                             "KERNEL ERROR: Failed to install NPM dependencies:\n{}",
                             String::from_utf8_lossy(&npm_output.stderr)
@@ -408,15 +818,12 @@ pub async fn execute_tool(
                     crate::kprintln!("-> [JIT NPM] Cache hit! Bypassing npm install.");
                 }
 
-                // Fast Bundling (Always happens, takes < 5ms)
-                // Prevent Race Conditions with Unique IDs!
                 let run_id = uuid::Uuid::new_v4().to_string();
                 let entry_file = cache_dir.join(format!("index_{}.{}", run_id, ext));
                 let out_file = cache_dir.join(format!("bundle_{}.js", run_id));
 
                 fs::write(&entry_file, &routed_script).unwrap();
 
-                // THE BULLETPROOF WINDOWS SUBPROCESS LAUNCHER
                 let mut esbuild = if cfg!(target_os = "windows") {
                     let mut cmd = std::process::Command::new("cmd");
                     cmd.arg("/C").arg("npx").arg("esbuild");
@@ -430,18 +837,17 @@ pub async fn execute_tool(
                 esbuild
                     .current_dir(&cache_dir)
                     .args([
-                        &format!("index_{}.{}", run_id, ext), // Use the unique entry file!
+                        &format!("index_{}.{}", run_id, ext),
                         "--bundle",
                         "--format=esm",
+                        "--platform=neutral",
+                        "--main-fields=module,main",
                     ])
                     .arg(format!("--outfile={}", out_file.to_string_lossy()));
 
-                // THE NPM ALIAS ENGINE
-                // If a downloaded NPM package like 'axios' or 'pdf-lib' secretly calls require('fs')
-                // deep inside its own code, esbuild will intercept it and route it to our VFS polyfill!
                 for core in core_modules.iter() {
                     let polyfill_path = if *core == "https" {
-                        "/modules/http.js".to_string() // Route 'https' to our 'http.js' polyfill
+                        "/modules/http.js".to_string()
                     } else {
                         format!("/modules/{}.js", core)
                     };
@@ -449,16 +855,70 @@ pub async fn execute_tool(
                     esbuild.arg(format!("--alias:node:{}={}", core, polyfill_path));
                 }
 
-                // Tell esbuild that anything starting with /modules/ is external (already inside the WASM VFS)
+                let dummy_file = base_dir
+                    .join("runtimes")
+                    .join("js_modules")
+                    .join("_empty.js");
+
+                let _ = std::fs::write(
+                    &dummy_file,
+                    r#"
+const noop = () => false;
+export const isatty = noop;
+export const isIP = noop;
+const proxy = new Proxy(noop, {
+    get: (t, p) => (p === 'isatty' || p === 'isIP') ? noop : proxy,
+    apply: () => proxy,
+    construct: () => proxy
+});
+export default proxy;
+"#,
+                );
+
+                let unpolyfilled = [
+                    "tty",
+                    "zlib",
+                    "net",
+                    "tls",
+                    "dns",
+                    "child_process",
+                    "dgram",
+                    "readline",
+                    "http2",
+                    "vm",
+                    "v8",
+                    "worker_threads",
+                    "cluster",
+                    "repl",
+                    "perf_hooks",
+                    "async_hooks",
+                    "diagnostics_channel",
+                    "inspector",
+                    "trace_events",
+                    "wasi",
+                ];
+
+                for unp in unpolyfilled.iter() {
+                    esbuild.arg(format!("--alias:{}={}", unp, "/modules/_empty.js"));
+                    esbuild.arg(format!("--alias:node:{}={}", unp, "/modules/_empty.js"));
+                }
+
                 esbuild.arg("--external:/modules/*");
 
                 let build_res = esbuild.output().unwrap();
                 if build_res.status.success() {
-                    final_script = std::fs::read_to_string(&out_file).unwrap();
+                    let bundled_code = std::fs::read_to_string(&out_file).unwrap();
                     crate::kprintln!("-> [JIT NPM] Script successfully bundled.");
 
-                    let _ = std::fs::remove_file(entry_file);
-                    let _ = std::fs::remove_file(out_file);
+                    // let _ = std::fs::remove_file(entry_file);
+                    // let _ = std::fs::remove_file(out_file);
+                    let _ = fs::write(
+                        cache_dir.join(format!("final_bundle_{}.js", run_id)),
+                        format!("{}\n{}", cjs_bridge, bundled_code),
+                    );
+
+                    // Return the value directly to final_script
+                    format!("{}\n{}", cjs_bridge, bundled_code)
                 } else {
                     let _ = std::fs::remove_file(entry_file);
                     let _ = std::fs::remove_file(out_file);
@@ -467,9 +927,11 @@ pub async fn execute_tool(
                         String::from_utf8_lossy(&build_res.stderr)
                     );
                 }
-            }
+            } else {
+                format!("{}\n{}", cjs_bridge, routed_script)
+            };
 
-            run_args.push(format!("/ore_tmp/{}", filename)); // Point QuickJS to VFS
+            run_args.push(format!("/ore_tmp/{}", filename));
             inception_data = Some((filename, final_script));
         } else {
             return format!("KERNEL ERROR: Unsupported language '{}'", lang);

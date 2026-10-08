@@ -1,6 +1,7 @@
 /target/
 /.tmp_build/
 
+*.token
 *.gguf
 *.safetensors
 *.xml
@@ -13,6 +14,8 @@
 /models/
 /runtimes/
 /tools/
+/plugins/
 /memory/
 /bin/
+/tmp/
 /cache/
