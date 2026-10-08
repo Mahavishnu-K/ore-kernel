@@ -25,6 +25,11 @@ pub fn get_ore_dir() -> PathBuf {
         return PathBuf::from(custom_dir);
     }
 
+    let cur_path = PathBuf::from(".");
+    if cur_path.join("ore.toml").exists() {
+        return cur_path;
+    }
+
     let local_dev_path = PathBuf::from("..");
     if local_dev_path.join("ore.toml").exists() {
         return local_dev_path;
@@ -133,28 +138,8 @@ pub fn print_section_divider(num: &str, title: &str) {
 }
 
 pub fn get_system_engine() -> String {
-    let config_paths = [
-        "ore.toml",
-        "../ore.toml",
-        "ore-server/ore.toml",
-        "../ore-server/ore.toml",
-    ];
-
-    let mut contents = String::new();
-    for path in config_paths.iter() {
-        if let Ok(c) = fs::read_to_string(path) {
-            contents = c;
-            break;
-        }
-    }
-
-    if contents.is_empty() {
-        // Fallback to checking the ~/.ore directory
-        let ore_dir = get_ore_dir();
-        if let Ok(c) = fs::read_to_string(ore_dir.join("ore.toml")) {
-            contents = c;
-        }
-    }
+    let config_path = get_ore_dir().join("ore.toml");
+    let contents = fs::read_to_string(&config_path).unwrap_or_default();
 
     if contents.is_empty() {
         println!(
@@ -1019,20 +1004,10 @@ pub fn get_hf_token() -> Option<String> {
 }
 
 pub fn build_secure_client() -> Client {
-    let token_paths = [
-        "ore-kernel.token",
-        "ore-server/ore-kernel.token",
-        "../ore-kernel.token",
-        "../ore-server/ore-kernel.token",
-    ];
-
-    let mut auth_token = String::new();
-    for path in token_paths.iter() {
-        if let Ok(t) = fs::read_to_string(path) {
-            auth_token = t.trim().to_string();
-            break;
-        }
-    }
+    let token_path = get_ore_dir().join("ore-kernel.token");
+    let auth_token = fs::read_to_string(&token_path)
+        .map(|t| t.trim().to_string())
+        .unwrap_or_default();
 
     if auth_token.is_empty() {
         println!(
