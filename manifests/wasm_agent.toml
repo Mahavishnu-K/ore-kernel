@@ -27,6 +27,11 @@ domain = "jsonplaceholder.typicode.com"
 allowed_methods = ["*"]
 allowed_paths = ["*"]
 
+[[network.rules]]
+domain = "httpbin.org"
+allowed_methods = ["*"]
+allowed_paths = ["*"]
+
 [execution]
 can_execute_shell = false
 can_execute_wasm = true

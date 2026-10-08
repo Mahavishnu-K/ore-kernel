@@ -41,6 +41,14 @@ pub struct ExecuteParams {
     pub wasm_path: std::path::PathBuf,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OreResponseMeta {
+    pub status: u16,
+    pub status_text: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub cookies: std::collections::HashMap<String, String>,
+}
+
 struct TempDirGuard {
     path: std::path::PathBuf,
 }
@@ -222,6 +230,9 @@ impl WasmSandbox {
             struct JsFetch {
                 method: String,
                 url: String,
+                #[serde(default)]
+                headers: Option<std::collections::HashMap<String, String>>,
+                #[serde(default)]
                 body: String,
                 filename: String,
             }
@@ -259,8 +270,8 @@ impl WasmSandbox {
                                 Err(_) => continue, // Still being written by guest; retry next loop
                             };
 
-                            // Determine target response file
-                            let res_path = if is_concurrent {
+                            // Determine target response and metadata files
+                            let (res_path, meta_path) = if is_concurrent {
                                 let id_part = file_name
                                     .strip_prefix("req_")
                                     .and_then(|s| s.strip_suffix(".json"))
@@ -268,18 +279,24 @@ impl WasmSandbox {
 
                                 // Delete request file immediately to acknowledge receipt
                                 let _ = std::fs::remove_file(&path);
-                                net_watcher_dir.join(format!("res_{}.bin", id_part))
+                                (
+                                    net_watcher_dir.join(format!("res_{}.bin", id_part)),
+                                    net_watcher_dir.join(format!("res_{}.meta", id_part)),
+                                )
                             } else {
                                 // Legacy single register
                                 let _ = std::fs::write(&path, b""); // Clear register
-                                net_watcher_dir.join("res.bin")
+                                (
+                                    net_watcher_dir.join("res.bin"),
+                                    net_watcher_dir.join("res.meta"),
+                                )
                             };
 
                             // Clone parameters for background execution
                             let rules_clone = net_rules.clone();
                             let closure_tmp = net_closure_tmp.clone();
 
-                            // Spawn host worker for true concurrent downloading
+                            // Spawn host worker for true concurrent downloading & token streaming
                             std::thread::spawn(move || {
                                 let parsed_url = match reqwest::Url::parse(&req.url) {
                                     Ok(u) => u,
@@ -301,27 +318,40 @@ impl WasmSandbox {
                                     host_only
                                 );
 
-                                let result_code = WasmSandbox::execute_ore_fetch(
+                                let meta_path_clone = meta_path.clone();
+                                let res_path_clone = res_path.clone();
+
+                                let fetch_result = WasmSandbox::execute_ore_fetch(
                                     &req.method.to_uppercase(),
                                     &parsed_url,
+                                    req.headers.as_ref(),
                                     req.body.as_bytes(),
                                     &req.filename,
                                     net_enabled,
                                     net_localhost,
                                     &rules_clone,
                                     &closure_tmp,
+                                    move |meta| {
+                                        // Save metadata descriptor (status, headers, cookies) to res_<id>.meta
+                                        if let Ok(meta_json) = serde_json::to_string(meta) {
+                                            let tmp_meta = meta_path_clone.with_extension("tmp");
+                                            let _ = std::fs::write(&tmp_meta, meta_json.as_bytes());
+                                            let _ = std::fs::rename(&tmp_meta, &meta_path_clone);
+                                        }
+
+                                        // Signal success (headers ready) to sandbox so guest unblocks immediately!
+                                        let tmp_res = res_path_clone.with_extension("tmp");
+                                        let _ = std::fs::write(&tmp_res, b"0");
+                                        let _ = std::fs::rename(&tmp_res, &res_path_clone);
+                                    },
                                 );
 
-                                let response_data = if result_code == 0 {
-                                    "0".to_string()
-                                } else {
-                                    format!("1|Kernel Error Code: {}", result_code)
-                                };
-
-                                // Atomic write for response
-                                let tmp_res = res_path.with_extension("tmp");
-                                let _ = std::fs::write(&tmp_res, response_data.as_bytes());
-                                let _ = std::fs::rename(&tmp_res, &res_path);
+                                if let Err((_code, err_msg)) = fetch_result {
+                                    let response_data = format!("1|{}", err_msg);
+                                    let tmp_res = res_path.with_extension("tmp");
+                                    let _ = std::fs::write(&tmp_res, response_data.as_bytes());
+                                    let _ = std::fs::rename(&tmp_res, &res_path);
+                                }
                             });
                         }
                     }
@@ -440,16 +470,22 @@ impl WasmSandbox {
                     host_only
                 );
 
-                WasmSandbox::execute_ore_fetch(
+                let fetch_res = WasmSandbox::execute_ore_fetch(
                     &method,
                     &parsed_url,
+                    None,
                     &body,
                     &filename,
                     network_enabled,
                     localhost_access,
                     &closure_rules,
                     &closure_tmp_dir,
-                )
+                    |_| {},
+                );
+                match fetch_res {
+                    Ok(meta) => meta.status as i32,
+                    Err((code, _)) => code,
+                }
             },
         )?;
 
@@ -776,20 +812,25 @@ impl WasmSandbox {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn execute_ore_fetch(
+    pub fn execute_ore_fetch<F>(
         method: &str,
         parsed_url: &reqwest::Url,
+        headers: Option<&std::collections::HashMap<String, String>>,
         body: &[u8],
         target_filename: &str,
         network_enabled: bool,
         localhost_access: bool,
         rules: &[NetworkRule],
         tmp_dir: &std::path::Path,
-    ) -> i32 {
+        on_headers: F,
+    ) -> Result<OreResponseMeta, (i32, String)>
+    where
+        F: FnOnce(&OreResponseMeta),
+    {
         // Global Network Checks
         if !network_enabled {
             crate::kprintln!("-> [FIREWALL] Network access globally disabled.");
-            return -1;
+            return Err((-1, "ORE Firewall: Network access globally disabled".to_string()));
         }
 
         // Security: Path Traversal Check
@@ -802,7 +843,7 @@ impl WasmSandbox {
             || safe_filename.contains("..")
         {
             crate::kprintln!("-> [SANDBOX ERROR] Invalid filename. Path traversal blocked.");
-            return -1;
+            return Err((-1, "ORE Security: Path traversal blocked".to_string()));
         }
 
         let host_only = parsed_url.host_str().unwrap_or("");
@@ -813,7 +854,7 @@ impl WasmSandbox {
 
         if !localhost_access && is_local {
             crate::kprintln!("-> [FIREWALL] Localhost access is disabled.");
-            return -1;
+            return Err((-1, format!("ORE Firewall: Localhost access blocked for '{}'", host_only)));
         }
 
         // Domain & Method Whitelist Check
@@ -831,14 +872,14 @@ impl WasmSandbox {
                         method,
                         rule.allowed_methods
                     );
-                    return -2; // Method Not Allowed
+                    return Err((-2, format!("ORE Firewall: Method '{}' not allowed for '{}'", method, host_only)));
                 }
             }
         }
 
         if !is_allowed {
             crate::kprintln!("-> [FIREWALL] Domain '{}' is not whitelisted.", host_only);
-            return -1;
+            return Err((-1, format!("ORE Firewall: Domain '{}' is not whitelisted", host_only)));
         }
 
         crate::kprintln!(
@@ -849,34 +890,95 @@ impl WasmSandbox {
 
         // Execute Request
         let client = match reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
         {
             Ok(c) => c,
             Err(e) => {
                 crate::kprintln!("-> [SANDBOX HTTP ERROR] Could not build HTTP client: {}", e);
-                return -3; // Network error
+                return Err((-3, format!("Could not build HTTP client: {}", e)));
             }
         };
 
-        let request = match method {
-            "GET" => client.get(parsed_url.clone()),
-            "POST" => client.post(parsed_url.clone()).body(body.to_vec()),
-            "PUT" => client.put(parsed_url.clone()).body(body.to_vec()),
-            "DELETE" => client.delete(parsed_url.clone()),
-            _ => return -2, // Method Not Allowed
+        let http_method = match reqwest::Method::from_bytes(method.as_bytes()) {
+            Ok(m) => m,
+            Err(e) => {
+                crate::kprintln!("-> [SANDBOX HTTP ERROR] Invalid HTTP method '{}': {}", method, e);
+                return Err((-2, format!("Invalid HTTP method: {}", method)));
+            }
         };
+
+        let mut request = client.request(http_method, parsed_url.clone());
+
+        // Forward request headers
+        if let Some(hdrs) = headers {
+            for (k, v) in hdrs {
+                if let (Ok(h_name), Ok(h_val)) = (
+                    reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                    reqwest::header::HeaderValue::from_str(v),
+                ) {
+                    request = request.header(h_name, h_val);
+                }
+            }
+        }
+
+        if !body.is_empty() {
+            request = request.body(body.to_vec());
+        }
 
         let mut response = match request.send() {
             Ok(res) => res,
             Err(e) => {
                 crate::kprintln!("-> [SANDBOX HTTP ERROR] {}", e);
-                return -3;
+                return Err((-3, format!("HTTP request failed: {}", e)));
             }
         };
 
-        // Zero-RAM Streaming to VFS
+        // Extract Real Status & Response Headers & Cookies
+        let status_u16 = response.status().as_u16();
+        let status_text = response
+            .status()
+            .canonical_reason()
+            .unwrap_or("OK")
+            .to_string();
+
+        let mut headers_map = std::collections::HashMap::new();
+        for (k, v) in response.headers().iter() {
+            if let Ok(v_str) = v.to_str() {
+                headers_map.insert(k.as_str().to_string(), v_str.to_string());
+            }
+        }
+
+        let mut cookies_map = std::collections::HashMap::new();
+        for val in response.headers().get_all(reqwest::header::SET_COOKIE) {
+            if let Ok(val_str) = val.to_str() {
+                if let Some(cookie_pair) = val_str.split(';').next() {
+                    let mut parts = cookie_pair.splitn(2, '=');
+                    if let (Some(name), Some(value)) = (parts.next(), parts.next()) {
+                        cookies_map.insert(name.trim().to_string(), value.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        let meta = OreResponseMeta {
+            status: status_u16,
+            status_text: status_text.clone(),
+            headers: headers_map,
+            cookies: cookies_map,
+        };
+
+        // Notify caller that response metadata is ready (unblocks guest for real-time streaming)
+        on_headers(&meta);
+
+        // Streaming to VFS with flush
         let file_dest = tmp_dir.join(target_filename);
+        let done_dest = tmp_dir.join(format!("{}.done", target_filename));
+
+        if let Some(parent) = file_dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
         let mut file = match std::fs::File::create(&file_dest) {
             Ok(f) => f,
             Err(e) => {
@@ -884,22 +986,43 @@ impl WasmSandbox {
                     "-> [SANDBOX I/O ERROR] Error creating network request file: {}",
                     e
                 );
-                return -4;
+                let _ = std::fs::write(&done_dest, format!("error:{}", e));
+                return Err((-4, format!("Error creating file: {}", e)));
             }
         };
 
-        // std::io::copy pulls bytes from the network and writes them straight to the disk.
-        // It NEVER loads the whole file into RAM!
-        if let Err(e) = std::io::copy(&mut response, &mut file) {
-            crate::kprintln!("-> [SANDBOX I/O ERROR] Failed to save file: {}", e);
-            return -4;
+        use std::io::{Read, Write};
+        let mut buf = [0u8; 8192];
+        loop {
+            match response.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Err(e) = file.write_all(&buf[..n]) {
+                        crate::kprintln!("-> [SANDBOX I/O ERROR] Failed to save chunk: {}", e);
+                        let _ = std::fs::write(&done_dest, format!("error:{}", e));
+                        return Err((-4, format!("Failed to write chunk: {}", e)));
+                    }
+                    let _ = file.flush();
+                }
+                Err(e) => {
+                    crate::kprintln!("-> [SANDBOX I/O ERROR] Stream interrupted: {}", e);
+                    let _ = std::fs::write(&done_dest, format!("error:{}", e));
+                    return Err((-3, format!("Stream interrupted: {}", e)));
+                }
+            }
         }
+        let _ = file.flush();
+
+        // Write stream completion marker
+        let _ = std::fs::write(&done_dest, b"ok");
 
         crate::kprintln!(
-            "-> [SANDBOX HTTP] Success. Saved response securely to VFS as '{}'.",
+            "-> [SANDBOX HTTP] Success ({} {}). Saved response securely to VFS as '{}'.",
+            status_u16,
+            status_text,
             target_filename
         );
 
-        0 // 200 OK!
+        Ok(meta)
     }
 }

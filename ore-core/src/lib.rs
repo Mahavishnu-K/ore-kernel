@@ -27,6 +27,11 @@ pub fn get_ore_dir() -> PathBuf {
         return PathBuf::from(custom_dir);
     }
 
+    let cur_path = PathBuf::from(".");
+    if cur_path.join("ore.toml").exists() {
+        return cur_path;
+    }
+
     let local_dev_path = PathBuf::from("..");
     if local_dev_path.join("ore.toml").exists() {
         return local_dev_path;
