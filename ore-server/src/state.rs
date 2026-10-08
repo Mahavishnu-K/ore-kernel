@@ -11,6 +11,13 @@ use tokio::sync::Mutex;
 pub struct OreConfig {
     pub system: SystemConfig,
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub models: std::collections::HashMap<String, ModelConfig>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ModelConfig {
+    pub kv_cache_mb_per_1k: Option<u64>,
 }
 
 #[derive(Deserialize, Clone)]

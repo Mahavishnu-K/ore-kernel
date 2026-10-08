@@ -61,10 +61,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sandbox = WasmSandbox::new().expect("FATAL: Failed to boot WASM Sandbox");
     let shared_sandbox = Arc::new(sandbox);
 
+    let mut scheduler_config = ore_core::scheduler::SchedulerConfig::default();
+    for (model_name, model_config) in &config.models {
+        if let Some(kv_override) = model_config.kv_cache_mb_per_1k {
+            scheduler_config.model_overrides.insert(model_name.clone(), kv_override);
+        }
+    }
+
+    let gpu_id: u32 = std::env::var("ORE_GPU_ID").unwrap_or("0".to_string()).parse().unwrap_or(0);
+    let memory_provider: Box<dyn ore_core::scheduler::GpuMemoryProvider> = match ore_core::scheduler::NvmlGpuMemoryProvider::new(gpu_id) {
+        Ok(nvml) => {
+            crate::kprintln!("-> [BOOT] Hardware Detected: NVIDIA GPU (NVML VRAM Accounting Active)");
+            Box::new(nvml)
+        },
+        Err(_) => {
+            crate::kprintln!("-> [BOOT] Hardware Detected: Apple Silicon / CPU (Unified Memory Accounting Active)");
+            Box::new(ore_core::scheduler::SystemMemoryProvider::new())
+        }
+    };
+
+    let scheduler = Arc::new(GpuScheduler::new(Arc::clone(&driver), memory_provider, scheduler_config));
+
     // configuration
     let shared_state = Arc::new(KernelState {
         driver,
-        scheduler: Arc::new(GpuScheduler::new()),
+        scheduler,
         embedder_lock: Arc::new(Mutex::new(())),
         registry: app_registry,
         semantic_bus: Arc::clone(&shared_semantic_bus),

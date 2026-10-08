@@ -25,7 +25,7 @@ This phase transforms ORE from an API proxy into a true bare-metal Memory Manage
 - [x] **True KV-Cache Paging (Virtual Memory for AI):**
   - *Goal:* Current JSON history swapping is safe but slow. We need instant suspend/resume.
   - *Implementation:* Intercept the physical KV-Cache tensors mid-generation inside the `NativeDriver`. Serialize them using `candle_core::safetensors` (or `bincode`/`rkyv`), write them directly to NVMe SSDs, and clear the VRAM. Agents can now "sleep" on the SSD with zero RAM footprint and wake up in milliseconds.
-- [ ] **VRAM Bin Packing (Multi-Tenancy):**
+- [x] **VRAM Bin Packing (Multi-Tenancy):**
   - *Goal:* Stop strictly evicting models if there is physical space available.
   - *Implementation:* Upgrade the `GpuScheduler` to read total available VRAM. If Agent A requests Qwen (0.4GB) and Agent B requests Llama (1.2GB) on an 8GB GPU, load them *alongside* each other for 0-second context switching.
 - [ ] **LoRA Multiplexing (Copy-On-Write for Intelligence):**

@@ -118,7 +118,7 @@ impl ActiveEngine {
         device: &Device,
     ) -> Result<Self> {
         let safe_folder_name = model_name.replace(":", "-");
-        let model_dir = Path::new("../models").join(&safe_folder_name);
+        let model_dir = crate::get_ore_dir().join("models").join(&safe_folder_name);
         let gguf_path = model_dir.join("model.gguf");
         let local_tokenizer_path = model_dir.join("tokenizer.json");
 

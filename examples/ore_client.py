@@ -18,6 +18,7 @@ import requests
 ORE_BASE_URL = os.environ.get("ORE_URL", "http://127.0.0.1:6767")
 TOKEN_PATHS = [
     os.path.join("..", "ore-server", "ore-kernel.token"),   # from examples/
+    os.path.join("..", "ore-kernel.token"),                 # from examples/ to root
     os.path.join("ore-server", "ore-kernel.token"),         # from repo root
     os.path.join("..", "..", "ore-server", "ore-kernel.token"),  # from examples/subdir/
     "ore-kernel.token",                                     # current dir
@@ -51,9 +52,10 @@ class OreClient:
 
     # ─── Inference ───────────────────────────────────────────────
 
-    def run(self, model: str, prompt: str, stream: bool = False) -> str:
+    def run(self, model: str, prompt: str, app_id: str = "openclaw", stream: bool = False) -> str:
         """Executes a prompt against the ORE Kernel."""
         payload = {
+            "app_id": app_id,
             "model": model,
             "prompt": prompt
         }
