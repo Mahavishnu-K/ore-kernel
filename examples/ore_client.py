@@ -12,17 +12,31 @@ Usage:
 import os
 import sys
 import requests
+from pathlib import Path
 
 # ─── Configuration ───────────────────────────────────────────────
 
 ORE_BASE_URL = os.environ.get("ORE_URL", "http://127.0.0.1:6767")
-TOKEN_PATHS = [
-    os.path.join("..", "ore-server", "ore-kernel.token"),   # from examples/
-    os.path.join("..", "ore-kernel.token"),                 # from examples/ to root
-    os.path.join("ore-server", "ore-kernel.token"),         # from repo root
-    os.path.join("..", "..", "ore-server", "ore-kernel.token"),  # from examples/subdir/
-    "ore-kernel.token",                                     # current dir
-]
+
+def get_ore_dir() -> Path:
+    # 1. Custom Environment Variable
+    if "ORE_DIR" in os.environ:
+        return Path(os.environ["ORE_DIR"])
+        
+    # 2. Iteratively search upwards for Workspace Root
+    current = Path.cwd()
+    while current != current.parent:
+        if (current / "ore.toml").exists():
+            return current
+        current = current.parent
+
+    # 3. Global Fallback (~/.ore)
+    home = Path.home()
+    ore_path = home / ".ore"
+    if not ore_path.exists():
+        ore_path.mkdir(parents=True, exist_ok=True)
+        
+    return ore_path
 
 
 class OreClient:
@@ -39,16 +53,14 @@ class OreClient:
     # ─── Authentication ──────────────────────────────────────────
 
     def _read_token(self) -> str:
-        for path in TOKEN_PATHS:
-            try:
-                with open(path, "r") as f:
-                    return f.read().strip()
-            except FileNotFoundError:
-                continue
-
-        print("ERROR: Could not find ore-kernel.token.")
-        print("Make sure the ORE Kernel is running (cargo run -p ore-server).")
-        sys.exit(1)
+        token_path = get_ore_dir() / "ore-kernel.token"
+        try:
+            with open(token_path, "r") as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            print(f"ERROR: Could not find token at {token_path}.")
+            print("Make sure the ORE Kernel is running (cargo run -p ore-server).")
+            sys.exit(1)
 
     # ─── Inference ───────────────────────────────────────────────
 

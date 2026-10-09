@@ -26,10 +26,9 @@ async fn main() {
     let cli = Cli::parse();
     let kernel_url = "http://127.0.0.1:6767";
 
-    let client = if !matches!(cli.command, Commands::Init) {
-        Some(build_secure_client())
-    } else {
-        None
+    let client = match &cli.command {
+        Commands::Init | Commands::MkTool { .. } => None,
+        _ => Some(build_secure_client()),
     };
 
     match &cli.command {

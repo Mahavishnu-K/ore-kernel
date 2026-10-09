@@ -1,3 +1,4 @@
+pub mod execution;
 pub mod handlers;
 pub mod middleware;
 pub mod payloads;
@@ -32,7 +33,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base_dir = ore_core::get_ore_dir();
 
     let session_token = Uuid::new_v4().to_string();
-    fs::write("ore-kernel.token", &session_token).expect("Failed to write security token.");
+    let token_path = base_dir.join("ore-kernel.token");
+    fs::write(&token_path, &session_token).expect("Failed to write security token.");
     kprintln!("-> [SECURITY] Master Token generated and secured to disk.");
 
     kprintln!("-> Sweeping /manifests for installed Apps...");
@@ -166,6 +168,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
-    let _ = fs::remove_file("ore-kernel.token");
+    let _ = fs::remove_file(base_dir.join("ore-kernel.token"));
     Ok(())
 }

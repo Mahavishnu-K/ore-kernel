@@ -58,5 +58,61 @@ pub struct ExecuteRequest {
     pub script: Option<String>,
     pub dependencies: Option<Vec<String>>,
 
+    // Native Shell Mode (Ring 2 / Host)
     pub shell_command: Option<String>,
+}
+
+impl ExecuteRequest {
+    pub fn execution_mode(&self) -> Result<ExecutionMode, &'static str> {
+        let has_tool = self.tool_name.is_some();
+        let has_script = self.script.is_some();
+        let has_shell = self.shell_command.is_some();
+
+        match has_tool as u8 + has_script as u8 + has_shell as u8 {
+            0 => Err("Empty execution request. Specify tool_name, script, or shell_command."),
+            1 => {
+                if let Some(tool) = &self.tool_name {
+                    Ok(ExecutionMode::Tool {
+                        name: tool.clone(),
+                        args: self.args.clone().unwrap_or_default(),
+                        input_data: self.input_data.clone(),
+                    })
+                } else if let Some(script) = &self.script {
+                    Ok(ExecutionMode::Script {
+                        language: self
+                            .language
+                            .clone()
+                            .unwrap_or_else(|| "python".to_string()),
+                        script: script.clone(),
+                        dependencies: self.dependencies.clone().unwrap_or_default(),
+                        input_data: self.input_data.clone(),
+                    })
+                } else if let Some(cmd) = &self.shell_command {
+                    Ok(ExecutionMode::Shell {
+                        command: cmd.clone(),
+                    })
+                } else {
+                    unreachable!()
+                }
+            }
+            _ => Err("Ambiguous request: choose exactly one mode (tool, script, or shell)."),
+        }
+    }
+}
+
+pub enum ExecutionMode {
+    Tool {
+        name: String,
+        args: Vec<String>,
+        input_data: Option<String>,
+    },
+    Script {
+        language: String,
+        script: String,
+        dependencies: Vec<String>,
+        input_data: Option<String>,
+    },
+    Shell {
+        command: String,
+    },
 }
