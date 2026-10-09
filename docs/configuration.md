@@ -72,7 +72,7 @@ channel = "1.93.0"
 ```toml
 [workspace]
 resolver = "2"
-members = ["ore-core", "ore-server", "ore-cli"]
+members = ["ore-core", "ore-server", "ore-cli", "ore-sys"]
 
 [profile.release]
 opt-level = 3        # Maximum optimization

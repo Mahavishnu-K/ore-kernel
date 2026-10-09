@@ -5,11 +5,13 @@
 | Subsystem | Source File | Description |
 |---|---|---|
 | [Context Firewall](./context-firewall.md) | `ore-core/src/firewall.rs` | 3-stage prompt security pipeline |
-| [GPU Scheduler](./gpu-scheduler.md) | `ore-core/src/scheduler.rs` | Semaphore-based scheduling with RAII leases |
-| [Memory Management](./memory-management.md) | `ore-core/src/memory.rs` | OS-style context persistence to disk |
+| [GPU Scheduler](./gpu-scheduler.md) | `ore-core/src/scheduler.rs` | Multi-tenant VRAM bin-packing, dynamic KV cache estimation & LRU eviction |
+| [Memory Management](./memory-management.md) | `ore-core/src/memory.rs` | OS-style context persistence & true KV-cache paging |
 | [IPC & Semantic Bus](./ipc-and-semantic-bus.md) | `ore-core/src/ipc.rs` | Agent messaging + vector memory database |
 | [Hardware Abstraction Layer](./hardware-abstraction-layer.md) | `ore-core/src/driver.rs` | Trait-based driver system for inference backends |
-| [Native Candle Engine](./native-candle-engine.md) | `ore-core/src/native/` | Pure-Rust GGUF inference + BERT embedder |
+| [Native Candle Engine](./native-candle-engine.md) | `ore-core/src/native/` | Pure-Rust GGUF inference + BERT/Nomic embedder |
+| [Polyglot Memory Fusion](./polyglot-memory-fusion.md) | `ore-core/src/linker/` | POSIX-compliant dynamic linker (`ore-ld`) & zero-copy FFI |
+| [Zero-Trust WASM Sandbox](./wasm-sandbox.md) | `ore-core/src/sandbox.rs` | Multi-mode execution (Tool/Script/Shell), AOT caching, network portal & VFS |
 
 ## How to Read These Docs
 

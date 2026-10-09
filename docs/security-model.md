@@ -153,24 +153,40 @@ An agent cannot read from, write to, or search a semantic pipe unless that pipe 
 
 ### Layer 6: Sandboxed Tool Execution (WASM)
 
-**Source:** [`ore-core/src/sandbox.rs`](../ore-core/src/sandbox.rs)
+**Source:** [`ore-core/src/sandbox.rs`](../ore-core/src/sandbox.rs) · [`ore-server/src/execution/`](../ore-server/src/execution/)
 
-When agents need to interact with the host system (e.g., executing commands or reading files), ORE forces execution through the **Console-Cartridge WASM Sandbox**, providing mathematical guarantees of host safety:
+When agents need to execute tools or autonomous scripts, ORE forces execution through the **Console-Cartridge WASM Sandbox**, providing mathematical guarantees of host safety:
 
 1. **Deterministic CPU Profiling (Fuel Limit):**
-   The sandbox injects a strict `50,000,000` instruction fuel limit via `wasmtime`. If the executed AI tool enters an infinite loop or attempts to hog the CPU, the sandbox automatically halts execution with an `Out of Fuel` trap.
-2. **Capability-Based File System (cap-std):**
-   The sandbox is completely blind to the `C:/` drive. It uses `cap-std` to safely map only manifest-approved host directories to an isolated `/workspace` guest path. 
+   The sandbox injects a strict instruction fuel limit via `wasmtime` (`[execution] max_cpu_instructions`, default `5,000,000,000`). If an AI script enters an infinite loop or CPU denial-of-service, the sandbox immediately halts execution with an `Out of Fuel` trap.
+2. **Capability-Based File System (`cap-std`):**
+   The sandbox is completely blind to host drive roots. It uses `cap-std` to map only manifest-approved directories to `/workspace` (with read-only paths strictly stripped of write permissions at the WASI boundary) and mounts an ephemeral `/ore_tmp` for temporary I/O.
 3. **I/O Trapping:**
-   Stdout and Stderr are caught by in-memory `WritePipes`, preventing rogue tools from hijacking the terminal output. Stdin can be passed programmatically. Output is safely extracted and returned in the HTTP API response.
-4. **Manifest Enforcement:**
-   Execution is structurally blocked unless the agent's manifest sets `can_execute_wasm = true` and the specific `.wasm` tool is listed in `allowed_tools` (or allowed via wildcard `"*"`). For autonomous scripts, the language must be in `allowed_language_runtimes`.
+   `stdout` and `stderr` are captured in memory via `WritePipes`, preventing rogue tools from hijacking the terminal. `stdin` is passed programmatically via `input_data`.
+4. **Zero-RAM AOT Verification (`.cwasm`):**
+   Compiled `.cwasm` modules are verified using OS filesystem metadata (`mtime`). Outdated modules are automatically purged and recompiled. Native machine code is `mmap`'d directly from the OS Page Cache with zero RAM bloat.
+5. **Manifest Enforcement:**
+   Execution is structurally blocked unless `can_execute_wasm = true`. Tools must appear in `allowed_tools` (or `"*"`), and script runtimes must appear in `allowed_language_runtimes`.
 
 ---
 
-### Layer 7: Raw Host Shell Execution (UNSAFE)
+### Layer 7: Egress Network Firewall & Layer 7 Portal
 
-If an agent requires direct access to the host machine bypassing the WASM sandbox (e.g. running `npm run dev` or `git commit`), ORE provides a raw shell execution mode via `payload.shell_command`.
+**Source:** [`ore-core/src/sandbox.rs`](../ore-core/src/sandbox.rs) · [`ore-server/shims/`](../ore-server/shims/)
+
+The WASM sandbox operates with **zero raw TCP/UDP socket access**. Network access is mediated through an asynchronous Layer 7 network proxy:
+
+1. **Strict Whitelist Filtering:** Outbound calls must match rules declared in `[[network.rules]]` (domain, allowed HTTP methods like `GET`/`POST` or `["*"]`, and path prefixes). Unmatched requests are blocked immediately with `403 Forbidden` / `-1`.
+2. **Localhost Isolation:** Requests to `127.0.0.1`, `localhost`, and internal IP addresses are blocked by default unless explicitly allowed by `allow_localhost_access = true`.
+3. **Path Traversal Protection:** Download targets written by network requests are sanitized to prevent directory traversal (`..`, `/`, `\`).
+4. **Zero-RAM Response Streaming:** Downloaded HTTP payloads are streamed directly to the ephemeral `/ore_tmp` directory on disk, preventing malicious agents from triggering Out-Of-Memory (OOM) crashes by fetching gigabytes into RAM.
+5. **Secure Runtime Shims:** Node.js (`commonjs.js`) and Python (`bootstrap.py`) shims intercept standard networking libraries (`fetch`, `requests`, `httpx`) and route them through the kernel portal safely.
+
+---
+
+### Layer 8: Raw Host Shell Execution (UNSAFE)
+
+If an agent requires direct access to the host machine bypassing the WASM sandbox (e.g., running `npm run dev` or `git commit`), ORE provides a raw shell execution mode via `payload.shell_command`.
 
 **This mode completely bypasses the WASM sandbox.** It is only allowed if `manifest.execution.can_execute_shell = true`. Due to the immense security risks, agents with this flag enabled are permanently marked as **UNSAFE** in the `ore ls --agents` dashboard.
 

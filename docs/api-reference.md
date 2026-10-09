@@ -224,7 +224,12 @@ SUCCESS: Memory for Agent 'my_agent' manually compacted.
 
 ### `POST /execute`
 
-Executes a pre-compiled `.wasm` tool (Fixed Tool Mode), runs an autonomous script (Inception Mode), OR executes a raw host shell command (Shell Mode) in the Zero-Trust Sandbox.
+Executes a pre-compiled `.wasm` tool (**Tool Mode**), runs an autonomous script (**Script Mode** / Inception), OR executes a raw host shell command (**Shell Mode**).
+
+Source: [`ore-server/src/execution/mod.rs`](../ore-server/src/execution/mod.rs)
+
+#### 1. Tool Mode ("Console Cartridges")
+Invokes a pre-compiled WASM binary in `tools/`. Requires `can_execute_wasm = true` and the tool listed in `allowed_tools`.
 
 ```bash
 curl -X POST \
@@ -234,37 +239,58 @@ curl -X POST \
        "app_id": "openclaw",
        "tool_name": "file_search",
        "args": ["--path", "/workspace"],
-       "input_data": "complex JSON input here"
+       "input_data": "optional STDIN data"
      }' \
      http://127.0.0.1:6767/execute
 ```
 
-**Request Body:**
-```json
-{
-  "app_id": "openclaw",
-  "tool_name": "file_search",
-  "args": ["--path", "/workspace"],
-  "input_data": "complex JSON input here",
-  "language": "python",
-  "script": "print('Hello Autonomous Mode')",
-  "shell_command": "echo 'Hello Host'"
-}
+#### 2. Script Mode ("Inception")
+Materializes and runs dynamic Python or JavaScript scripts inside the WASM sandbox using pre-compiled runtimes (`system-py.wasm`, `system-js.wasm`). Requires language in `allowed_language_runtimes`. Supports transparent dependencies handling.
+
+```bash
+curl -X POST \
+     -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "app_id": "wasm_agent",
+       "language": "python",
+       "script": "import requests\nr = requests.get(\"https://httpbin.org/get\")\nprint(r.status_code)",
+       "dependencies": ["requests"],
+       "input_data": "optional STDIN data"
+     }' \
+     http://127.0.0.1:6767/execute
 ```
+
+#### 3. Shell Mode (Raw Host Shell Bypass)
+Executes a raw host command directly. Requires `can_execute_shell = true` in the agent's manifest. **⚠️ Flags the agent as UNSAFE.**
+
+```bash
+curl -X POST \
+     -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "app_id": "terminal_user",
+       "shell_command": "git status --short"
+     }' \
+     http://127.0.0.1:6767/execute
+```
+
+#### Schema Reference
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `app_id` | string | ✅ | App manifest ID defining permissions (`can_execute_wasm`) |
-| `tool_name` | string | ❌ | Name of the tool in the `/tools` directory (must be in `allowed_tools`) |
-| `args` | string[] | ❌ | Command-line arguments to pass to the tool |
-| `input_data` | string | ❌ | Optional complex JSON/Text to pass into the tool via STDIN |
-| `language` | string | ❌ | Script language (`"python"`, `"js"`, `"javascript"`). Must be in `allowed_language_runtimes` |
-| `script` | string | ❌ | Raw script to execute autonomously via `system-py.wasm` or `system-js.wasm` |
-| `shell_command` | string | ❌ | Raw host shell command to execute (requires `can_execute_shell` to be true) |
+| `app_id` | string | ✅ | Registered App ID defining manifest permissions |
+| `tool_name` | string | ❌ (Tool Mode) | Name of pre-compiled tool binary in `tools/` (without `.wasm`) |
+| `args` | string[] | ❌ (Tool Mode) | CLI arguments passed to the WASM cartridge |
+| `input_data` | string | ❌ (Tool/Script) | Complex text or JSON passed into the sandbox via STDIN |
+| `language` | string | ❌ (Script Mode) | Language runtime: `"python"`, `"js"`, `"javascript"`, `"ts"` |
+| `script` | string | ❌ (Script Mode) | Script code content to dynamically materialize and execute |
+| `dependencies` | string[] | ❌ (Script Mode) | List of package dependencies (e.g., `["requests", "numpy"]`) |
+| `shell_command` | string | ❌ (Shell Mode) | Host shell command to execute directly on the host OS |
 
-> **Note:** You must provide EXACTLY ONE execution mode payload. Do not mix `tool_name`/`args`/`input_data` (Tool Mode) with `language`/`script` (Script Mode) or `shell_command` (Shell Mode).
+> **Mode Selection Rule:** Exactly one mode must be provided per request (`tool_name`, `script`, or `shell_command`). Ambiguous or empty requests return a descriptive error.
 
-**Response:** Captured stdout and stderr from the tool execution.
+**Response:** Captured standard output and standard error from the execution environment.
 
 ---
 

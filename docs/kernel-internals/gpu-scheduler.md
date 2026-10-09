@@ -1,6 +1,6 @@
-# GPU Scheduler
+# GPU Scheduler & Multi-Tenancy
 
-> One GPU, many agents. The scheduler makes sure they don't crash each other.
+> Multi-tenant VRAM bin-packing, physical memory accounting, dynamic KV-cache estimation, and LRU eviction.
 
 **Source:** [`ore-core/src/scheduler.rs`](../../ore-core/src/scheduler.rs)
 
@@ -8,7 +8,14 @@
 
 ## Overview
 
-The `GpuScheduler` is a single-permit semaphore-based mutex that ensures only one inference request accesses the GPU at a time. It tracks VRAM state and uses RAII-based `GpuLease` objects to guarantee automatic cleanup - even on panics.
+Modern multi-agent workflows quickly run into the **VRAM Wall**. A single inference engine typically locks the entire GPU, causing Out-Of-Memory (OOM) panics or serialized bottlenecks when concurrent agents invoke different models.
+
+ORE's `GpuScheduler` is an intelligent, multi-tenant hypervisor for local inference memory. Instead of a naive single-model mutex, it implements:
+1. **Multi-Model Co-Residency**: Multiple models can co-exist inside GPU VRAM simultaneously as long as physical memory permits.
+2. **Physical VRAM Accounting (`MemoryAccountant`)**: Tracks live free memory, hardware headroom, and safety margins (default: 512 MB).
+3. **Exact KV-Cache Dimensioning**: Mathematically reads GGUF architecture metadata at runtime to compute precise per-token KV memory demands before admission.
+4. **LRU Eviction (Least Recently Used)**: Gracefully unloads idle models only when memory pressure demands it, maximizing cache hits.
+5. **RAII-Based `GpuLease`**: Uses Tokio semaphore permits (32 concurrent handles) with automatic drop-based memory cleanup.
 
 ---
 
@@ -18,14 +25,79 @@ The `GpuScheduler` is a single-permit semaphore-based mutex that ensures only on
 
 ```rust
 pub struct GpuScheduler {
-    execution_lock: Arc<Semaphore>,    // Single-permit semaphore (mutex)
-    state: Mutex<GpuState>,           // Tracks what's loaded in VRAM
+    execution_lock: Arc<Semaphore>,       // 32-permit execution semaphore
+    state: Arc<Mutex<GpuState>>,          // Multi-tenant GPU state
+    driver: Arc<dyn InferenceDriver>,     // HAL driver for model load/unload
+    config: SchedulerConfig,              // Model-specific overrides
 }
 
 struct GpuState {
-    active_model: Option<String>,      // Which model is currently loaded
-    active_app_id: Option<String>,     // Which agent owns the KV-Cache
-    active_users: u32,                 // How many concurrent leases exist
+    registry: ModelRegistry,              // Active and loaded model records
+    memory_provider: Box<dyn GpuMemoryProvider>, // NVML or system memory provider
+    accountant: MemoryAccountant,         // Tracks reserved budgets & safety buffers
+    active_app_id: Option<String>,        // Currently active agent context
+}
+```
+
+### `GpuMemoryProvider` Trait
+
+Decouples physical memory querying from the host platform:
+
+```rust
+pub trait GpuMemoryProvider: Send + Sync {
+    fn total_vram_mb(&self) -> u64;
+    fn used_vram_mb(&self) -> u64;
+    fn free_vram_mb(&self) -> u64;
+}
+```
+
+- **`NvmlGpuMemoryProvider`**: Leverages NVIDIA Management Library (NVML) to query exact hardware VRAM metrics on dedicated GPUs.
+- **`SystemMemoryProvider`**: Universal fallback powered by `sysinfo` for unified memory architectures (Apple Metal, Intel Iris, AMD APUs, and CPU-only hosts).
+
+### `MemoryAccountant`
+
+Guarantees safety margins and tracks VRAM reservations:
+
+```rust
+pub struct MemoryAccountant {
+    pub reserved_vram_mb: u64,
+    pub safety_margin_mb: u64, // Default: 512 MB safety buffer
+}
+
+impl MemoryAccountant {
+    pub fn can_admit(&self, memory_provider: &dyn GpuMemoryProvider, required_vram_mb: u64) -> bool {
+        let available = memory_provider
+            .free_vram_mb()
+            .saturating_sub(self.reserved_vram_mb);
+        available >= required_vram_mb + self.safety_margin_mb
+    }
+
+    pub fn reserve(&mut self, amount_mb: u64) {
+        self.reserved_vram_mb += amount_mb;
+    }
+
+    pub fn release_reservation(&mut self, amount_mb: u64) {
+        self.reserved_vram_mb = self.reserved_vram_mb.saturating_sub(amount_mb);
+    }
+}
+```
+
+### `ModelRegistry` & `LoadedModel`
+
+Tracks state, usage timestamps, and active in-flight leases:
+
+```rust
+pub struct ModelRegistry {
+    pub models: HashMap<String, LoadedModel>,
+}
+
+pub struct LoadedModel {
+    pub model_id: String,
+    pub estimated_vram_mb: u64,
+    pub observed_load_delta_mb: Option<u64>,
+    pub active_requests: usize,
+    pub last_used: Instant,
+    pub status: ModelStatus, // Loading, Loaded, Unloading, Failed
 }
 ```
 
@@ -33,124 +105,109 @@ struct GpuState {
 
 ```rust
 pub struct GpuLease {
-    _permit: OwnedSemaphorePermit,    // Holds the semaphore permit
-    pub model: String,                // Which model this lease is for
+    _permit: OwnedSemaphorePermit,
+    pub model: String,
+    state: Arc<Mutex<GpuState>>,
+    reserved_vram_mb: u64,
+}
+
+impl Drop for GpuLease {
+    fn drop(&mut self) {
+        let state = Arc::clone(&self.state);
+        let model_id = self.model.clone();
+        let reserved_mb = self.reserved_vram_mb;
+
+        tokio::spawn(async move {
+            let mut state = state.lock().await;
+            if let Some(model) = state.registry.models.get_mut(&model_id) {
+                model.active_requests = model.active_requests.saturating_sub(1);
+                model.last_used = Instant::now();
+            }
+            state.accountant.release_reservation(reserved_mb);
+        });
+    }
 }
 ```
-
-When a `GpuLease` goes out of scope, Rust's drop semantics automatically release the semaphore permit. This is the same pattern used by `std::sync::MutexGuard` - the GPU is guaranteed to be unlocked even if the inference task panics.
 
 ---
 
-## How It Works
+## The Physics: Exact KV-Cache Dimensioning
 
-### Acquiring a Lease
+Instead of guessing memory requirements, `GpuScheduler` inspects the GGUF model header directly using `candle_core::quantized::gguf_file`:
 
-```rust
-pub async fn request_gpu(&self, requested_model: &str, app_id: &str) -> GpuLease {
-    // 1. Acquire the semaphore (blocks if GPU is busy)
-    let permit = Arc::clone(&self.execution_lock)
-        .acquire_owned().await.unwrap();
+1. **Exact Weight Size**: Read from file metadata on disk.
+2. **Architecture Geometry**:
+   - `layers`: Extracted from `{arch}.block_count` (e.g., 32 layers)
+   - `kv_heads`: Extracted from `{arch}.attention.head_count_kv` (e.g., 8 heads)
+   - `head_dim`: Extracted from `{arch}.attention.key_length` or `{arch}.embedding_length / head_count` (e.g., 128)
+3. **Mathematical Formula**:
+   $$\text{Bytes per Token} = 2 \times \text{layers} \times \text{kv\_heads} \times \text{head\_dim} \times 2 \text{ (f16 bytes)}$$
+   $$\text{Total KV Bytes} = \text{Bytes per Token} \times \text{max\_tokens}$$
+4. **Config Override**: If declared in `SchedulerConfig::model_overrides`, custom allocations take precedence.
 
-    // 2. Check VRAM state
-    let mut state = self.state.lock().await;
+---
 
-    let is_same_model = state.active_model.as_deref() == Some(requested_model);
-    let is_same_agent = state.active_app_id.as_deref() == Some(app_id);
+## Admission Control & LRU Eviction
 
-    if is_same_model && is_same_agent {
-        // [TIER 1] PERFECT HIT
-        // Same model and agent already loaded - share the instance
-        state.active_users += 1;
-    } else if is_same_model && !is_same_agent {
-        // [TIER 2] AGENT SWAP (The Massive Optimization)
-        // Keep model weights, but swap out the KV-Cache
-        state.active_app_id = Some(app_id.to_string());
-        state.active_users = 1;
-    } else {
-        // [TIER 3] MODEL SWAP (Cold Start)
-        // Different model - evict the old one, load the new one
-        state.active_model = Some(requested_model.to_string());
-        state.active_app_id = Some(app_id.to_string());
-        state.active_users = 1;
-    }
+When an agent requests GPU execution:
 
-    GpuLease { _permit: permit, model: requested_model.to_string() }
-}
+```text
+Agent requests model "qwen2.5:0.5b"
+         │
+         ▼
+┌──────────────────────────────────────────────┐
+│ 1. Acquire execution permit (out of 32)      │
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│ 2. Compute exact required VRAM:              │
+│    Weights (if not loaded) + KV-Cache Size   │
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│ 3. Admission Loop:                           │
+│    Is (Free VRAM - Reserved) >= Required +   │
+│       Safety Margin (512MB)?                 │
+│                                              │
+│    YES ──────────────▶ ADMIT REQUEST         │
+│     │                                        │
+│     NO                                       │
+│     ▼                                        │
+│    Find oldest idle model (active_requests=0)│
+│    Found?                                    │
+│      YES ────────────▶ Drop lock & unload    │
+│                        model via driver      │
+│                        (Loop repeats)        │
+│      NO  ────────────▶ Return VRAM Exhausted │
+│                        Error                 │
+└──────────────────────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ 4. Update Registry, reserve memory           │
+│    and return RAII GpuLease                  │
+└──────────────────────────────────────────────┘
 ```
 
-### Request Flow
+### Safe Lock Dropping during Eviction
 
-```
-Agent A requests "qwen2.5:0.5b"
-     │
-     ▼
-┌──────────────────────────────────────┐
-│ Semaphore.acquire_owned()            │
-│ (blocks if permit is held)           │
-└───────────────┬──────────────────────┘
-                ▼
-┌──────────────────────────────────────┐
-│ Check GpuState                       │
-│                                      │
-│  Model matches & Agent matches?      │
-│  YES → [TIER 1] Perfect Hit.         │
-│         active_users += 1            │
-│                                      │
-│  Model matches but Agent differs?    │
-│  YES → [TIER 2] Agent Swap.          │
-│         Retain weights, evict KV.    │
-│         active_app_id = new agent    │
-│                                      │
-│  Model differs?                      │
-│  YES → [TIER 3] Model Swap.          │
-│         Evict weights & KV.          │
-│         active_model = new model     │
-└───────────────┬──────────────────────┘
-                ▼
-         Return GpuLease
-         (inference runs)
-                │
-                ▼
-         GpuLease drops
-         → permit released
-         → next request unblocks
-```
+Unloading a heavy model from VRAM involves disk I/O and GPU driver calls that can take hundreds of milliseconds. To avoid freezing the entire kernel, the scheduler:
+1. Identifies the candidate model under lock.
+2. **Releases the state lock**.
+3. Calls `driver.unload_model(&id).await` asynchronously.
+4. Re-acquires the lock to update `ModelRegistry`.
 
 ---
 
 ## Design Decisions
 
-### Why a Semaphore Instead of a Mutex?
-
-Tokio's `Semaphore` supports `acquire_owned()`, which returns an `OwnedSemaphorePermit` that can be moved into a struct. A regular `Mutex` would require holding the lock for the entire inference duration - `Semaphore` decouples "right to run" from "data access."
-
-### Why RAII?
-
-The `GpuLease` struct holds the `OwnedSemaphorePermit`. When the lease drops:
-1. The permit is returned to the semaphore
-2. The next queued `acquire_owned()` call unblocks
-3. This happens automatically - no manual `.release()` calls, no cleanup code, no risk of deadlocks from error paths
-
-### Why Hot-Swap Detection?
-
-Loading a model into VRAM is expensive (seconds for large GGUF files). If Agent A and Agent B both request `qwen2.5:0.5b`, the second request should share the already-loaded model, not reload it. The scheduler checks `active_model` and increments `active_users` instead of triggering a context switch.
-
----
-
-## Status Query
-
-```rust
-pub async fn get_status(&self) -> String {
-    let state = self.state.lock().await;
-    match &state.active_model {
-        Some(m) => format!("ACTIVE (Model: {}, Users: {})", m, state.active_users),
-        None => "IDLE (VRAM Empty)".to_string(),
-    }
-}
-```
-
-Used by `ore top` and the `/health` route to report scheduler state.
+| Decision | Rationale |
+|---|---|
+| **Multi-Tenancy vs. Semaphore(1)** | Enables small helper models (e.g., embedders, fast reasoning models) to stay resident alongside main models without thrashing VRAM. |
+| **Physical NVML Queries** | Operating systems lie about allocated memory. Direct NVML queries read true physical hardware memory state. |
+| **Pre-Calculated KV Footprint** | Prevents middle-of-generation OOM crashes by guaranteeing KV cache headroom *before* inference starts. |
+| **Safety Margin (512 MB)** | Accommodates GPU driver allocations, display servers, and CUDA context overhead. |
+| **Asynchronous RAII Drop** | Releasing permits and KV reservations happens in a detached task upon lease drop, preventing latency on the request critical path. |
 
 ---
 

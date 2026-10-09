@@ -87,6 +87,7 @@ ore ls
 
 | Flag | Description |
 |---|---|
+| `--models` | List all downloaded LLM models (default behavior) |
 | `--agents` | List all registered agents with security status |
 | `--manifests` | View raw permission matrix for all manifests |
 
@@ -279,6 +280,8 @@ ore mktool script.py --env data   # Python only: compiles with NumPy, Pandas, et
 | `--env <env>` | Python only: `pure` (RustPython AOT, ~25MB) or `data` (CPython 3.14 with Data Science libs, ~110MB). |
 
 Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).
+
+> **Offline Toolchain:** `ore mktool` compiles cartridges completely offline and does not require `ore-server` to be running or an active security token.
 
 ---
 

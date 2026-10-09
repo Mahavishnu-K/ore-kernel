@@ -54,8 +54,8 @@ allow_localhost_access = false
 
 [[network.rules]]
 domain = "api.github.com"
-allowed_methods = ["GET", "POST"]
-allowed_paths = ["/repos/*"]
+allowed_methods = ["GET", "POST"]      # Supports specific HTTP verbs or ["*"] for all
+allowed_paths = ["/repos/*"]           # Supports specific path prefixes or ["*"]
 
 # ─── Execution ───────────────────────────────────
 [execution]
@@ -63,6 +63,7 @@ can_execute_shell = false             # ⚠️ High risk - flagged as UNSAFE
 can_execute_wasm = true
 allowed_tools = ["file_search", "git_commit"] # Use ["*"] to allow all tools
 allowed_language_runtimes = ["python", "js"]  # Use ["*"] to allow all runtimes
+max_cpu_instructions = 5000000000     # Fuel limit (default: 5 Billion instructions)
 
 # ─── IPC ─────────────────────────────────────────
 [ipc]
@@ -131,6 +132,7 @@ allow_time_decay = false                     # Allow older memories to lose rele
 | `can_execute_wasm` | bool | `false` | Whether WASM sandboxed execution is allowed |
 | `allowed_tools` | string[] | `[]` | Named tools this agent may invoke. Use `["*"]` to allow all. |
 | `allowed_language_runtimes` | string[] | `[]` | Allowed script languages for Autonomous Mode. Use `["*"]` to allow all. |
+| `max_cpu_instructions` | u64 | `5000000000` | Instruction fuel limit for the WASM sandbox (5 Billion = ~2-3s pure compute) |
 
 ### `[ipc]`
 

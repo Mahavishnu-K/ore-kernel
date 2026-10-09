@@ -266,12 +266,15 @@ An OS-style memory management system for true KV-Cache paging and agent conversa
 - **Manual Compaction** - Force a memory compaction cycle via `ore compact <app_id>`.
 - Agents opt-in to stateful paging via the `stateful_paging = true` flag in their manifest's `[resources]` section.
 
-**Execution Environments** (`ore-core/src/sandbox.rs`)
-An execution router allowing agents to safely run pre-compiled WebAssembly tools (Console Cartridges), autonomous scripts (Inception Mode), or raw host shell commands:
-- **Zero-Trust WASM Sandbox** - WebAssembly execution with deterministic CPU profiling (50,000,000 instruction fuel limit via `wasmtime`) to mathematically prevent infinite loops and host lockups.
-- **Capability-Based File System** - Integrates `cap-std` to safely map manifest-approved host directories to an isolated `/workspace` guest path, ensuring the sandbox is blind to the rest of the file system.
-- **I/O Trapping & STDIN** - Captures all internal stdout/stderr using in-memory WritePipes, returning output directly to the API response. Allows passing complex input data via STDIN.
-- **Raw Host Shell Execution** - A direct bypass of the WASM sandbox to run raw shell commands on the host (e.g. `npm run dev`). Requires `can_execute_shell` to be true and flags the agent as UNSAFE.
+**Execution Environments** (`ore-core/src/sandbox.rs` · `ore-server/src/execution/`)
+A modular execution engine allowing agents to safely run pre-compiled WebAssembly tools (Console Cartridges), dynamic autonomous scripts (Inception Mode), or raw host shell commands:
+- **Zero-Trust WASM Sandbox** - WebAssembly isolation with deterministic CPU profiling (configurable `max_cpu_instructions`, default `5,000,000,000` instruction fuel limit via `wasmtime`) to mathematically prevent infinite loops and host lockups.
+- **AOT Zero-RAM Caching (`.cwasm`)** - WASM modules are JIT-compiled on first run and serialized to disk. Subsequent runs bypass the compiler and `mmap` the pre-compiled `.cwasm` native code directly from the OS Page Cache with 0MB RAM bloat. Cache freshness is tracked via `std::fs::metadata` timestamps.
+- **Layer 7 Network Portal & Egress Firewall** - The sandbox operates with zero raw TCP/UDP socket access. Outbound HTTP requests are trapped and routed through an asynchronous Layer 7 proxy strictly enforcing domain, HTTP method, and path whitelists declared in `[[network.rules]]`. Responses stream directly to SSD (`/ore_tmp`), preserving HTTP status, headers, and cookies.
+- **Runtime Polyfill Shims** - Injects Node.js globals and a CommonJS `require()` bridge for JavaScript (`shims/javascript/commonjs.js`), and a WASI asyncio event loop with transparent `requests` and `httpx` module polyfills for Python (`shims/python/bootstrap.py`).
+- **Capability-Based File System** - Integrates `cap-std` to safely map manifest-approved host directories to an isolated `/workspace` guest path, ensuring the sandbox is blind to host drive roots. Read-only paths are strictly stripped of write permissions at the WASI OS boundary.
+- **I/O Trapping & STDIN** - Captures stdout/stderr using in-memory WritePipes, returning output directly to the API response. Allows passing complex input data via STDIN.
+- **Raw Host Shell Execution (UNSAFE)** - A direct bypass of the WASM sandbox to run raw shell commands on the host (e.g. `npm run dev`). Requires `can_execute_shell = true` and permanently flags the agent as UNSAFE.
 - **Manifest Enforcement** - Verified by `can_execute_wasm`, `allowed_tools` (supports `"*"` wildcards), and `allowed_language_runtimes` before JIT compilation. Runs in a dedicated blocking thread to protect the async runtime.
 
 
@@ -329,12 +332,20 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 ║   └────────┬────────┘                                ║
 ║            │                                         ║
 ║   ┌────────▼──────────────────────────────────────┐  ║
-║   │  Priority Scheduler  ──▶  GPU Semaphore Lock  │  ║
+║   │  Multi-Tenant GPU Scheduler                   │  ║
+║   │  · ModelRegistry & Physical MemoryAccountant  │  ║
+║   │  · Dynamic KV-Cache Estimation (GGUF geometry)│  ║
+║   │  · LRU Model Eviction & RAII GpuLease (32 max)│  ║
 ║   └───────────────────────────────────────────────┘  ║
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
-║                                                      ║
-║   ┌──────────────────────────────────────────────┐   ║
+║   │  Modular Execution Engine & WASM Sandbox     │   ║
+║   │  · Tool Mode: Pre-compiled Cartridges (.wasm)│   ║
+║   │  · Script Mode: Inception (Py/JS + VFS shims)│   ║
+║   │  · Shell Mode: Host execution (UNSAFE audit) │   ║
+║   │  · AOT Zero-RAM Caching (.cwasm via mmap)    │   ║
+║   │  · Layer 7 Egress Network & Crypto Portals   │   ║
+║   └──────────────────────────────────────────────┘   ║
 ║   │  Memory Management  (Agent Context Swap)     │   ║
 ║   │  · Page Out/In (RAM ↔ SSD JSON Freeze)       │   ║
 ║   │  · Page Out/In (KV-Cache .safetensors)       │   ║
@@ -392,10 +403,10 @@ ore-system/
 │   ├── driver.rs            #   ├── HAL trait (InferenceDriver) + shared types
 │   ├── firewall.rs          #   ├── Context firewall (PII, injection)
 │   ├── ipc.rs               #   ├── MessageBus, SemanticBus (w/ cache + GC), RateLimiter
-│   ├── scheduler.rs         #   ├── GpuScheduler with RAII GpuLease + VRAM state
+│   ├── scheduler.rs         #   ├── Multi-tenant GpuScheduler, ModelRegistry, MemoryAccountant
 │   ├── memory.rs            #   ├── Memory Management (context freezing & restoration)
 │   ├── registry.rs          #   ├── App manifest registry (TOML loader + cache)
-│   ├── sandbox.rs           #   ├── Zero-Trust WASM Sandbox (Wasmtime, WASI, ore-ld injection)
+│   ├── sandbox.rs           #   ├── Zero-Trust WASM Sandbox (AOT .cwasm mmap, Layer 7 network proxy)
 │   ├── crypto.rs            #   ├── Cryptographic subsystem (VFS mapped)
 │   ├── linker/              #   ├── WebAssembly Dynamic Linker (ore-ld)
 │   │   ├── mod.rs           #   │   ├── Linker module entrypoint
@@ -407,18 +418,26 @@ ore-system/
 │       │   └── ollama.rs    #       │   └── OllamaDriver (HTTP proxy to Ollama daemon)
 │       └── native/          #       └── Native Candle Inference Engine
 │           ├── mod.rs       #           ├── NativeDriver (GGUF loading + hardware detection)
-│           ├── engine.rs    #           ├── OreEngine enum (Llama/Qwen) + ActiveEngine
+│           ├── engine.rs    #           ├── OreEngine enum (Llama/Qwen2/Qwen3 MoE) + ActiveEngine
 │           ├── gguf_tokenizer.rs#       ├── GGUF metadata tokenizer extractor
 │           └── models/      #           └── Architecture-specific model loaders
 │               ├── llama.rs #               ├── Llama family loader
 │               ├── qwen.rs  #               ├── Qwen2 family loader
 │               ├── bert.rs  #               ├── BERT embedder (all-MiniLM)
 │               └── nomic.rs #               └── Nomic v1.5 embedder
-├── ore-server/              # Axum HTTP daemon (modular handler architecture)
+├── ore-server/              # Axum HTTP daemon (modular handler & execution architecture)
 │   ├── main.rs              #   ├── Boot sequence, router setup, GC scheduler
 │   ├── state.rs             #   ├── KernelState + OreConfig (shared app state)
 │   ├── middleware.rs        #   ├── Bearer token auth middleware
-│   ├── payloads.rs          #   ├── Request payloads (RunRequest, IpcShareRequest, etc.)
+│   ├── payloads.rs          #   ├── Request payloads & ExecutionMode dispatch logic
+│   ├── execution/           #   ├── Modular execution engine
+│   │   ├── mod.rs           #   │   ├── Execution parameter coordination & mode routing
+│   │   ├── tool.rs          #   │   ├── Fixed Tool Mode (Console Cartridge preparation)
+│   │   ├── script.rs        #   │   ├── Autonomous Script Mode (Inception, dynamic VFS mounts)
+│   │   └── shell.rs         #   │   └── Raw host shell execution bypass handler
+│   ├── shims/               #   ├── Sandboxed runtime polyfills
+│   │   ├── javascript/      #   │   └── CommonJS require() bridge & Node.js globals (commonjs.js)
+│   │   └── python/          #   │   └── WASI asyncio event loop, requests/httpx shims (bootstrap.py)
 │   └── handlers/            #   └── Route handlers (system, inference, ipc)
 │       ├── system.rs        #       ├── Health, ps, ls, agents, manifests, pull, load, expel
 │       ├── inference.rs     #       ├── ask_ai (secured + paged), run_process (streamed)
@@ -695,13 +714,15 @@ allow_localhost_access = false
 
 [[network.rules]]
 domain = "github.com"
-allowed_methods = ["GET"]
+allowed_methods = ["*"]                 # Or explicit verbs like ["GET", "POST"]
 allowed_paths = ["*"]
 
 [execution]
 can_execute_shell = false
 can_execute_wasm = true
 allowed_tools = ["file_search", "git_commit"]
+allowed_language_runtimes = ["python", "js"]
+max_cpu_instructions = 5000000000       # 5 Billion instructions default fuel limit
 
 [ipc]
 allowed_agent_targets = ["writer_agent"]     # Tier 1: Agent-to-Agent messaging
