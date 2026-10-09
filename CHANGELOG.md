@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Network Capabilities & Security**: Enhanced network capabilities in WASM agent. Added support for additional network rules in `wasm_agent.toml`, improved metadata handling in sandbox for HTTP requests (including status, headers, and cookies), implemented real-time streaming and response handling in `ORE_Response` class, and added comprehensive network upgrade tests for both Python and JavaScript in `run_network_upgrades.py`. Updated network handling and security.
+- **Runtime Shims**: Added CommonJS and Python shims for module compatibility.
 - **VRAM Bin-Packing (Multi-Tenancy)**: The `GpuScheduler` was fully re-architected to support multiple models co-residing in VRAM. Replaced the single-model `Semaphore(1)` with a `ModelRegistry`, `MemoryAccountant`, and `NvmlGpuMemoryProvider` to enable physical VRAM tracking, dynamic KV cache estimation, and LRU eviction.
 - **Polyglot Memory Fusion (`ore-ld`)**: A custom POSIX-compliant WebAssembly dynamic linker allowing AI agents to physically share linear memory space with loaded plugins (`.wasi.so`) for zero-copy, cross-language data mutation.
 - `ore mktool` compiler flags for Memory Fusion: `--shared` (to compile dynamic plugins) and `--host` (to compile host tools that load plugins).
@@ -25,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Agentic Inception Upgrades**: The Sandbox natively accommodates on-the-fly script materialization for self-improving AI models directly into the Virtual File System.
 - **VFS Crypto Portal Integration**: Safely mounts `/.ore_crypto/` pipes mapped to an atomic, low-latency host thread to process complex cryptographic operations instantly without violating WASI pure-compute boundaries.
 ### Changed
+- **Execution Modules**: Refactored `execution` as a module for handling various execution modes.
+- **Configuration & Utilities**: Simplified configuration file retrieval in utility functions.
+- **Error Handling**: Improved error handling and formatting in WasmSandbox network checks.
+- **Code Quality**: Cleaned up code formatting and improved readability across multiple files.
 - Enhanced `main.rs` to dynamically detect Python projects and manage their dependencies via `requirements.txt`.
 - Upgraded `sandbox.rs` to set the `PYTHONPATH` environment variable, enabling proper module resolution for the Python WASI runtime.
 - Improved `system.rs` to securely read and pass tool arguments from a dedicated `.args` file.
