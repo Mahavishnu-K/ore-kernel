@@ -1,9 +1,9 @@
 //! Canonical path resolvers for ORE base directory, configuration, and data folders.
 
-use std::path::PathBuf;
 use crate::constants::{
     CONFIG_FILE_NAME, MANIFESTS_DIR_NAME, MODELS_DIR_NAME, SANDBOX_DIR_NAME, TOKEN_FILE_NAME,
 };
+use std::path::PathBuf;
 
 /// Resolves the canonical ORE directory across Windows, Linux, and macOS.
 ///

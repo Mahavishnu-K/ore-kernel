@@ -214,14 +214,12 @@ pub fn truncate_visible(s: &str, max_width: usize) -> String {
                 res.push_str(&ansi_buf);
                 ansi_buf.clear();
             }
+        } else if vlen < target {
+            res.push(c);
+            vlen += 1;
         } else {
-            if vlen < target {
-                res.push(c);
-                vlen += 1;
-            } else {
-                truncated = true;
-                break;
-            }
+            truncated = true;
+            break;
         }
     }
 
@@ -240,11 +238,11 @@ pub fn print_box_row(content: &str, inner_width: usize) {
         (content.to_string(), " ".repeat(inner_width - vlen))
     };
     println!(
-        "{}  {}{}{}",
+        "{}  {}{}  {}",
         "│".bright_black(),
         rendered_content,
         padding,
-        format!("  {}", "│".bright_black())
+        "│".bright_black()
     );
 }
 
@@ -492,10 +490,26 @@ pub fn render_top(top: &TopTelemetryResponse) {
     print_box_top("ORE KERNEL SUBSYSTEMS", 76);
 
     let subs = [
-        ("Inference HAL", "[ACTIVE]".green().bold(), top.engine_name.as_str()),
-        ("GPU Scheduler", "[RUNNING]".green().bold(), top.scheduler_summary.as_str()),
-        ("Context Firewall", "[ENFORCING]".green().bold(), top.context_firewall.as_str()),
-        ("WASM Sandbox", "[ISOLATED]".green().bold(), top.wasm_sandbox.as_str()),
+        (
+            "Inference HAL",
+            "[ACTIVE]".green().bold(),
+            top.engine_name.as_str(),
+        ),
+        (
+            "GPU Scheduler",
+            "[RUNNING]".green().bold(),
+            top.scheduler_summary.as_str(),
+        ),
+        (
+            "Context Firewall",
+            "[ENFORCING]".green().bold(),
+            top.context_firewall.as_str(),
+        ),
+        (
+            "WASM Sandbox",
+            "[ISOLATED]".green().bold(),
+            top.wasm_sandbox.as_str(),
+        ),
     ];
     for (label, badge, val) in subs {
         let row = format!(
@@ -547,7 +561,10 @@ pub fn render_ps(ps: &PsResponse) {
     print_box_divider(108);
 
     if ps.models.is_empty() {
-        print_box_row("No models currently loaded in memory. Run 'ore run <model>' to load.", 108);
+        print_box_row(
+            "No models currently loaded in memory. Run 'ore run <model>' to load.",
+            108,
+        );
     } else {
         for m in &ps.models {
             let status_badge = if m.status == "ACTIVE" {
@@ -633,7 +650,10 @@ pub fn render_ls(ls: &LsResponse) {
     print_box_divider(102);
 
     if ls.models.is_empty() {
-        print_box_row("No models installed locally. Use 'ore pull <model>' to download.", 102);
+        print_box_row(
+            "No models installed locally. Use 'ore pull <model>' to download.",
+            102,
+        );
     } else {
         let mut total_bytes: u64 = 0;
         for m in &ls.models {
@@ -696,7 +716,10 @@ pub fn render_agents(agents: &AgentsResponse) {
     print_box_divider(104);
 
     if agents.agents.is_empty() {
-        print_box_row("No agents registered. Use 'ore manifest <name>' to scaffold an agent manifest.", 104);
+        print_box_row(
+            "No agents registered. Use 'ore manifest <name>' to scaffold an agent manifest.",
+            104,
+        );
     } else {
         for a in &agents.agents {
             let models_str = if a.allowed_models.is_empty() {
@@ -872,19 +895,17 @@ mod tests {
         render_ls(&ls);
 
         let ps = PsResponse {
-            models: vec![
-                ModelProcessInfo {
-                    model_name: "llama3.2:1b".to_string(),
-                    engine: "Ollama Managed".to_string(),
-                    device: "Host CPU".to_string(),
-                    status: "IDLE".to_string(),
-                    active_requests: 0,
-                    host_ram_mb: 750,
-                    gpu_vram_mb: 0,
-                    last_used_secs: 42,
-                    current_app_id: Some("agent_swarm".to_string()),
-                },
-            ],
+            models: vec![ModelProcessInfo {
+                model_name: "llama3.2:1b".to_string(),
+                engine: "Ollama Managed".to_string(),
+                device: "Host CPU".to_string(),
+                status: "IDLE".to_string(),
+                active_requests: 0,
+                host_ram_mb: 750,
+                gpu_vram_mb: 0,
+                last_used_secs: 42,
+                current_app_id: Some("agent_swarm".to_string()),
+            }],
             total_ram_mb: 750,
             total_vram_mb: 0,
         };
@@ -934,35 +955,30 @@ mod tests {
         render_top(&top);
 
         let agents = AgentsResponse {
-            agents: vec![
-                AgentTelemetryInfo {
-                    app_id: "agent_swarm".to_string(),
-                    version: "1.0.0".to_string(),
-                    allowed_models: vec!["llama3.2:1b".to_string()],
-                    priority: "HIGH".to_string(),
-                    network_enabled: true,
-                    filesystem_permissions: "SANDBOX".to_string(),
-                    execution_engine: "WASM (V8)".to_string(),
-                    pii_enforcement: true,
-                    status: "SECURED".to_string(),
-                },
-            ],
+            agents: vec![AgentTelemetryInfo {
+                app_id: "agent_swarm".to_string(),
+                version: "1.0.0".to_string(),
+                allowed_models: vec!["llama3.2:1b".to_string()],
+                priority: "HIGH".to_string(),
+                network_enabled: true,
+                filesystem_permissions: "SANDBOX".to_string(),
+                execution_engine: "WASM (V8)".to_string(),
+                pii_enforcement: true,
+                status: "SECURED".to_string(),
+            }],
         };
         render_agents(&agents);
 
         let manifests = ManifestsResponse {
-            manifests: vec![
-                ManifestTelemetryInfo {
-                    file_name: "swarm_agent.json".to_string(),
-                    app_id: "agent_swarm".to_string(),
-                    network: "ENABLED".to_string(),
-                    file_io: "SANDBOX".to_string(),
-                    execution: "WASM".to_string(),
-                    pii_scrubbing: "ACTIVE".to_string(),
-                },
-            ],
+            manifests: vec![ManifestTelemetryInfo {
+                file_name: "swarm_agent.json".to_string(),
+                app_id: "agent_swarm".to_string(),
+                network: "ENABLED".to_string(),
+                file_io: "SANDBOX".to_string(),
+                execution: "WASM".to_string(),
+                pii_scrubbing: "ACTIVE".to_string(),
+            }],
         };
         render_manifests(&manifests);
     }
 }
-

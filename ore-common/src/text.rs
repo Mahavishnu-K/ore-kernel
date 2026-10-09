@@ -38,14 +38,12 @@ pub fn truncate_visible(s: &str, max_width: usize) -> String {
                 res.push_str(&ansi_buf);
                 ansi_buf.clear();
             }
+        } else if vlen < target {
+            res.push(c);
+            vlen += 1;
         } else {
-            if vlen < target {
-                res.push(c);
-                vlen += 1;
-            } else {
-                truncated = true;
-                break;
-            }
+            truncated = true;
+            break;
         }
     }
 
