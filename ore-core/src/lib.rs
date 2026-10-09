@@ -60,3 +60,4 @@ pub mod memory;
 pub mod registry;
 pub mod sandbox;
 pub mod scheduler;
+pub mod telemetry;

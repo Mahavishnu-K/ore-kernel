@@ -442,6 +442,14 @@ impl SemanticBus {
             }
         }
     }
+
+    pub fn cache_len(&self) -> usize {
+        self.embedding_cache.len()
+    }
+
+    pub fn pipes_count(&self) -> usize {
+        self.memory_pipes.len()
+    }
 }
 
 pub struct RateLimiter {

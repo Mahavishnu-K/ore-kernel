@@ -2,3 +2,8 @@
 name = "ore-common"
 version = "0.1.0"
 edition = "2024"
+description = "Common protocol types, path resolvers, and constants for the ORE AI Kernel."
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }

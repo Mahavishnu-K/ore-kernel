@@ -448,26 +448,93 @@ impl GpuScheduler {
 
     pub async fn get_status(&self) -> String {
         let state = self.state.lock().await;
+        let count = state.registry.models.len();
+        let active_reqs: usize = state
+            .registry
+            .models
+            .values()
+            .map(|m| m.active_requests)
+            .sum();
 
-        let mut status = format!(
-            "VRAM Free: {}MB, Reserved: {}MB\n",
-            state.memory_provider.free_vram_mb(),
-            state.accountant.reserved_vram_mb
-        );
-
-        if state.registry.models.is_empty() {
-            status.push_str("IDLE (No models loaded)");
-        } else {
-            status.push_str("ACTIVE:\n");
-            for (id, model) in &state.registry.models {
-                status.push_str(&format!(
-                    " - Model: {}, Status: {:?}, Active Requests: {}\n",
-                    id, model.status, model.active_requests
-                ));
+        if let Some(app_id) = &state.active_app_id {
+            format!("Leased by {} ({} models)", app_id, count)
+        } else if count == 0 {
+            "Idle (0 Active Leases)".to_string()
+        } else if count == 1 {
+            let model_name = state
+                .registry
+                .models
+                .keys()
+                .next()
+                .cloned()
+                .unwrap_or_default();
+            if active_reqs > 0 {
+                format!("1 Model ({} - {} active)", model_name, active_reqs)
+            } else {
+                format!("1 Model ({}, Standby)", model_name)
             }
+        } else {
+            format!("{} Models Loaded ({} active)", count, active_reqs)
         }
-        status
     }
+
+    pub async fn get_telemetry_snapshot(&self) -> SchedulerSnapshot {
+        let state = self.state.lock().await;
+        let now = Instant::now();
+        let loaded_models = state
+            .registry
+            .models
+            .values()
+            .map(|m| {
+                let idle = now.saturating_duration_since(m.last_used).as_secs();
+                let status_str = match m.status {
+                    ModelStatus::Loading => "LOADING",
+                    ModelStatus::Loaded => "LOADED",
+                    ModelStatus::Unloading => "UNLOADING",
+                    ModelStatus::Failed => "FAILED",
+                };
+                ModelTelemetrySnapshot {
+                    model_id: m.model_id.clone(),
+                    estimated_vram_mb: m.estimated_vram_mb,
+                    observed_load_delta_mb: m.observed_load_delta_mb,
+                    active_requests: m.active_requests,
+                    status: status_str.to_string(),
+                    idle_seconds: idle,
+                }
+            })
+            .collect();
+
+        SchedulerSnapshot {
+            total_vram_mb: state.memory_provider.total_vram_mb(),
+            used_vram_mb: state.memory_provider.used_vram_mb(),
+            free_vram_mb: state.memory_provider.free_vram_mb(),
+            reserved_vram_mb: state.accountant.reserved_vram_mb,
+            safety_margin_mb: state.accountant.safety_margin_mb,
+            active_app_id: state.active_app_id.clone(),
+            loaded_models,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SchedulerSnapshot {
+    pub total_vram_mb: u64,
+    pub used_vram_mb: u64,
+    pub free_vram_mb: u64,
+    pub reserved_vram_mb: u64,
+    pub safety_margin_mb: u64,
+    pub active_app_id: Option<String>,
+    pub loaded_models: Vec<ModelTelemetrySnapshot>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModelTelemetrySnapshot {
+    pub model_id: String,
+    pub estimated_vram_mb: u64,
+    pub observed_load_delta_mb: Option<u64>,
+    pub active_requests: usize,
+    pub status: String,
+    pub idle_seconds: u64,
 }
 
 pub struct GpuLease {

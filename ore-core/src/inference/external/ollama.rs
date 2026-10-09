@@ -1,13 +1,34 @@
 use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
 use crate::memory::ContextMessage;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
+
+struct ModelActivity {
+    active_requests: AtomicUsize,
+    last_used: StdMutex<Instant>,
+}
+
+struct ActivityGuard(Arc<ModelActivity>);
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        self.0.active_requests.fetch_sub(1, Ordering::SeqCst);
+        if let Ok(mut lu) = self.0.last_used.lock() {
+            *lu = Instant::now();
+        }
+    }
+}
 
 pub struct OllamaDriver {
     pub base_url: String,
     client: Client,
+    activity: DashMap<String, Arc<ModelActivity>>,
 }
 
 impl OllamaDriver {
@@ -15,6 +36,7 @@ impl OllamaDriver {
         Self {
             base_url: url.to_string(),
             client: Client::new(),
+            activity: DashMap::new(),
         }
     }
 }
@@ -73,6 +95,10 @@ impl InferenceDriver for OllamaDriver {
         "Ollama Engine"
     }
 
+    fn device_name(&self) -> String {
+        format!("Ollama Managed ({})", self.base_url)
+    }
+
     async fn is_online(&self) -> bool {
         self.client.get(&self.base_url).send().await.is_ok()
     }
@@ -103,10 +129,33 @@ impl InferenceDriver for OllamaDriver {
         let processes = data
             .models
             .into_iter()
-            .map(|m| VramProcess {
-                model_name: m.name,
-                size_bytes: m.size,
-                size_vram_bytes: m.size_vram,
+            .map(|m| {
+                let (active_reqs, last_used) = if let Some(act) = self.activity.get(&m.name) {
+                    let reqs = act.active_requests.load(Ordering::Relaxed);
+                    let elapsed = act
+                        .last_used
+                        .lock()
+                        .map(|lu| lu.elapsed().as_secs())
+                        .unwrap_or(0);
+                    (reqs, elapsed)
+                } else {
+                    (0, 0)
+                };
+
+                let status = if active_reqs > 0 {
+                    "ACTIVE".to_string()
+                } else {
+                    "IDLE".to_string()
+                };
+
+                VramProcess {
+                    model_name: m.name,
+                    size_bytes: m.size,
+                    size_vram_bytes: m.size_vram,
+                    status,
+                    active_requests: active_reqs,
+                    last_used_secs: last_used,
+                }
             })
             .collect();
 
@@ -123,6 +172,20 @@ impl InferenceDriver for OllamaDriver {
         tx: UnboundedSender<String>,
         _current_fingerprint: &str,
     ) -> Result<(), DriverError> {
+        let act = self
+            .activity
+            .entry(model.to_string())
+            .or_insert_with(|| {
+                Arc::new(ModelActivity {
+                    active_requests: AtomicUsize::new(0),
+                    last_used: StdMutex::new(Instant::now()),
+                })
+            })
+            .clone();
+
+        act.active_requests.fetch_add(1, Ordering::SeqCst);
+        let _guard = ActivityGuard(act);
+
         let url = format!("{}/api/chat", self.base_url);
 
         let mut messages = history.unwrap_or_default();
@@ -262,6 +325,7 @@ impl InferenceDriver for OllamaDriver {
                 name: m.name,
                 size_bytes: m.size,
                 modified_at: m.modified_at.chars().take(10).collect(),
+                format: "Ollama (GGUF)".to_string(),
             })
             .collect();
 

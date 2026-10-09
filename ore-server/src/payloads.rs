@@ -116,3 +116,100 @@ pub enum ExecutionMode {
         command: String,
     },
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct KernelHealthResponse {
+    pub status: String,
+    pub version: String,
+    pub engine: String,
+    pub device: String,
+    pub ore_dir: String,
+    pub loaded_models: usize,
+    pub registered_agents: usize,
+    pub uptime_seconds: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ModelProcessInfo {
+    pub model_name: String,
+    pub engine: String,
+    pub device: String,
+    pub status: String,
+    pub active_requests: usize,
+    pub host_ram_mb: u64,
+    pub gpu_vram_mb: u64,
+    pub last_used_secs: u64,
+    pub current_app_id: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PsResponse {
+    pub models: Vec<ModelProcessInfo>,
+    pub total_ram_mb: u64,
+    pub total_vram_mb: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TopTelemetryResponse {
+    pub host: ore_core::telemetry::HostTelemetry,
+    pub accelerator_device: String,
+    pub vram_total_mb: u64,
+    pub vram_used_mb: u64,
+    pub vram_free_mb: u64,
+    pub vram_reserved_mb: u64,
+    pub vram_safety_margin_mb: u64,
+    pub engine_name: String,
+    pub scheduler_summary: String,
+    pub active_models_count: usize,
+    pub registered_agents_count: usize,
+    pub context_firewall: String,
+    pub semantic_bus_cache_count: usize,
+    pub wasm_sandbox: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct LocalModelInfo {
+    pub name: String,
+    pub format: String,
+    pub size_bytes: u64,
+    pub modified_at: String,
+    pub is_loaded: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct LsResponse {
+    pub models: Vec<LocalModelInfo>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentTelemetryInfo {
+    pub app_id: String,
+    pub version: String,
+    pub allowed_models: Vec<String>,
+    pub priority: String,
+    pub network_enabled: bool,
+    pub filesystem_permissions: String,
+    pub execution_engine: String,
+    pub pii_enforcement: bool,
+    pub status: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentsResponse {
+    pub agents: Vec<AgentTelemetryInfo>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ManifestTelemetryInfo {
+    pub file_name: String,
+    pub app_id: String,
+    pub network: String,
+    pub file_io: String,
+    pub execution: String,
+    pub pii_scrubbing: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ManifestsResponse {
+    pub manifests: Vec<ManifestTelemetryInfo>,
+}

@@ -13,20 +13,28 @@ pub enum DriverError {
     ExecutionFailed(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LocalModel {
     pub name: String,
     pub size_bytes: u64,
     pub modified_at: String,
+    #[serde(default)]
+    pub format: String,
 }
 
 // OS DATA STRUCTURES
 // No matter what engine is running, ORE translates their data into this.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VramProcess {
     pub model_name: String,
     pub size_bytes: u64,
     pub size_vram_bytes: u64,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub active_requests: usize,
+    #[serde(default)]
+    pub last_used_secs: u64,
 }
 
 // HARDWARE ABSTRACTION LAYER (HAL)
@@ -34,6 +42,10 @@ pub struct VramProcess {
 #[async_trait]
 pub trait InferenceDriver: Send + Sync {
     fn engine_name(&self) -> &'static str;
+
+    fn device_name(&self) -> String {
+        "Default Device".to_string()
+    }
 
     async fn is_online(&self) -> bool;
 

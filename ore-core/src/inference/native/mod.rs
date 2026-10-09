@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use candle_core::{DType, Device, Tensor};
 use engine::ActiveEngine;
 use std::fs;
-use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use time::OffsetDateTime;
 use time::macros::format_description;
@@ -60,6 +59,14 @@ impl InferenceDriver for NativeDriver {
         "Native Candle Engine"
     }
 
+    fn device_name(&self) -> String {
+        match &self.device {
+            Device::Cuda(i) => format!("NVIDIA GPU (CUDA): {:?}", i),
+            Device::Metal(i) => format!("Apple Silicon (Metal): {:?}", i),
+            Device::Cpu => "Host CPU (SIMD)".to_string(),
+        }
+    }
+
     async fn is_online(&self) -> bool {
         true
     }
@@ -67,10 +74,20 @@ impl InferenceDriver for NativeDriver {
     async fn get_running_models(&self) -> Result<Vec<VramProcess>, DriverError> {
         let state = self.engine.lock().unwrap();
         if let Some(active) = &*state {
+            let weights_bytes = active._mmap.len() as u64;
+            let (vram, ram) = match self.device {
+                Device::Cuda(_) => (weights_bytes, 0),
+                Device::Metal(_) => (weights_bytes, weights_bytes), // Unified Memory
+                Device::Cpu => (0, weights_bytes),
+            };
+            let elapsed_secs = active.last_used.elapsed().as_secs();
             Ok(vec![VramProcess {
                 model_name: active.model_name.clone(),
-                size_bytes: 1024 * 1024 * 1024,
-                size_vram_bytes: 0,
+                size_bytes: ram,
+                size_vram_bytes: vram,
+                status: "IDLE".to_string(),
+                active_requests: 0,
+                last_used_secs: elapsed_secs,
             }])
         } else {
             Ok(vec![])
@@ -322,7 +339,7 @@ impl InferenceDriver for NativeDriver {
 
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError> {
         let mut models = Vec::new();
-        let models_dir = Path::new("../models");
+        let models_dir = crate::get_ore_dir().join("models");
 
         if !models_dir.exists() {
             return Ok(models);
@@ -334,37 +351,99 @@ impl InferenceDriver for NativeDriver {
                     && metadata.is_dir()
                 {
                     let folder_name = entry.file_name().to_string_lossy().to_string();
-                    let gguf_path = entry.path().join("model.gguf");
+                    if folder_name.starts_with('.') || folder_name.starts_with('_') {
+                        continue;
+                    }
+
+                    let folder_path = entry.path();
+                    let gguf_path = folder_path.join("model.gguf");
+                    let st_path = folder_path.join("model.safetensors");
+
+                    let (format_label, target_file) = if gguf_path.exists() {
+                        ("GGUF (Quantized)", Some(gguf_path))
+                    } else if st_path.exists() {
+                        ("Safetensors", Some(st_path))
+                    } else {
+                        // Check if directory has WASM or binary tools
+                        let has_binary = fs::read_dir(&folder_path)
+                            .map(|r| {
+                                r.flatten().any(|e| {
+                                    let n = e.file_name().to_string_lossy().to_string();
+                                    n.ends_with(".wasm") || n.ends_with(".bin")
+                                })
+                            })
+                            .unwrap_or(false);
+
+                        if has_binary {
+                            ("WASM Cartridge", None)
+                        } else {
+                            // Empty or uninitialized directory - skip
+                            continue;
+                        }
+                    };
 
                     let mut size_bytes = 0;
                     let mut modified_at = "UNKNOWN".to_string();
+                    let mut latest_time: Option<std::time::SystemTime> = None;
 
-                    if let Ok(gguf_meta) = fs::metadata(&gguf_path) {
-                        size_bytes = gguf_meta.len();
-
-                        if let Ok(sys_time) = gguf_meta.modified() {
-                            let dt: OffsetDateTime = sys_time.into();
-
-                            let local_offset = time::UtcOffset::current_local_offset()
-                                .unwrap_or(time::UtcOffset::UTC);
-                            let local_dt = dt.to_offset(local_offset);
-
-                            // Compile-time macro format! (Zero runtime parsing cost)
-                            let format = format_description!(
-                                "[day]-[month]-[year] [hour]:[minute]:[second]"
-                            );
-                            modified_at = local_dt
-                                .format(&format)
-                                .unwrap_or_else(|_| "UNKNOWN".to_string());
+                    if let Ok(files) = fs::read_dir(&folder_path) {
+                        for f in files.flatten() {
+                            if let Ok(m) = f.metadata()
+                                && m.is_file()
+                            {
+                                size_bytes += m.len();
+                                if let Ok(mod_time) = m.modified() {
+                                    latest_time = match latest_time {
+                                        Some(prev) => Some(prev.max(mod_time)),
+                                        None => Some(mod_time),
+                                    };
+                                }
+                            }
                         }
                     }
 
-                    let display_name = folder_name.replace("-", ":");
+                    if let Some(target) = target_file
+                        && let Ok(fmeta) = fs::metadata(&target)
+                        && let Ok(st) = fmeta.modified()
+                    {
+                        latest_time = Some(st);
+                    }
+
+                    if let Some(sys_time) = latest_time {
+                        let dt: OffsetDateTime = sys_time.into();
+                        let local_offset =
+                            time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+                        let local_dt = dt.to_offset(local_offset);
+
+                        let format =
+                            format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+                        modified_at = local_dt
+                            .format(&format)
+                            .unwrap_or_else(|_| "UNKNOWN".to_string());
+                    }
+
+                    let display_name =
+                        if folder_name == "all-minilm" || folder_name == "system-embedder" {
+                            folder_name
+                        } else if let Some(idx) = folder_name.rfind('-') {
+                            let suffix = &folder_name[idx + 1..];
+                            if suffix.ends_with('b')
+                                || suffix.starts_with('q')
+                                || suffix.parse::<f64>().is_ok()
+                            {
+                                format!("{}:{}", &folder_name[..idx], suffix)
+                            } else {
+                                folder_name
+                            }
+                        } else {
+                            folder_name
+                        };
 
                     models.push(LocalModel {
                         name: display_name,
                         size_bytes,
                         modified_at,
+                        format: format_label.to_string(),
                     });
                 }
             }
@@ -380,12 +459,13 @@ impl InferenceDriver for NativeDriver {
         let safe_model = model_name.replace(":", "-");
         let device = self.device.clone();
 
+        let ore_dir = crate::get_ore_dir();
         // Spawn a blocking thread
         let result = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>, String> {
-            let model_dir = format!("../models/{}", safe_model);
-            let config_path = format!("{}/config.json", model_dir);
+            let model_dir = ore_dir.join("models").join(&safe_model);
+            let config_path = model_dir.join("config.json");
 
-            if !Path::new(&config_path).exists() {
+            if !config_path.exists() {
                 return Err(format!(
                     "Embedder config missing. Run 'ore pull {}'",
                     safe_model
@@ -406,10 +486,12 @@ impl InferenceDriver for NativeDriver {
 
             kprintln!("-> [NATIVE] Detected Embedder Architecture: '{}'", arch);
 
+            let model_dir_str = model_dir.to_string_lossy().to_string();
+
             let vectors = match arch {
                 "NomicBertModel" => {
                     // Route to custom Nomic RoPE/SwiGLU implementation
-                    let embedder = models::nomic::SystemEmbedder::load(&model_dir, &device)
+                    let embedder = models::nomic::SystemEmbedder::load(&model_dir_str, &device)
                         .map_err(|e| format!("Failed to load Nomic embedder: {}", e))?;
                     embedder
                         .embed_batch(inputs)
@@ -417,7 +499,7 @@ impl InferenceDriver for NativeDriver {
                 }
                 "BertModel" => {
                     // Route to the ultra-fast standard MiniLM implementation
-                    let embedder = models::bert::SystemEmbedder::load(&model_dir, &device)
+                    let embedder = models::bert::SystemEmbedder::load(&model_dir_str, &device)
                         .map_err(|e| format!("Failed to load BERT embedder: {}", e))?;
                     embedder
                         .embed_batch(inputs)
@@ -489,7 +571,7 @@ impl InferenceDriver for NativeDriver {
                 "-> [NATIVE DRIVER] Surgical Cache Invalidation: Wiping RAM KV-Cache for '{}'...",
                 app_id
             );
-            active.model.clear_kv_cache(); // Kill the Ghost!
+            active.model.clear_kv_cache();
 
             // We set the ID to something invalid so the next request is forced to do a Page-In
             // or Cold Start, rather than triggering a False "Shared Memory Hit"

@@ -1,5 +1,6 @@
 mod cli;
 mod interactive;
+mod telemetry;
 mod utils;
 
 use clap::Parser;
@@ -9,6 +10,7 @@ use futures_util::StreamExt;
 use hf_hub::{Repo, RepoType, api::tokio::Api};
 use std::path::{Path, PathBuf};
 use std::{fs, process::exit};
+use telemetry::*;
 use utils::{
     OreAsset, build_secure_client, download_with_progress, get_asset_map, get_hf_token,
     get_ore_dir, get_system_engine,
@@ -36,19 +38,25 @@ async fn main() {
             interactive::run_init_wizard();
         }
         Commands::Status => {
-            println!("{} Pinging ORE Kernel...", "[*]".bright_blue());
+            println!("{} Connecting to ORE Kernel...", "[*]".bright_blue());
 
-            match client
+            let res = client
                 .unwrap()
                 .get(format!("{}/health", kernel_url))
+                .header(reqwest::header::ACCEPT, "application/json")
                 .send()
-                .await
-            {
+                .await;
+
+            match res {
                 Ok(response) => {
                     if response.status().is_success() {
                         let text = response.text().await.unwrap_or_default();
-                        println!("{} Kernel is {}", "[+]".green(), "ONLINE".green().bold());
-                        println!("{} System Message: {}", "[i]".bright_blue(), text.italic());
+                        if let Ok(health) = serde_json::from_str::<KernelHealthResponse>(&text) {
+                            render_status(&health);
+                        } else {
+                            println!("{} Kernel is {}", "[+]".green(), "ONLINE".green().bold());
+                            println!("{}\n", text);
+                        }
                     } else {
                         println!(
                             "{} Kernel returned an error: {}",
@@ -63,7 +71,7 @@ async fn main() {
                         "[-]".red().bold(),
                         "OFFLINE".red().bold()
                     );
-                    println!("    Run `cargo run -p ore-server` to boot the OS.");
+                    println!("    Run `cargo run -p ore-server` to boot the OS.\n");
                     exit(1);
                 }
             }
@@ -73,22 +81,35 @@ async fn main() {
             match client
                 .unwrap()
                 .get(format!("{}/top", kernel_url))
+                .header(reqwest::header::ACCEPT, "application/json")
                 .send()
                 .await
             {
-                Ok(response) => println!("\n{}", response.text().await.unwrap_or_default()),
+                Ok(response) => {
+                    let text = response.text().await.unwrap_or_default();
+                    if let Ok(top) = serde_json::from_str::<TopTelemetryResponse>(&text) {
+                        render_top(&top);
+                    } else {
+                        println!("\n{}", text);
+                    }
+                }
                 Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
             }
         }
         Commands::Ps => match client
             .unwrap()
             .get(format!("{}/ps", kernel_url))
+            .header(reqwest::header::ACCEPT, "application/json")
             .send()
             .await
         {
             Ok(response) => {
                 let text = response.text().await.unwrap_or_default();
-                println!("\n{}", text);
+                if let Ok(ps) = serde_json::from_str::<PsResponse>(&text) {
+                    render_ps(&ps);
+                } else {
+                    println!("\n{}", text);
+                }
             }
             Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
         },
@@ -99,23 +120,59 @@ async fn main() {
         } => {
             let c = client.unwrap();
             if *agents {
-                match c.get(format!("{}/agents", kernel_url)).send().await {
-                    Ok(response) => println!("\n{}", response.text().await.unwrap_or_default()),
+                match c
+                    .get(format!("{}/agents", kernel_url))
+                    .header(reqwest::header::ACCEPT, "application/json")
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        let text = response.text().await.unwrap_or_default();
+                        if let Ok(data) = serde_json::from_str::<AgentsResponse>(&text) {
+                            render_agents(&data);
+                        } else {
+                            println!("\n{}", text);
+                        }
+                    }
                     Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
                 }
             }
 
             // If the user wants Manifests
             if *manifests {
-                match c.get(format!("{}/manifests", kernel_url)).send().await {
-                    Ok(response) => println!("\n{}", response.text().await.unwrap_or_default()),
+                match c
+                    .get(format!("{}/manifests", kernel_url))
+                    .header(reqwest::header::ACCEPT, "application/json")
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        let text = response.text().await.unwrap_or_default();
+                        if let Ok(data) = serde_json::from_str::<ManifestsResponse>(&text) {
+                            render_manifests(&data);
+                        } else {
+                            println!("\n{}", text);
+                        }
+                    }
                     Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
                 }
             }
 
             if *models || (!*agents && !*manifests) {
-                match c.get(format!("{}/ls", kernel_url)).send().await {
-                    Ok(response) => println!("\n{}", response.text().await.unwrap_or_default()),
+                match c
+                    .get(format!("{}/ls", kernel_url))
+                    .header(reqwest::header::ACCEPT, "application/json")
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        let text = response.text().await.unwrap_or_default();
+                        if let Ok(data) = serde_json::from_str::<LsResponse>(&text) {
+                            render_ls(&data);
+                        } else {
+                            println!("\n{}", text);
+                        }
+                    }
                     Err(_) => println!("{} ORE Kernel is offline.", "[-]".red()),
                 }
             }
