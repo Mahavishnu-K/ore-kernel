@@ -7,5 +7,5 @@ pub const MANIFESTS_DIR_NAME: &str = "manifests";
 pub const SANDBOX_DIR_NAME: &str = "sandbox";
 
 pub const DEFAULT_SERVER_HOST: &str = "127.0.0.1";
-pub const DEFAULT_SERVER_PORT: u16 = 8080;
-pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8080";
+pub const DEFAULT_SERVER_PORT: u16 = 6767;
+pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:6767";

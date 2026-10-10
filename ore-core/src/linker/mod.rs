@@ -9,6 +9,7 @@ pub use syscalls::HasLinkerState;
 use anyhow::Result;
 use wasmtime::Linker;
 
+// [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
 /// Injects the ORE Dynamic Linker (ore-ld) Host Functions into the Wasmtime environment.
 /// This instantly gives the Agent the ability to perform C-ABI True Memory Fusion.
 pub fn add_to_linker<T>(linker: &mut Linker<T>) -> Result<()>
@@ -17,6 +18,7 @@ where
 {
     crate::kprintln!("-> [ORE-LD] Initializing True Memory Fusion Subsystem...");
 
+    // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
     // The C-ABI Native Linker (For Rust, C, C++, Zig)
     linker.func_wrap("env", "ore_dlopen", syscalls::trap_ore_dlopen)?;
     linker.func_wrap("env", "ore_dlsym", syscalls::trap_ore_dlsym)?;

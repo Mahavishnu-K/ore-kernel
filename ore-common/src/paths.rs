@@ -45,6 +45,11 @@ pub fn get_token_path() -> PathBuf {
     get_ore_dir().join(TOKEN_FILE_NAME)
 }
 
+/// Resolves the path to the ore.toml configuration file.
+pub fn get_config_path() -> PathBuf {
+    get_ore_dir().join(CONFIG_FILE_NAME)
+}
+
 /// Resolves the path to the local model weights directory.
 pub fn get_models_dir() -> PathBuf {
     let dir = get_ore_dir().join(MODELS_DIR_NAME);

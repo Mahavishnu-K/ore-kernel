@@ -2,6 +2,7 @@ use crate::linker::linker_state::LinkerState;
 use crate::linker::mmu::{allocate_plugin_memory, forge_pic_globals};
 use wasmtime::{Caller, Linker, Module, Ref};
 
+// [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
 /// Trait to ensure the Caller's generic State contains our Linker Registry.
 /// The master Sandbox state struct in sandbox.rs must implement this!
 pub trait HasLinkerState {
@@ -9,6 +10,7 @@ pub trait HasLinkerState {
     fn linker_state_mut(&mut self) -> &mut LinkerState;
 }
 
+// [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
 /// SYSCALL: ore_dlopen
 /// Dynamically loads a .wasi.so file, fuses its memory, and initializes it.
 /// Returns: Handle ID (> 0) on success, or <= 0 on failure.
@@ -121,6 +123,7 @@ pub fn trap_ore_dlopen<T: HasLinkerState>(
 
     // Silence errors here if the plugin didn't explicitly request an export.
     // Some plugins might not need the table.
+    // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
     let _ = plugin_linker.define(&mut caller, "env", "memory", memory);
     let _ = plugin_linker.define(&mut caller, "env", "__indirect_function_table", agent_table);
     let _ = plugin_linker.define(&mut caller, "env", "__memory_base", mem_global);
@@ -169,6 +172,7 @@ pub fn trap_ore_dlopen<T: HasLinkerState>(
     handle
 }
 
+// [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
 /// SYSCALL: ore_dlsym
 /// Returns the integer index of the requested function, dynamically growing the table if necessary.
 /// Returns: Function Pointer (Index > 0) on success, or 0 (NULL) on failure.

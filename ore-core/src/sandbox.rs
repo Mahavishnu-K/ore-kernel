@@ -130,10 +130,10 @@ impl WasmSandbox {
             }
         };
 
-        // CRITICAL WINDOWS FIX: Canonicalize path for Windows WASI compatibility
         let canon_tmp = std::fs::canonicalize(&host_tmp_dir).unwrap_or(host_tmp_dir);
         host_tmp_dir = sanitize_unc(canon_tmp);
 
+        // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
         let crypto_dir = host_tmp_dir.join(".ore_crypto");
         std::fs::create_dir_all(&crypto_dir)?;
 
@@ -154,6 +154,7 @@ impl WasmSandbox {
         let watcher_stop = stop_signal.clone();
 
         // Spawn a low-latency thread polling the VFS crypto queue while WASM executes
+        // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
         let crypto_thread = std::thread::spawn(move || {
             crate::kprintln!(
                 "-> [SANDBOX] Crypto Portal Thread started. Polling for requests in {}...",
@@ -204,6 +205,7 @@ impl WasmSandbox {
         });
 
         // ORE INCEPTION NETWORK PORTAL (For JS/Python VFS Routing)
+        // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
         let network_dir = host_tmp_dir.join(".ore_network");
         std::fs::create_dir_all(&network_dir)?;
 
@@ -223,6 +225,7 @@ impl WasmSandbox {
         let net_localhost = localhost_access;
         let net_closure_tmp = host_tmp_dir.clone();
 
+        // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
         let network_thread = std::thread::spawn(move || {
             crate::kprintln!("-> [SANDBOX] Concurrent Network Portal Watcher started...");
 
@@ -379,6 +382,7 @@ impl WasmSandbox {
         let closure_rules = rules.clone();
         let closure_tmp_dir = host_tmp_dir.clone();
 
+        // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
         linker.func_wrap(
             "ore",
             "fetch",
@@ -588,6 +592,7 @@ impl WasmSandbox {
 
         // GLOBAL STANDARD LIBRARY MOUNT (For JS/TS Node.js API Polyfills)
         // We mount ~/.ore/runtimes/js_modules to /modules in the sandbox (Read-Only)
+        // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
         if params.args.iter().any(|arg| arg == "quickjs") {
             let js_modules_dir = crate::get_ore_dir().join("runtimes").join("modules");
             if js_modules_dir.exists() {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use wasmtime::{Instance, Table};
 
+// [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
 pub struct LinkerState {
     pub loaded_plugins: HashMap<i32, Instance>,
     pub next_handle: i32,
