@@ -1,11 +1,11 @@
+use ore_common::constants;
+use ore_common::paths;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 use sysinfo::System;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
-use ore_common::paths;
-use ore_common::constants;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelStatus {

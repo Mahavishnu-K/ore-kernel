@@ -1,7 +1,7 @@
 use crate::linker::linker_state::LinkerState;
 use crate::linker::mmu::{allocate_plugin_memory, forge_pic_globals};
-use wasmtime::{Caller, Linker, Module, Ref};
 use ore_common::paths;
+use wasmtime::{Caller, Linker, Module, Ref};
 
 // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
 /// Trait to ensure the Caller's generic State contains our Linker Registry.

@@ -1,8 +1,8 @@
 use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
 use crate::memory::ContextMessage;
-use ore_common::constants;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use ore_common::constants;
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicUsize, Ordering};

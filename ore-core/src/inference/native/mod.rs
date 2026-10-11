@@ -5,12 +5,12 @@ pub mod models;
 
 use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
 use crate::memory::ContextMessage;
-use ore_common::paths;
-use ore_common::constants;
 use anyhow::Result;
 use async_trait::async_trait;
 use candle_core::{DType, Device, Tensor};
 use engine::ActiveEngine;
+use ore_common::constants;
+use ore_common::paths;
 use std::fs;
 use std::sync::{Arc, Mutex as StdMutex};
 use time::OffsetDateTime;
@@ -359,8 +359,7 @@ impl InferenceDriver for NativeDriver {
 
                     let folder_path = entry.path();
                     let gguf_path = folder_path.join(constants::MODEL_GGUF_FILE_NAME);
-                    let st_path =
-                        folder_path.join(constants::MODEL_SAFETENSORS_FILE_NAME);
+                    let st_path = folder_path.join(constants::MODEL_SAFETENSORS_FILE_NAME);
 
                     let (format_label, target_file) = if gguf_path.exists() {
                         ("GGUF (Quantized)", Some(gguf_path))

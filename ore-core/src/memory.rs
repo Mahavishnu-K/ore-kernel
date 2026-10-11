@@ -6,8 +6,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-pub use ore_common::types::ContextMessage;
 use ore_common::paths;
+pub use ore_common::types::ContextMessage;
 
 // THE OS PAGEFILE MANAGER (SSD Swap)
 pub struct Pager;

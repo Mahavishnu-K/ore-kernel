@@ -1,6 +1,6 @@
+use ore_common::constants;
 use std::fs;
 use std::path::{Path, PathBuf};
-use ore_common::constants;
 
 pub struct ToolPreparationContext {
     pub wasm_path: PathBuf,

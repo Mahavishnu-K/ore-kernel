@@ -14,6 +14,8 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use ore_common::constants;
+use ore_common::paths;
 use ore_core::driver::InferenceDriver;
 use ore_core::inference::external::ollama::OllamaDriver;
 use ore_core::inference::native::NativeDriver;
@@ -22,8 +24,6 @@ use ore_core::kprintln;
 use ore_core::registry::AppRegistry;
 use ore_core::sandbox::WasmSandbox;
 use ore_core::scheduler::GpuScheduler;
-use ore_common::paths;
-use ore_common::constants;
 
 use crate::middleware::auth_middleware;
 use crate::state::{KernelState, OreConfig};

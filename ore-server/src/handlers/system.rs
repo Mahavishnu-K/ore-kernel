@@ -4,9 +4,9 @@ use crate::state::KernelState;
 use axum::extract::{Json, Path, State};
 use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
+use ore_common::paths;
 use ore_core::kprintln;
 use ore_core::memory::Pager;
-use ore_common::paths;
 use std::sync::Arc;
 
 fn wants_json(headers: &HeaderMap) -> bool {

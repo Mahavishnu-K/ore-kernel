@@ -5,9 +5,9 @@ use std::fs;
 use std::process::exit;
 
 use crate::utils::{get_ore_dir, get_ore_theme, print_panel, print_section_divider};
+use ore_common::constants;
 use ore_common::manifest::{AppManifest, NetworkRule};
 use ore_common::paths;
-use ore_common::constants;
 
 pub fn run_init_wizard() {
     // 1. ASCII Art Branding
