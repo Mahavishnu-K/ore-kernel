@@ -67,6 +67,6 @@ These tests prove that programs written in C, Rust, and Zig can dynamically load
 In standard architectures, if a Python agent needs to execute C++ logic, it spins up a heavy container, sends data over an HTTP socket, waits for a server to process it, and sends it back—taking hundreds of milliseconds. 
 
 The ORE Kernel accomplishes this in **nanoseconds**. It acts as a Universal Execution Engine:
-- **The Kernel** manages the OS routing tables (`sandbox.rs`).
+- **The Kernel** manages the OS routing tables (`sandbox/shims.rs`).
 - **The Toolchain** forces the LLVM compilers to obey the memory physics (`ore mktool`).
 - **The SDKs** hide the ugly pointers from the developers (`ore.h`, `ore-sys`, `ore.zig`).

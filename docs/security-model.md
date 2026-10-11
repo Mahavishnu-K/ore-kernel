@@ -153,7 +153,7 @@ An agent cannot read from, write to, or search a semantic pipe unless that pipe 
 
 ### Layer 6: Sandboxed Tool Execution (WASM)
 
-**Source:** [`ore-core/src/sandbox.rs`](../ore-core/src/sandbox.rs) · [`ore-server/src/execution/`](../ore-server/src/execution/)
+**Source:** [`ore-core/src/sandbox/`](../ore-core/src/sandbox/) · [`ore-server/src/execution/`](../ore-server/src/execution/)
 
 When agents need to execute tools or autonomous scripts, ORE forces execution through the **Console-Cartridge WASM Sandbox**, providing mathematical guarantees of host safety:
 
@@ -172,7 +172,7 @@ When agents need to execute tools or autonomous scripts, ORE forces execution th
 
 ### Layer 7: Egress Network Firewall & Layer 7 Portal
 
-**Source:** [`ore-core/src/sandbox.rs`](../ore-core/src/sandbox.rs) · [`ore-server/shims/`](../ore-server/shims/)
+**Source:** [`ore-core/src/sandbox/`](../ore-core/src/sandbox/) · [`ore-server/shims/`](../ore-server/shims/)
 
 The WASM sandbox operates with **zero raw TCP/UDP socket access**. Network access is mediated through an asynchronous Layer 7 network proxy:
 

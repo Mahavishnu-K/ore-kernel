@@ -187,6 +187,14 @@ Return stdout/stderr                   Mount VFS (/workspace, /ore_tmp)
 
 ```text
 ore-system/
+├── ore-common/              Shared foundation crate (zero runtime bloat)
+│   ├── constants.rs         Centralized ports (6767, 11434), fuel limits, default paths
+│   ├── paths.rs             Canonical path resolvers (~/.ore, models, memory, manifests)
+│   ├── protocol.rs          Universal protocol DTOs & API schemas across Server, CLI, Core
+│   ├── manifest.rs          Typed AppManifest schema and validation engine
+│   ├── config.rs            System configuration schemas (OreConfig, SystemConfig, MemoryConfig)
+│   ├── types.rs             Domain types (LocalModel, VramProcess, ContextMessage)
+│   └── text.rs              ANSI-aware terminal text measuring and truncation utilities
 ├── ore-core/                Kernel logic
 │   ├── driver.rs            HAL trait (InferenceDriver) + shared types
 │   ├── firewall.rs          Context firewall (PII redaction, injection heuristics)
@@ -194,7 +202,15 @@ ore-system/
 │   ├── scheduler.rs         Multi-tenant GpuScheduler, ModelRegistry, MemoryAccountant
 │   ├── memory.rs            Memory Management (context persistence & KV-cache paging)
 │   ├── registry.rs          App manifest registry (TOML loader, validation)
-│   ├── sandbox.rs           Zero-Trust WASM Sandbox, VFS, network portal watcher
+│   ├── sandbox/             Modular Zero-Trust WASM Sandbox Subsystem
+│   │   ├── mod.rs           Hypervisor facade (WasmSandbox) & execution pipeline
+│   │   ├── params.rs        Data contracts (ExecuteParams, OreResponseMeta)
+│   │   ├── state.rs         Master sandbox state & RAII Drop guards (TempDirGuard, ThreadJoinGuard)
+│   │   ├── cache.rs         AOT (.cwasm) compiler, metadata timestamp validator & mmap loader
+│   │   ├── vfs.rs           WASI capability directory mounting & UNC path sanitization
+│   │   ├── shims.rs         Host syscalls (ore::fetch), WasmEdge sock_accept shadowing & OS table
+│   │   ├── portals/         Concurrent VFS IPC daemons (crypto.rs, network.rs)
+│   │   └── net/             Layer 7 Egress Network Engine (fetch.rs)
 │   ├── crypto.rs            VFS-mapped hardware cryptographic subsystem
 │   ├── linker/              WebAssembly Dynamic Linker (ore-ld)
 │   │   ├── mod.rs           Linker entrypoint

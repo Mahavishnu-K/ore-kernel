@@ -266,7 +266,7 @@ An OS-style memory management system for true KV-Cache paging and agent conversa
 - **Manual Compaction** - Force a memory compaction cycle via `ore compact <app_id>`.
 - Agents opt-in to stateful paging via the `stateful_paging = true` flag in their manifest's `[resources]` section.
 
-**Execution Environments** (`ore-core/src/sandbox.rs` · `ore-server/src/execution/`)
+**Execution Environments** (`ore-core/src/sandbox/` · `ore-server/src/execution/`)
 A modular execution engine allowing agents to safely run pre-compiled WebAssembly tools (Console Cartridges), dynamic autonomous scripts (Inception Mode), or raw host shell commands:
 - **Zero-Trust WASM Sandbox** - WebAssembly isolation with deterministic CPU profiling (configurable `max_cpu_instructions`, default `5,000,000,000` instruction fuel limit via `wasmtime`) to mathematically prevent infinite loops and host lockups.
 - **AOT Zero-RAM Caching (`.cwasm`)** - WASM modules are JIT-compiled on first run and serialized to disk. Subsequent runs bypass the compiler and `mmap` the pre-compiled `.cwasm` native code directly from the OS Page Cache with 0MB RAM bloat. Cache freshness is tracked via `std::fs::metadata` timestamps.
@@ -395,10 +395,18 @@ An in-memory `HashMap`-backed registry that loads and validates all `.toml` mani
 
 ## Project Structure
 
-ORE is organized as a Rust workspace with four crates:
+ORE is organized as a Rust workspace with five crates:
 
 ```
 ore-system/
+├── ore-common/              # Lightweight shared foundation crate (zero runtime bloat)
+│   ├── constants.rs         #   ├── Centralized ports, fuel limits, buffer sizes, default paths
+│   ├── paths.rs             #   ├── Canonical system path resolvers (~/.ore, models, memory, manifests)
+│   ├── protocol.rs          #   ├── Universal protocol DTOs & API schemas across Server, CLI, and Core
+│   ├── manifest.rs          #   ├── Typed AppManifest schema and validation engine
+│   ├── config.rs            #   ├── System configuration schemas (OreConfig, SystemConfig, MemoryConfig)
+│   ├── types.rs             #   ├── Domain types (LocalModel, VramProcess, ContextMessage)
+│   └── text.rs              #   └── ANSI-aware terminal text measuring and truncation utilities
 ├── ore-core/                # Kernel logic
 │   ├── driver.rs            #   ├── HAL trait (InferenceDriver) + shared types
 │   ├── firewall.rs          #   ├── Context firewall (PII, injection)
@@ -406,7 +414,15 @@ ore-system/
 │   ├── scheduler.rs         #   ├── Multi-tenant GpuScheduler, ModelRegistry, MemoryAccountant
 │   ├── memory.rs            #   ├── Memory Management (context freezing & restoration)
 │   ├── registry.rs          #   ├── App manifest registry (TOML loader + cache)
-│   ├── sandbox.rs           #   ├── Zero-Trust WASM Sandbox (AOT .cwasm mmap, Layer 7 network proxy)
+│   ├── sandbox/             #   ├── Modular Zero-Trust WASM Sandbox Subsystem
+│   │   ├── mod.rs           #   │   ├── Hypervisor facade (WasmSandbox) & execution pipeline
+│   │   ├── params.rs        #   │   ├── Data contracts (ExecuteParams, OreResponseMeta)
+│   │   ├── state.rs         #   │   ├── Master sandbox state & RAII Drop guards (TempDirGuard, ThreadJoinGuard)
+│   │   ├── cache.rs         #   │   ├── AOT (.cwasm) compiler, metadata timestamp validator & mmap loader
+│   │   ├── vfs.rs           #   │   ├── WASI VFS configuration, UNC path sanitizer & capability directory mounts
+│   │   ├── shims.rs         #   │   ├── Host syscalls (ore::fetch), WasmEdge sock_accept shadowing & OS table
+│   │   ├── portals/         #   │   ├── Concurrent VFS IPC background daemons (crypto.rs, network.rs)
+│   │   └── net/             #   │   └── Layer 7 Egress Network Engine (fetch.rs)
 │   ├── crypto.rs            #   ├── Cryptographic subsystem (VFS mapped)
 │   ├── linker/              #   ├── WebAssembly Dynamic Linker (ore-ld)
 │   │   ├── mod.rs           #   │   ├── Linker module entrypoint

@@ -2,7 +2,7 @@
 
 > Modular execution (Tool, Script, Shell), AOT Zero-RAM caching (`.cwasm`), Layer 7 Network Portal, and Capability-Based VFS.
 
-**Source:** [`ore-core/src/sandbox.rs`](../../ore-core/src/sandbox.rs) · [`ore-server/src/execution/`](../../ore-server/src/execution/)
+**Source:** [`ore-core/src/sandbox/`](../../ore-core/src/sandbox/) · [`ore-server/src/execution/`](../../ore-server/src/execution/)
 
 ---
 
@@ -41,7 +41,7 @@ POST /execute
        └───────┬───────┴───────┘
                ▼
 ┌──────────────────────────────────────────────┐
-│ WasmSandbox::execute(params)                 │  ore-core/src/sandbox.rs
+│ WasmSandbox::execute(params)                 │  ore-core/src/sandbox/mod.rs
 │ · Capability-based VFS (/workspace, /ore_tmp)│
 │ · AOT Zero-RAM Caching (.cwasm mmap)         │
 │ · CPU Fuel Limits (max_cpu_instructions)     │
@@ -64,12 +64,40 @@ POST /execute
 - **Dynamic Dependency Management**:
   - **Python**: Detects `requirements.txt` or explicit dependencies, stages modules, mounts them dynamically to VFS, and sets `PYTHONPATH=/packages:/app:/workspace/{hash}` with `PYTHONUNBUFFERED=1`.
   - **JavaScript/Node.js**: Automatically mounts polyfilled modules into `/modules` (Read-Only) and injects CommonJS runtime shims.
+  - **Top-Level Await & Error Boundary**: JavaScript/TypeScript inception code is wrapped via `wrap_tla_with_error_boundary`, which isolates static ES module imports and encloses execution in a Promise block to enable native top-level `await` and safely route unhandled rejections to STDERR.
 
 ### 3. Raw Host Shell Bypass (UNSAFE)
 - **Source:** [`ore-server/src/execution/shell.rs`](../../ore-server/src/execution/shell.rs)
 - Bypasses the sandbox completely to run host commands (e.g., `npm run dev`, `git status`).
 - Manifest check: Structurally rejected unless `manifest.execution.can_execute_shell = true`.
 - Agents with this permission are permanently flagged as **UNSAFE** in security dashboards.
+
+---
+
+## Core Sandbox Subsystem (`ore-core/src/sandbox/`)
+
+The kernel sandbox is architected into modular components:
+
+```text
+ore-core/src/sandbox/
+├── mod.rs               # Hypervisor facade (WasmSandbox struct & linear execution pipeline)
+├── params.rs            # Data contracts (ExecuteParams, OreResponseMeta)
+├── state.rs             # OreSandboxState + RAII guards (TempDirGuard, ThreadJoinGuard)
+├── cache.rs             # Ahead-Of-Time (.cwasm) compiler, timestamp validator & mmap loader
+├── vfs.rs               # WASI VFS configuration, UNC sanitization & capability mounts
+├── shims.rs             # Host syscalls (ore::fetch), dynamic shadowing (sock_accept) & OS table
+├── portals/             # Concurrent VFS background daemons
+│   ├── mod.rs           # Portal daemon coordinator (start_all)
+│   ├── crypto.rs        # Dedicated .ore_crypto portal (atomic req.bin / res.bin loop)
+│   └── network.rs       # Concurrent .ore_network watcher (req_*.json / res_*.bin)
+└── net/                 # Layer 7 Egress Network Engine
+    ├── mod.rs           # Network exports
+    └── fetch.rs         # execute_ore_fetch (domain/method whitelist, streaming, cookies)
+```
+
+- **RAII Resource Management**: `TempDirGuard` guarantees automatic deletion of ephemeral directories (`~/.ore/tmp/<exec_id>`) upon task completion, traps, or panics. `ThreadJoinGuard` ensures background portal threads gracefully terminate and join.
+- **Dynamic Shadowing**: Legacy socket calls expected by interpreters (such as QuickJS `sock_accept`) are shadowed via `linker.allow_shadowing(true)` and cleanly stubbed to `ENOSYS`.
+- **Trap Defense**: `linker.define_unknown_imports_as_traps(&module)` ensures unexpected third-party imports halt safely instead of failing VM instantiation.
 
 ---
 
