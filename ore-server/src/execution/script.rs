@@ -219,6 +219,8 @@ pub fn prepare_script(
             })
             .to_string();
 
+        let wrapped_script = wrap_tla_with_error_boundary(&routed_script);
+
         let final_script = if let Some(deps) = dependencies
             && !deps.is_empty()
         {
@@ -292,7 +294,7 @@ pub fn prepare_script(
             let entry_file = cache_dir.join(format!("index_{}.{}", run_id, ext));
             let out_file = cache_dir.join(format!("bundle_{}.js", run_id));
 
-            fs::write(&entry_file, &routed_script).unwrap();
+            fs::write(&entry_file, &wrapped_script).unwrap();
 
             let mut esbuild = if cfg!(target_os = "windows") {
                 let mut cmd = std::process::Command::new("cmd");
@@ -370,7 +372,7 @@ pub fn prepare_script(
                 ));
             }
         } else {
-            format!("{}\n{}", CJS_BRIDGE, routed_script)
+            format!("{}\n{}", CJS_BRIDGE, wrapped_script)
         };
 
         run_args.push(format!("/ore_tmp/{}", filename));
@@ -393,4 +395,60 @@ pub fn prepare_script(
         resolved_req_hash,
         dynamic_vfs_mounts,
     })
+}
+
+/// Wraps JavaScript/TypeScript inception scripts inside an automatic Top-Level Await
+/// and unhandled rejection safeguard.
+///
+/// Static ES module `import` declarations cannot appear inside function closures.
+/// This function partitions static `import` declarations so they remain at the module's
+/// top level, while enclosing the execution body in a `Promise.resolve().then(async () => { ... }).catch(...)`
+/// block. This ensures that naked `await` expressions work natively, while unhandled promise rejections
+/// or runtime exceptions are cleanly intercepted and printed to STDERR rather than exiting silently.
+pub fn wrap_tla_with_error_boundary(code: &str) -> String {
+    let mut import_lines = Vec::new();
+    let mut body_lines = Vec::new();
+    let mut in_import = false;
+
+    for line in code.lines() {
+        let trimmed = line.trim();
+
+        if in_import {
+            import_lines.push(line);
+            let has_closing_quote = trimmed.contains('\'') || trimmed.contains('"');
+            if (trimmed.ends_with('\'') || trimmed.ends_with('"') || trimmed.ends_with(';'))
+                && has_closing_quote
+            {
+                in_import = false;
+            }
+        } else if (trimmed.starts_with("import ") || trimmed.starts_with("import\t"))
+            && !trimmed.starts_with("import(")
+        {
+            let has_specifier = (trimmed.contains('\'') || trimmed.contains('"'))
+                && (trimmed.ends_with('\'') || trimmed.ends_with('"') || trimmed.ends_with(';'));
+
+            if has_specifier {
+                import_lines.push(line);
+            } else {
+                in_import = true;
+                import_lines.push(line);
+            }
+        } else {
+            body_lines.push(line);
+        }
+    }
+
+    let imports = import_lines.join("\n");
+    let body = body_lines.join("\n");
+
+    let safeguard_block = format!(
+        "// Automatic Top-Level Await & Error Safeguard\nPromise.resolve().then(async () => {{\n{}\n}}).catch(err => {{\n    const msg = (err instanceof Error || (err && err.message)) ? ((err.name || 'Error') + ': ' + err.message + (err.stack ? '\\n' + err.stack : '')) : (err && err.stack ? err.stack : err);\n    const printFn = (typeof console !== 'undefined' && (console.error || console.log)) || (typeof print === 'function' ? print : null);\n    if (printFn) printFn(\"\\n[RUNTIME ERROR]:\", msg);\n}});\n",
+        body
+    );
+
+    if imports.trim().is_empty() {
+        safeguard_block
+    } else {
+        format!("{}\n\n{}", imports, safeguard_block)
+    }
 }

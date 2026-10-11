@@ -44,6 +44,20 @@ globalThis.URLSearchParams = _ore_url.URLSearchParams || _ore_url.default?.URLSe
 globalThis.setImmediate = globalThis.setImmediate || _ore_timers.setImmediate || ((fn, ...args) => setTimeout(fn, 0, ...args));
 globalThis.clearImmediate = globalThis.clearImmediate || _ore_timers.clearImmediate || clearTimeout;
 
+// QuickJS only provides console.log by default; polyfill console.error, warn, and info
+if (typeof console !== 'undefined') {
+    console.error = console.error || console.log;
+    console.warn = console.warn || console.log;
+    console.info = console.info || console.log;
+} else if (typeof print === 'function') {
+    globalThis.console = {
+        log: print,
+        error: print,
+        warn: print,
+        info: print,
+    };
+}
+
 // The Master Dynamic Linker Table
 const _ore_c_mods = {
     'constants': _ore_constants.default || _ore_constants,
