@@ -11,7 +11,7 @@ def main():
     start_time = time.perf_counter()
     
     response = ore.execute(
-        app_id="wasm_agent",
+        app_id="web_scrapper",
         tool_name="network_interception"
     )
 

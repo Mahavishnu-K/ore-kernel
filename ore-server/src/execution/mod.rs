@@ -22,7 +22,7 @@ pub async fn execute_request(
         Some(m) => m,
         None => {
             return Err(format!(
-                "KERNEL ALERT: Unregistered Agent '{}'. Access Denied.",
+                "Unregistered Agent '{}'. Access Denied.",
                 payload.app_id
             ));
         }
@@ -45,7 +45,7 @@ pub async fn execute_request(
                 "-> [BLOCKED] Agent '{}' lacks raw SHELL execution permissions.",
                 manifest.app_id
             );
-            return Err("KERNEL ALERT: Permission Denied. can_execute_shell is false.".to_string());
+            return Err("Permission Denied. can_execute_shell is false.".to_string());
         }
 
         crate::kprintln!(
@@ -61,9 +61,7 @@ pub async fn execute_request(
             "-> [BLOCKED] Agent '{}' lacks WASM execution permissions.",
             manifest.app_id
         );
-        return Err(
-            "KERNEL ALERT: Permission Denied. can_execute_wasm is false in manifest.".to_string(),
-        );
+        return Err("Permission Denied. can_execute_wasm is false in manifest.".to_string());
     }
 
     let wasm_path;
@@ -84,7 +82,7 @@ pub async fn execute_request(
                 && !manifest.execution.allowed_tools.contains(&"*".to_string())
             {
                 return Err(format!(
-                    "KERNEL ALERT: Tool '{}' is not whitelisted in manifest. Add it to allowed_tools.",
+                    "Tool '{}' is not whitelisted in manifest. Add it to allowed_tools.",
                     name
                 ));
             }
@@ -111,7 +109,7 @@ pub async fn execute_request(
                     .contains(&"*".to_string())
             {
                 return Err(format!(
-                    "KERNEL ALERT: Autonomous scripting in '{}' is not whitelisted. Add it to allowed_language_runtimes.",
+                    "Autonomous scripting in '{}' is not whitelisted. Add it to allowed_language_runtimes.",
                     language
                 ));
             }
