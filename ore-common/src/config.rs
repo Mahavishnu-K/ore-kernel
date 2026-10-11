@@ -1,6 +1,6 @@
 //! ore.toml system configuration schema and defaults.
 
-use crate::constants::{DEFAULT_EMBEDDER, DEFAULT_WASM_IDLE_TIMEOUT_MINS};
+use crate::constants::DEFAULT_EMBEDDER;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -34,12 +34,6 @@ fn default_embedder() -> String {
 pub struct MemoryConfig {
     pub cache_ttl_hours: u64,
     pub pipe_ttl_hours: u64,
-    #[serde(default = "default_wasm_timeout")]
-    pub wasm_idle_timeout_mins: u64,
-}
-
-fn default_wasm_timeout() -> u64 {
-    DEFAULT_WASM_IDLE_TIMEOUT_MINS
 }
 
 impl Default for SystemConfig {
@@ -56,7 +50,6 @@ impl Default for MemoryConfig {
         Self {
             cache_ttl_hours: 24,
             pipe_ttl_hours: 24,
-            wasm_idle_timeout_mins: default_wasm_timeout(),
         }
     }
 }
