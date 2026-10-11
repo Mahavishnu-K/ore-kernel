@@ -1,5 +1,6 @@
 use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
 use crate::memory::ContextMessage;
+use ore_common::constants;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use reqwest::Client;
@@ -38,6 +39,12 @@ impl OllamaDriver {
             client: Client::new(),
             activity: DashMap::new(),
         }
+    }
+}
+
+impl Default for OllamaDriver {
+    fn default() -> Self {
+        Self::new(constants::DEFAULT_OLLAMA_URL)
     }
 }
 

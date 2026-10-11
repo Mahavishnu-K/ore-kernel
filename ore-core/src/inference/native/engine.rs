@@ -5,6 +5,8 @@ use crate::inference::native::models::qwen2::ModelWeights as Qwen2Model;
 use crate::inference::native::models::qwen3::ModelWeights as Qwen3Model;
 use crate::inference::native::models::qwen3_moe::GGUFQWenMoE as Qwen3MoeModel;
 use crate::memory::ContextMessage;
+use ore_common::paths;
+use ore_common::constants;
 use anyhow::{Error as E, Result};
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
@@ -118,9 +120,9 @@ impl ActiveEngine {
         device: &Device,
     ) -> Result<Self> {
         let safe_folder_name = model_name.replace(":", "-");
-        let model_dir = crate::get_ore_dir().join("models").join(&safe_folder_name);
-        let gguf_path = model_dir.join("model.gguf");
-        let local_tokenizer_path = model_dir.join("tokenizer.json");
+        let model_dir = paths::get_models_dir().join(&safe_folder_name);
+        let gguf_path = model_dir.join(constants::MODEL_GGUF_FILE_NAME);
+        let local_tokenizer_path = model_dir.join(constants::TOKENIZER_JSON_FILE_NAME);
 
         if !Path::new(&gguf_path).exists() {
             return Err(E::msg(format!(

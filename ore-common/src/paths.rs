@@ -1,7 +1,9 @@
 //! Canonical path resolvers for ORE base directory, configuration, and data folders.
 
 use crate::constants::{
-    CONFIG_FILE_NAME, MANIFESTS_DIR_NAME, MODELS_DIR_NAME, SANDBOX_DIR_NAME, TOKEN_FILE_NAME,
+    CACHE_DIR_NAME, CONFIG_FILE_NAME, MANIFESTS_DIR_NAME, MEMORY_DIR_NAME, MODELS_DIR_NAME,
+    PLUGINS_DIR_NAME, RUNTIMES_DIR_NAME, SANDBOX_DIR_NAME, TMP_DIR_NAME, TOKEN_FILE_NAME,
+    TOOLS_DIR_NAME,
 };
 use std::path::PathBuf;
 
@@ -71,6 +73,60 @@ pub fn get_manifests_dir() -> PathBuf {
 /// Resolves the path to the WASM isolated sandbox directory.
 pub fn get_sandbox_dir() -> PathBuf {
     let dir = get_ore_dir().join(SANDBOX_DIR_NAME);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    dir
+}
+
+/// Resolves the path to the agent SSD memory / swap directory.
+pub fn get_memory_dir() -> PathBuf {
+    let dir = get_ore_dir().join(MEMORY_DIR_NAME);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    dir
+}
+
+/// Resolves the path to the tools directory.
+pub fn get_tools_dir() -> PathBuf {
+    let dir = get_ore_dir().join(TOOLS_DIR_NAME);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    dir
+}
+
+/// Resolves the path to the runtimes directory.
+pub fn get_runtimes_dir() -> PathBuf {
+    let dir = get_ore_dir().join(RUNTIMES_DIR_NAME);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    dir
+}
+
+/// Resolves the path to the plugins directory.
+pub fn get_plugins_dir() -> PathBuf {
+    let dir = get_ore_dir().join(PLUGINS_DIR_NAME);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    dir
+}
+
+/// Resolves the path to the cache directory.
+pub fn get_cache_dir() -> PathBuf {
+    let dir = get_ore_dir().join(CACHE_DIR_NAME);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    dir
+}
+
+/// Resolves the path to the temporary execution directory.
+pub fn get_tmp_dir() -> PathBuf {
+    let dir = get_ore_dir().join(TMP_DIR_NAME);
     if !dir.exists() {
         let _ = std::fs::create_dir_all(&dir);
     }

@@ -13,29 +13,7 @@ pub enum DriverError {
     ExecutionFailed(String),
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LocalModel {
-    pub name: String,
-    pub size_bytes: u64,
-    pub modified_at: String,
-    #[serde(default)]
-    pub format: String,
-}
-
-// OS DATA STRUCTURES
-// No matter what engine is running, ORE translates their data into this.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VramProcess {
-    pub model_name: String,
-    pub size_bytes: u64,
-    pub size_vram_bytes: u64,
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub active_requests: usize,
-    #[serde(default)]
-    pub last_used_secs: u64,
-}
+pub use ore_common::types::{LocalModel, VramProcess};
 
 // HARDWARE ABSTRACTION LAYER (HAL)
 // Any backend (Ollama, LM Studio, vLLM) MUST implement these functions.

@@ -6,6 +6,7 @@ use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 use ore_core::kprintln;
 use ore_core::memory::Pager;
+use ore_common::paths;
 use std::sync::Arc;
 
 fn wants_json(headers: &HeaderMap) -> bool {
@@ -19,7 +20,7 @@ fn wants_json(headers: &HeaderMap) -> bool {
 pub async fn health_check(State(state): State<Arc<KernelState>>, headers: HeaderMap) -> Response {
     let engine = state.driver.engine_name().to_string();
     let device = state.driver.device_name();
-    let ore_dir = ore_core::get_ore_dir().display().to_string();
+    let ore_dir = paths::get_ore_dir().display().to_string();
     let running = state.driver.get_running_models().await.unwrap_or_default();
     let loaded_models = running.len();
     let registered_agents = state.registry.list_apps().len();

@@ -5,6 +5,8 @@ pub mod models;
 
 use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
 use crate::memory::ContextMessage;
+use ore_common::paths;
+use ore_common::constants;
 use anyhow::Result;
 use async_trait::async_trait;
 use candle_core::{DType, Device, Tensor};
@@ -339,7 +341,7 @@ impl InferenceDriver for NativeDriver {
 
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError> {
         let mut models = Vec::new();
-        let models_dir = crate::get_ore_dir().join("models");
+        let models_dir = paths::get_models_dir();
 
         if !models_dir.exists() {
             return Ok(models);
@@ -356,8 +358,9 @@ impl InferenceDriver for NativeDriver {
                     }
 
                     let folder_path = entry.path();
-                    let gguf_path = folder_path.join("model.gguf");
-                    let st_path = folder_path.join("model.safetensors");
+                    let gguf_path = folder_path.join(constants::MODEL_GGUF_FILE_NAME);
+                    let st_path =
+                        folder_path.join(constants::MODEL_SAFETENSORS_FILE_NAME);
 
                     let (format_label, target_file) = if gguf_path.exists() {
                         ("GGUF (Quantized)", Some(gguf_path))
@@ -459,11 +462,10 @@ impl InferenceDriver for NativeDriver {
         let safe_model = model_name.replace(":", "-");
         let device = self.device.clone();
 
-        let ore_dir = crate::get_ore_dir();
         // Spawn a blocking thread
         let result = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>, String> {
-            let model_dir = ore_dir.join("models").join(&safe_model);
-            let config_path = model_dir.join("config.json");
+            let model_dir = paths::get_models_dir().join(&safe_model);
+            let config_path = model_dir.join(constants::CONFIG_JSON_FILE_NAME);
 
             if !config_path.exists() {
                 return Err(format!(

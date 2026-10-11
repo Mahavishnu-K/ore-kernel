@@ -1,22 +1,7 @@
-use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use sysinfo::System;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HostTelemetry {
-    pub os_name: String,
-    pub os_version: String,
-    pub host_name: String,
-    pub cpu_count: usize,
-    pub cpu_brand: String,
-    pub cpu_usage_pct: f32,
-    pub total_memory_mb: u64,
-    pub used_memory_mb: u64,
-    pub free_memory_mb: u64,
-    pub total_swap_mb: u64,
-    pub used_swap_mb: u64,
-    pub uptime_seconds: u64,
-}
+pub use ore_common::protocol::HostTelemetry;
 
 static SYS_MONITOR: std::sync::LazyLock<Mutex<System>> = std::sync::LazyLock::new(|| {
     let mut sys = System::new_all();

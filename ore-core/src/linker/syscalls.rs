@@ -1,6 +1,7 @@
 use crate::linker::linker_state::LinkerState;
 use crate::linker::mmu::{allocate_plugin_memory, forge_pic_globals};
 use wasmtime::{Caller, Linker, Module, Ref};
+use ore_common::paths;
 
 // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
 /// Trait to ensure the Caller's generic State contains our Linker Registry.
@@ -49,7 +50,7 @@ pub fn trap_ore_dlopen<T: HasLinkerState>(
     }; // The `data` reference is dropped here. `caller` is now completely unlocked!
 
     // File Security & I/O
-    let plugin_path = crate::get_ore_dir().join("plugins").join(&filename);
+    let plugin_path = paths::get_plugins_dir().join(&filename);
     if !plugin_path.exists() {
         crate::kprintln!(
             "-> [ORE-LD] ERROR: Plugin '{}' not found in ~/.ore/plugins/",

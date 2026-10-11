@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use ore_common::constants;
 
 pub struct ToolPreparationContext {
     pub wasm_path: PathBuf,
@@ -14,11 +15,15 @@ pub fn prepare_tool(
     input_data: Option<&String>,
 ) -> Result<ToolPreparationContext, String> {
     let mut run_args = vec![];
-    let wasm_path = base_dir.join("tools").join(format!("{}.wasm", tool_name));
+    let wasm_path = base_dir
+        .join(constants::TOOLS_DIR_NAME)
+        .join(format!("{}.wasm", tool_name));
 
     run_args.push(tool_name.to_string()); // argv[0]
 
-    let args_path = base_dir.join("tools").join(format!("{}.args", tool_name));
+    let args_path = base_dir
+        .join(constants::TOOLS_DIR_NAME)
+        .join(format!("{}.args", tool_name));
     if args_path.exists()
         && let Ok(default_args_str) = fs::read_to_string(&args_path)
     {

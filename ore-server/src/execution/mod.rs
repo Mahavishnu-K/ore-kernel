@@ -5,6 +5,7 @@ pub mod tool;
 use crate::payloads::{ExecuteRequest, ExecutionMode};
 use crate::state::KernelState;
 use ore_core::sandbox::ExecuteParams;
+use ore_common::paths;
 use std::fs;
 use std::sync::Arc;
 
@@ -32,7 +33,7 @@ pub async fn execute_request(
         Err(e) => return Err(format!("KERNEL ERROR: {}", e)),
     };
 
-    let base_dir = match std::path::absolute(ore_core::get_ore_dir()) {
+    let base_dir = match std::path::absolute(paths::get_ore_dir()) {
         Ok(p) => p,
         Err(e) => return Err(format!("KERNEL ERROR: Cannot resolve ORE base dir: {}", e)),
     };

@@ -1,4 +1,5 @@
 use ore_core::crypto::KernelCrypto;
+use ore_common::constants;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +28,9 @@ pub fn prepare_script(
     const CJS_BRIDGE: &str = include_str!("../../shims/javascript/commonjs.js");
 
     if lang == "python" || lang == "py" {
-        wasm_path = base_dir.join("runtimes").join("system-py.wasm");
+        wasm_path = base_dir
+            .join(constants::RUNTIMES_DIR_NAME)
+            .join("system-py.wasm");
 
         // JIT PIP VENDORING FOR AUTONOMOUS SCRIPTS
         if let Some(deps) = dependencies
@@ -43,7 +46,10 @@ pub fn prepare_script(
             let req_hash: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
 
             resolved_req_hash = Some(req_hash.clone());
-            let cache_dir = base_dir.join("cache").join("pip").join(&req_hash);
+            let cache_dir = base_dir
+                .join(constants::CACHE_DIR_NAME)
+                .join("pip")
+                .join(&req_hash);
 
             if !cache_dir.exists() {
                 crate::kprintln!("-> [KERNEL] Cache miss. Host OS downloading packages...");
@@ -142,7 +148,9 @@ pub fn prepare_script(
         run_args.push("/ore_tmp/inception.py".to_string());
         inception_data = Some(("inception.py".to_string(), final_script));
     } else if lang == "javascript" || lang == "js" || lang == "ts" || lang == "typescript" {
-        wasm_path = base_dir.join("runtimes").join("system-js.wasm");
+        wasm_path = base_dir
+            .join(constants::RUNTIMES_DIR_NAME)
+            .join("system-js.wasm");
         run_args.push("quickjs".to_string());
 
         let ext = if lang.starts_with("ts") || lang == "typescript" {
@@ -222,7 +230,10 @@ pub fn prepare_script(
 
             let hash_bytes = KernelCrypto::sha256(req_string.as_bytes());
             let req_hash: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-            let cache_dir = base_dir.join("cache").join("npm").join(&req_hash);
+            let cache_dir = base_dir
+                .join(constants::CACHE_DIR_NAME)
+                .join("npm")
+                .join(&req_hash);
 
             if !cache_dir.exists() {
                 crate::kprintln!("-> [JIT NPM] Cache miss. Host OS downloading packages...");

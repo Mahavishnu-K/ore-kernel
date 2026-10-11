@@ -22,6 +22,8 @@ use ore_core::kprintln;
 use ore_core::registry::AppRegistry;
 use ore_core::sandbox::WasmSandbox;
 use ore_core::scheduler::GpuScheduler;
+use ore_common::paths;
+use ore_common::constants;
 
 use crate::middleware::auth_middleware;
 use crate::state::{KernelState, OreConfig};
@@ -30,19 +32,17 @@ use crate::state::{KernelState, OreConfig};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     kprintln!("=== ORE SYSTEM KERNEL BOOTING ===");
 
-    let base_dir = ore_core::get_ore_dir();
-
     let session_token = Uuid::new_v4().to_string();
-    let token_path = base_dir.join("ore-kernel.token");
+    let token_path = paths::get_token_path();
     fs::write(&token_path, &session_token).expect("Failed to write security token.");
     kprintln!("-> [SECURITY] Master Token generated and secured to disk.");
 
     kprintln!("-> Sweeping /manifests for installed Apps...");
-    let manifests_dir = base_dir.join("manifests");
+    let manifests_dir = paths::get_manifests_dir();
     let app_registry = AppRegistry::boot_load(manifests_dir.to_str().unwrap())
         .expect("FATAL: Failed to initialize App Registry");
 
-    let config_path = base_dir.join("ore.toml");
+    let config_path = paths::get_config_path();
     let config_str =
         fs::read_to_string(&config_path).expect("FATAL: ore.toml missing. Run 'ore init'");
     let config: OreConfig = toml::from_str(&config_str).unwrap();
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(NativeDriver::new())
     } else {
         kprintln!("-> [BOOT] Engaging Ollama API Driver...");
-        Arc::new(OllamaDriver::new("http://127.0.0.1:11434"))
+        Arc::new(OllamaDriver::default())
     };
 
     let semantic_bus =
@@ -161,13 +161,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let addr = "127.0.0.1:6767";
+    let addr = format!(
+        "{}:{}",
+        constants::DEFAULT_SERVER_HOST,
+        constants::DEFAULT_SERVER_PORT
+    );
     kprintln!("=== ORE KERNEL IS ONLINE ===");
     kprintln!("Listening on http://{}", addr);
 
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
 
-    let _ = fs::remove_file(base_dir.join("ore-kernel.token"));
+    let _ = fs::remove_file(paths::get_token_path());
     Ok(())
 }

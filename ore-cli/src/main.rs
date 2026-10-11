@@ -16,12 +16,7 @@ use utils::{
     get_ore_dir, get_system_engine,
 };
 
-#[derive(serde::Serialize)]
-struct RunPayload {
-    app_id: String,
-    model: String,
-    prompt: String,
-}
+use ore_common::protocol::RunRequest;
 
 #[tokio::main]
 async fn main() {
@@ -474,7 +469,7 @@ async fn main() {
                     model.blue().bold()
                 );
 
-                let payload = RunPayload {
+                let payload = RunRequest {
                     app_id: "terminal_user".to_string(),
                     model: model.clone(),
                     prompt: p.clone(),
@@ -567,7 +562,7 @@ async fn main() {
                         continue;
                     }
 
-                    let payload = RunPayload {
+                    let payload = RunRequest {
                         app_id: "terminal_user".to_string(),
                         model: model.clone(),
                         prompt: trimmed.to_string(),

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "ore-common",
     "ore-core",
     "ore-server",
     "ore-cli",

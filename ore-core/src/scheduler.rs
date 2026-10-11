@@ -4,6 +4,8 @@ use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 use sysinfo::System;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use ore_common::paths;
+use ore_common::constants;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelStatus {
@@ -212,10 +214,9 @@ impl GpuScheduler {
             .await
             .unwrap();
 
-        let model_path = crate::get_ore_dir()
-            .join("models")
+        let model_path = paths::get_models_dir()
             .join(requested_model)
-            .join("model.gguf");
+            .join(constants::MODEL_GGUF_FILE_NAME);
 
         let mut estimated_model_mb = 2048;
         let mut required_kv_cache_mb = 256;

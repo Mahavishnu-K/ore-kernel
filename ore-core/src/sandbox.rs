@@ -2,6 +2,8 @@ use crate::crypto::KernelCrypto;
 use crate::linker::{HasLinkerState, LinkerState};
 use crate::registry::NetworkRule;
 
+use ore_common::paths;
+
 use anyhow::{Error, Result};
 use wasmtime::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, Table, TableType};
 use wasmtime_wasi::p1::{WasiP1Ctx, add_to_linker_sync};
@@ -118,7 +120,7 @@ impl WasmSandbox {
 
         // CREATE A DEDICATED TEMP DIRECTORY FOR THIS EXECUTION
         let exec_id = uuid::Uuid::new_v4().to_string();
-        let mut host_tmp_dir = crate::get_ore_dir().join("tmp").join(&exec_id);
+        let mut host_tmp_dir = paths::get_tmp_dir().join(&exec_id);
         std::fs::create_dir_all(&host_tmp_dir)?;
 
         let sanitize_unc = |p: std::path::PathBuf| -> std::path::PathBuf {
@@ -594,7 +596,7 @@ impl WasmSandbox {
         // We mount ~/.ore/runtimes/js_modules to /modules in the sandbox (Read-Only)
         // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
         if params.args.iter().any(|arg| arg == "quickjs") {
-            let js_modules_dir = crate::get_ore_dir().join("runtimes").join("modules");
+            let js_modules_dir = paths::get_runtimes_dir().join("modules");
             if js_modules_dir.exists() {
                 let canon_modules =
                     std::fs::canonicalize(&js_modules_dir).unwrap_or(js_modules_dir);

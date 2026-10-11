@@ -1,29 +1,20 @@
 use crate::ipc::MemoryChunk;
 use candle_core::{Device, Tensor};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-// This works across ALL models (Llama, Qwen, Mistral).
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ContextMessage {
-    pub role: String,
-    pub content: String,
-}
+pub use ore_common::types::ContextMessage;
+use ore_common::paths;
 
 // THE OS PAGEFILE MANAGER (SSD Swap)
 pub struct Pager;
 
 impl Pager {
     pub fn get_swap_dir() -> std::path::PathBuf {
-        let path = crate::get_ore_dir().join("memory");
-        if !path.exists() {
-            std::fs::create_dir_all(&path).expect("Failed to create SSD Swap directory");
-        }
-        path
+        paths::get_memory_dir()
     }
 
     /// Generates a mathematically stable SHA-256 fingerprint of the JSON history

@@ -2,69 +2,14 @@ use colored::*;
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
+pub use ore_common::config::OreConfig;
+pub use ore_common::paths::{get_ore_dir, get_token_path};
+pub use ore_common::text::visible_len;
 use reqwest::{
     Client,
     header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
-use serde::Deserialize;
-use std::path::PathBuf;
 use std::{cmp::min, fs, io::Write, path::Path, process::exit};
-
-#[derive(Deserialize)]
-pub struct OreConfig {
-    system: SystemConfig,
-}
-
-#[derive(Deserialize)]
-pub struct SystemConfig {
-    engine: String,
-}
-
-pub fn get_ore_dir() -> PathBuf {
-    if let Ok(custom_dir) = std::env::var("ORE_DIR") {
-        return PathBuf::from(custom_dir);
-    }
-
-    let cur_path = PathBuf::from(".");
-    if cur_path.join("ore.toml").exists() {
-        return cur_path;
-    }
-
-    let local_dev_path = PathBuf::from("..");
-    if local_dev_path.join("ore.toml").exists() {
-        return local_dev_path;
-    }
-
-    let home = std::env::var("USERPROFILE") // Windows
-        .or_else(|_| std::env::var("HOME")) // Linux/macOS
-        .expect("FATAL: Could not determine user home directory.");
-
-    let ore_path = PathBuf::from(home).join(".ore");
-
-    if !ore_path.exists() {
-        fs::create_dir_all(&ore_path).expect("FATAL: Failed to create ~/.ore directory.");
-    }
-
-    ore_path
-}
-
-fn visible_len(text: &str) -> usize {
-    let mut len = 0;
-    let mut in_ansi = false;
-    for c in text.chars() {
-        if c == '\x1B' {
-            in_ansi = true;
-        } else if in_ansi {
-            // ANSI escape sequences typically end with an alphabetic character (like 'm' for colors)
-            if c.is_ascii_alphabetic() {
-                in_ansi = false;
-            }
-        } else {
-            len += 1;
-        }
-    }
-    len
-}
 
 /// Generates the premium Hermes/Claude-style TUI theme
 pub fn get_ore_theme() -> RenderConfig<'static> {
@@ -1004,7 +949,7 @@ pub fn get_hf_token() -> Option<String> {
 }
 
 pub fn build_secure_client() -> Client {
-    let token_path = get_ore_dir().join("ore-kernel.token");
+    let token_path = get_token_path();
     let auth_token = fs::read_to_string(&token_path)
         .map(|t| t.trim().to_string())
         .unwrap_or_default();

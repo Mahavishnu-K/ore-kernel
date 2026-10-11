@@ -3,46 +3,10 @@ use ore_core::ipc::{MessageBus, RateLimiter, SemanticBus};
 use ore_core::registry::AppRegistry;
 use ore_core::sandbox::WasmSandbox;
 use ore_core::scheduler::GpuScheduler;
-use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Deserialize, Clone)]
-pub struct OreConfig {
-    pub system: SystemConfig,
-    pub memory: MemoryConfig,
-    #[serde(default)]
-    pub models: std::collections::HashMap<String, ModelConfig>,
-}
-
-#[derive(Deserialize, Clone)]
-pub struct ModelConfig {
-    pub kv_cache_mb_per_1k: Option<u64>,
-}
-
-#[derive(Deserialize, Clone)]
-pub struct SystemConfig {
-    pub engine: String,
-
-    #[serde(default = "default_embedder")] // Fallback if an old config exists
-    pub embedder: String,
-}
-
-fn default_embedder() -> String {
-    "all-minilm".to_string()
-}
-
-#[derive(Deserialize, Clone)]
-pub struct MemoryConfig {
-    pub cache_ttl_hours: u64,
-    pub pipe_ttl_hours: u64,
-    #[serde(default = "default_wasm_timeout")]
-    pub wasm_idle_timeout_mins: u64,
-}
-
-fn default_wasm_timeout() -> u64 {
-    5 // Fallback to 5 minutes if not present in the .toml
-}
+pub use ore_common::config::*;
 
 // kernel state shared across handlers
 pub struct KernelState {
