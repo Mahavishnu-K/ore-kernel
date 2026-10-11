@@ -35,7 +35,7 @@ impl WasmSandbox {
 
     /// The "Inception" Execution (Happens per-request)
     pub fn execute(&self, params: ExecuteParams) -> Result<String> {
-        // 1. Initialize Linker & Host State
+        // Initialize Linker & Host State
         let mut linker: Linker<OreSandboxState> = Linker::new(&self.engine);
 
         // Tells WASI how to find its context inside our master state
@@ -44,36 +44,36 @@ impl WasmSandbox {
         // INJECT THE ORE DYNAMIC LINKER! (ore-ld)
         crate::linker::add_to_linker(&mut linker)?;
 
-        // 2. Setup VFS directories & TempDirGuard
+        // Setup VFS directories & TempDirGuard
         let (host_tmp_dir, _cleanup_guard) = vfs::setup_tmp_directory()?;
 
-        // 3. Start Background IPC Portals (Crypto & Network)
+        // Start Background IPC Portals (Crypto & Network)
         let _portal_guard = portals::start_all(&host_tmp_dir, &params)?;
 
-        // 4. Register Syscalls
+        // Register Syscalls
         shims::register_ore_fetch(&mut linker, &host_tmp_dir, &params)?;
 
-        // 5. Build WASI Context (Pipes, Mounts, Envs)
+        // Build WASI Context (Pipes, Mounts, Envs)
         let (wasi_ctx, stdout_buf, stderr_buf) = vfs::build_wasi_context(&host_tmp_dir, &params)?;
 
-        // 6. Create State Store & Apply Fuel Limits
+        // Create State Store & Apply Fuel Limits
         let sandbox_state = OreSandboxState::new(wasi_ctx);
         let mut store = Store::new(&self.engine, sandbox_state);
 
-        // 7. Inject OS Routing Table
+        // Inject OS Routing Table
         shims::create_os_routing_table(&mut linker, &mut store)?;
 
         // Fuel Injection! Sandbox will panic if it exceeds this CPU instruction limit.
         store.set_fuel(params.fuel_limit)?;
 
-        // 8. AOT Module Resolution
+        // AOT Module Resolution
         let module = cache::load_or_compile_module(&self.engine, &params)?;
 
-        // 9. Legacy shims & trap stubs
+        // Legacy shims & trap stubs
         shims::register_legacy_sock_accept(&mut linker, &mut store, &module)?;
         linker.define_unknown_imports_as_traps(&module)?;
 
-        // 10. Instantiate & Run
+        // Instantiate & Run
         let instance = linker.instantiate(&mut store, &module)?;
         let start_func = instance.get_typed_func::<(), ()>(&mut store, "_start")?;
 
@@ -84,11 +84,11 @@ impl WasmSandbox {
 
         let exec_result = start_func.call(&mut store, ());
 
-        // 11. Teardown Portals & Store (flush pipes)
+        // Teardown Portals & Store (flush pipes)
         drop(_portal_guard);
         drop(store);
 
-        // 12. Format Output
+        // Format Output
         Self::format_output(exec_result, stdout_buf, stderr_buf)
     }
 
