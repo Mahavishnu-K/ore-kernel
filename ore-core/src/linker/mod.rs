@@ -2,7 +2,6 @@ pub mod linker_state;
 pub mod mmu;
 pub mod syscalls;
 
-// Re-export the core types so `sandbox.rs` can use them easily
 pub use linker_state::LinkerState;
 pub use syscalls::HasLinkerState;
 

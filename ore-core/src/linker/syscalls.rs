@@ -5,7 +5,6 @@ use wasmtime::{Caller, Linker, Module, Ref};
 
 // [ORE_ARCHITECT_SIG: 8f9b2a-XENOLITH-44]
 /// Trait to ensure the Caller's generic State contains our Linker Registry.
-/// The master Sandbox state struct in sandbox.rs must implement this!
 pub trait HasLinkerState {
     fn linker_state(&self) -> &LinkerState;
     fn linker_state_mut(&mut self) -> &mut LinkerState;
