@@ -1,6 +1,6 @@
 # API Reference
 
-> All 15 authenticated HTTP routes exposed by the ORE kernel daemon.
+> All 15 authenticated HTTP routes exposed by the Ore kernel daemon.
 
 **Base URL:** `http://127.0.0.1:6767`
 
@@ -23,7 +23,7 @@ curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
 
 **Response:**
 ```text
-ORE Kernel is ALIVE. Powered by: native
+Ore Kernel is ALIVE. Powered by: native
 ```
 
 ---
@@ -75,7 +75,7 @@ curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
 
 **Response:**
 ```text
-=== ORE KERNEL TELEMETRY ===
+=== Ore Kernel Telemetry ===
 Subsystem            | Status
 -------------------  | ------
 Driver (native)      | ACTIVE

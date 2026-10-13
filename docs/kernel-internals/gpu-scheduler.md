@@ -10,7 +10,7 @@
 
 Modern multi-agent workflows quickly run into the **VRAM Wall**. A single inference engine typically locks the entire GPU, causing Out-Of-Memory (OOM) panics or serialized bottlenecks when concurrent agents invoke different models.
 
-ORE's `GpuScheduler` is an intelligent, multi-tenant hypervisor for local inference memory. Instead of a naive single-model mutex, it implements:
+Ore's `GpuScheduler` is an intelligent, multi-tenant hypervisor for local inference memory. Instead of a naive single-model mutex, it implements:
 1. **Multi-Model Co-Residency**: Multiple models can co-exist inside GPU VRAM simultaneously as long as physical memory permits.
 2. **Physical VRAM Accounting (`MemoryAccountant`)**: Tracks live free memory, hardware headroom, and safety margins (default: 512 MB).
 3. **Exact KV-Cache Dimensioning**: Mathematically reads GGUF architecture metadata at runtime to compute precise per-token KV memory demands before admission.

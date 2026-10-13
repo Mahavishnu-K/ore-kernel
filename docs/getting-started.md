@@ -16,7 +16,7 @@
 git clone https://github.com/Mahavishnu-K/ore-kernel.git
 cd ore-kernel
 
-# Install the ORE CLI globally
+# Install the Ore CLI globally
 cargo install --path ore-cli
 ```
 
@@ -30,7 +30,7 @@ ore init
 
 ```text
 ==================================================
- ORE KERNEL :: SYSTEM INITIALIZATION
+ Ore KERNEL :: SYSTEM INITIALIZATION
 ==================================================
 > Select your primary AI Execution Engine
   Ollama (Background daemon, easiest setup)
@@ -58,14 +58,14 @@ cargo run -p ore-server
 Expected output:
 
 ```
-=== ORE SYSTEM KERNEL BOOTING ===
+=== Ore SYSTEM KERNEL BOOTING ===
 -> [SECURITY] Master Token generated and secured to disk.
 -> Sweeping /manifests for installed Apps...
 -> [REGISTRY] Verified & Loaded App: openclaw
 -> [REGISTRY] Verified & Loaded App: terminal_user
 -> [REGISTRY] Verified & Loaded App: writer_agent
 -> [BOOT] Engaging Native Candle Engine...
-=== ORE KERNEL IS ONLINE ===
+=== Ore KERNEL IS ONLINE ===
 Listening on http://127.0.0.1:6767
 ```
 
@@ -100,12 +100,12 @@ ore run deepseek-r1:7b
 
 ## 6. Compile and Run a Python Tool (WASM Sandbox)
 
-ORE can natively compile and execute tools written in Python, Rust, C, C++, Zig, JS, and TS within a Zero-Trust WebAssembly sandbox. 
+Ore can natively compile and execute tools written in Python, Rust, C, C++, Zig, JS, and TS within a Zero-Trust WebAssembly sandbox. 
 
 Create a quick Python script `hello.py`:
 ```python
 import sys
-print(f"Hello from the ORE Sandbox! Arguments: {sys.argv[1:]}")
+print(f"Hello from the Ore Sandbox! Arguments: {sys.argv[1:]}")
 ```
 
 Compile it into a portable WebAssembly cartridge:
@@ -115,7 +115,7 @@ ore mktool hello.py
 
 ## 7. Register Your First Agent
 
-Every application that talks to ORE needs a manifest. Generate one interactively:
+Every application that talks to Ore needs a manifest. Generate one interactively:
 
 ```text
  ╭─ Secure Manifest Forage ───────────────────────────╮
@@ -150,7 +150,7 @@ ore ls --agents     # All registered agents + security status
 - **[Architecture](./architecture.md)** - Understand the full request lifecycle and how the subsystems connect
 - **[CLI Reference](./cli-reference.md)** - Every command with examples
 - **[API Reference](./api-reference.md)** - Build your own client against the HTTP API
-- **[Security Model](./security-model.md)** - How ORE protects you from your own agents
+- **[Security Model](./security-model.md)** - How Ore protects you from your own agents
 - **[Kernel Internals](./kernel-internals/)** - Deep-dive into each subsystem
 
 ---

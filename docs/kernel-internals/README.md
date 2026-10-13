@@ -1,6 +1,6 @@
 # Kernel Internals
 
-> Deep-dives into each ORE subsystem. Read these before contributing to core.
+> Deep-dives into each Ore subsystem. Read these before contributing to core.
 
 | Subsystem | Source File | Description |
 |---|---|---|

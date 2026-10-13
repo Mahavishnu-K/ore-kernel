@@ -1,6 +1,6 @@
-# Why ORE?
+# Why Ore?
 
-This page explains the problems ORE is built to solve and the design choices behind each subsystem. For how the pieces fit together, see [Architecture](./architecture.md). For the code-level details, see [Kernel Internals](./kernel-internals/).
+This page explains the problems Ore is built to solve and the design choices behind each subsystem. For how the pieces fit together, see [Architecture](./architecture.md). For the code-level details, see [Kernel Internals](./kernel-internals/).
 
 ---
 
@@ -14,9 +14,9 @@ Local AI stacks were built for one user talking to one model. Multi-agent worklo
 
 **No sharing.** Each application tends to ship or download its own copy of the same weights, run its own embedding model, and keep its own vector store. Three apps can mean three copies of a 7B model.
 
-ORE's answer is to put a single daemon between applications and the hardware. Applications never talk to the GPU directly. They talk to ORE, and ORE enforces the rules.
+Ore's answer is to put a single daemon between applications and the hardware. Applications never talk to the GPU directly. They talk to Ore, and Ore enforces the rules.
 
-| Concern | Typical local setup | With ORE |
+| Concern | Typical local setup | With Ore |
 |---|---|---|
 | Permissions | Agents inherit the host process's access | Per-agent TOML manifests enforced by the kernel |
 | GPU contention | Concurrent loads can OOM | Semaphore leases, VRAM admission control, LRU eviction |
@@ -31,7 +31,7 @@ ORE's answer is to put a single daemon between applications and the hardware. Ap
 
 ## 1. WebAssembly tools instead of containers
 
-Giving an agent the ability to run code usually means a Docker container or a cloud VM. ORE runs tools as WebAssembly modules inside the kernel using `wasmtime`.
+Giving an agent the ability to run code usually means a Docker container or a cloud VM. Ore runs tools as WebAssembly modules inside the kernel using `wasmtime`.
 
 - **Language-agnostic tools.** `ore mktool` compiles Rust, Go, Python, JavaScript, TypeScript, Zig, C, and C++ to `.wasm`. An agent written in any language can call a tool written in any other.
 - **CPU fuel limits.** Each execution gets a fuel budget (`max_cpu_instructions` in the manifest, default 5 billion). A runaway loop traps instead of hanging the host.
@@ -64,7 +64,7 @@ The usual alternatives each give something up:
 
 Plugins are limited to Rust, C, C++, and Zig. Languages with garbage collectors (Python, JS, Go) can't safely share a linear memory with another module's allocator, so they call plugins through the SDK bridge instead.
 
-The SDKs handle the ABI boilerplate: `ore.h` with the `ORE_BIND` macro for C/C++, `ore-sys` with `ore_export!` / `ore_bind!` for Rust, and `ore.zig` for Zig. Build a plugin with `ore mktool math.c --shared` and a host with `ore mktool agent.rs --host`.
+The SDKs handle the ABI boilerplate: `ore.h` with the `Ore_BIND` macro for C/C++, `ore-sys` with `ore_export!` / `ore_bind!` for Rust, and `ore.zig` for Zig. Build a plugin with `ore mktool math.c --shared` and a host with `ore mktool agent.rs --host`.
 
 Details: [Polyglot Memory Fusion](./kernel-internals/polyglot-memory-fusion.md) · [Building Plugins](./building-plugins.md).
 
@@ -74,7 +74,7 @@ Details: [Polyglot Memory Fusion](./kernel-internals/polyglot-memory-fusion.md) 
 
 On a GPU with limited VRAM, the constraint for multiple agents is usually space rather than speed. Model weights plus several KV caches can exceed what fits, and the engine fails with an out-of-memory error.
 
-ORE's scheduler:
+Ore's scheduler:
 
 - Hands out a `GpuLease` (an RAII semaphore permit) before inference. When the lease drops, its KV-cache reservation is released.
 - Reads real VRAM usage through NVML on NVIDIA GPUs (falling back to system memory elsewhere) and admits a request only if its estimated KV cache fits.
@@ -91,7 +91,7 @@ Details: [GPU Scheduler](./kernel-internals/gpu-scheduler.md).
 
 When an inference engine switches from agent A to agent B, it normally discards A's KV cache. When A resumes, the engine re-runs prefill over A's whole history. On CPU this is the dominant cost.
 
-ORE serializes an agent's KV cache to `.safetensors` on disk when it's paged out and restores it on the next request, so prefill isn't repeated.
+Ore serializes an agent's KV cache to `.safetensors` on disk when it's paged out and restores it on the next request, so prefill isn't repeated.
 
 **Measured:** on a Ryzen 7 with 16 GB RAM (CPU only), resuming an agent took **37.03 s** when recomputing prefill and **2.41 s** when restoring the saved KV cache. That's **15.4× faster**.
 
@@ -105,9 +105,9 @@ Details: [Memory Management](./kernel-internals/memory-management.md).
 
 ## 5. Semantic Bus
 
-Sharing knowledge between agents usually means running a separate vector database. ORE has one built in.
+Sharing knowledge between agents usually means running a separate vector database. Ore has one built in.
 
-- An agent writes text to a named pipe. ORE loads an embedding model (BERT / all-MiniLM or Nomic v1.5, from safetensors), embeds the chunks, and unloads the model, so it uses no RAM while idle.
+- An agent writes text to a named pipe. Ore loads an embedding model (BERT / all-MiniLM or Nomic v1.5, from safetensors), embeds the chunks, and unloads the model, so it uses no RAM while idle.
 - Other agents search the pipe by similarity, with optional time-decay scoring and per-source filtering.
 - Embeddings are cached by content hash and shared through `Arc` pointers, so the same text is embedded only once.
 - Read and write access to each pipe is gated by `allowed_semantic_pipes` in the manifest.

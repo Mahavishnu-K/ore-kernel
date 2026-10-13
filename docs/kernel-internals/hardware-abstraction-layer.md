@@ -1,6 +1,6 @@
 # Hardware Abstraction Layer
 
-> The trait that makes ORE engine-agnostic.
+> The trait that makes Ore engine-agnostic.
 
 **Source:** [`ore-core/src/driver.rs`](../../ore-core/src/driver.rs)
 
@@ -174,7 +174,7 @@ Pure-Rust inference using Candle. See [Native Candle Engine](./native-candle-eng
 
 ## Adding a New Driver
 
-See [Extending ORE → Adding a New Inference Driver](../extending-ore.md#1-adding-a-new-inference-driver) for a step-by-step guide.
+See [Extending Ore → Adding a New Inference Driver](../extending-ore.md#1-adding-a-new-inference-driver) for a step-by-step guide.
 
 Key requirements:
 1. Implement all 11 trait methods

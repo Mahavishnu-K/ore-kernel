@@ -10,7 +10,7 @@
 
 When an AI agent executes code, scrapes the web, or mutates data, giving it raw host access is catastrophic (prompt injection leading to arbitrary command execution or secret exfiltration).
 
-ORE addresses this through a modular execution engine and a Zero-Trust WebAssembly Sandbox powered by `wasmtime` and WASI. Untrusted code runs in a sandboxed virtual machine with deterministic CPU limits, isolated virtual filesystems, and strict Layer 7 network egress controls.
+Ore addresses this through a modular execution engine and a Zero-Trust WebAssembly Sandbox powered by `wasmtime` and WASI. Untrusted code runs in a sandboxed virtual machine with deterministic CPU limits, isolated virtual filesystems, and strict Layer 7 network egress controls.
 
 ---
 
@@ -112,14 +112,14 @@ To allow modern Python and JavaScript packages to run inside pure WASI without n
 
 ### Python WASI Bootstrap Shim (`shims/python/bootstrap.py`)
 - **WASI Asyncio Event Loop**: Implements `WasiEventLoop` and `WasiSelector` bypassing missing `socketpair` calls, utilizing non-blocking `time.sleep` poll hooks that suspend the VM without burning CPU instructions.
-- **Transparent `requests` & `httpx` Polyfills**: Shims `requests.get()`, `requests.post()`, `requests.Session()`, `httpx.get()`, `httpx.post()`, and `httpx.Client()` directly into the ORE Network Portal.
-- **HTTP Metadata & Headers**: Implements `CaseInsensitiveDict` for headers, cookie jar persistence, and `ORE_Response` streaming.
+- **Transparent `requests` & `httpx` Polyfills**: Shims `requests.get()`, `requests.post()`, `requests.Session()`, `httpx.get()`, `httpx.post()`, and `httpx.Client()` directly into the Ore Network Portal.
+- **HTTP Metadata & Headers**: Implements `CaseInsensitiveDict` for headers, cookie jar persistence, and `Ore_Response` streaming.
 
 ---
 
 ## AOT (Ahead-Of-Time) Zero-RAM Caching (`.cwasm`)
 
-Standard WASM JIT compilation adds ~300ms to ~600ms latency on cold starts. ORE eliminates this with native Ahead-Of-Time serialization:
+Standard WASM JIT compilation adds ~300ms to ~600ms latency on cold starts. Ore eliminates this with native Ahead-Of-Time serialization:
 
 ```text
 First Execution (Cold Start)

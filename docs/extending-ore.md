@@ -1,8 +1,8 @@
-# Extending ORE
+# Extending Ore
 
 > How to add new inference backends, model architectures, and firewall rules.
 
-ORE is designed with extension points at every layer. This guide walks through the three most common contribution paths.
+Ore is designed with extension points at every layer. This guide walks through the three most common contribution paths.
 
 ---
 

@@ -1,10 +1,10 @@
 # Manifest Reference
 
-> The AppManifest is ORE's permission contract. Every agent must have one.
+> The AppManifest is Ore's permission contract. Every agent must have one.
 
 ## Overview
 
-An AppManifest is a `.toml` file in the `manifests/` directory that declares exactly what an agent is allowed to do. ORE enforces these permissions at the kernel level - not in the application. No manifest = no access.
+An AppManifest is a `.toml` file in the `manifests/` directory that declares exactly what an agent is allowed to do. Ore enforces these permissions at the kernel level - not in the application. No manifest = no access.
 
 Generate one interactively:
 
@@ -107,7 +107,7 @@ allow_time_decay = false                     # Allow older memories to lose rele
 |---|---|---|---|
 | `max_json_tokens` | u32 | `8192` | Maximum conversational context in tokens. (Heuristic: 1 token ~= 4 chars of JSON text) |
 | `max_kv_cache_mb` | u32 | `1024` | The physical SSD/VRAM size limit for the frozen brain state in MB |
-| `auto_summarize_on_cap` | bool | `true` | If limits are hit, whether ORE should summarize the history |
+| `auto_summarize_on_cap` | bool | `true` | If limits are hit, whether Ore should summarize the history |
 
 ### `[file_system]`
 
@@ -147,7 +147,7 @@ allow_time_decay = false                     # Allow older memories to lose rele
 
 ## Validation Rules
 
-The ORE Kernel enforces strict sanity checks on manifests at boot:
+The Ore Kernel enforces strict sanity checks on manifests at boot:
 
 - **Immutable Anchor:** `stateful_paging` cannot be `true` if `json_history` is `false`. JSON fallbacks are required for memory compaction.
 - **Non-Zero Budgets:** `max_tokens_per_minute` cannot be `0`.

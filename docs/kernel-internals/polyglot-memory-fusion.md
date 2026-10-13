@@ -13,15 +13,15 @@ In standard backend architectures, if a Python agent needs to compress a 5GB JSO
 
 This **Serialization Tax** is unacceptable for high-frequency, memory-intensive AI workloads. 
 
-## The ORE Solution: Zero-Copy Memory Fusion
+## The Ore Solution: Zero-Copy Memory Fusion
 
-ORE introduces `ore-ld`, a `dlopen`-style dynamic linker built into the WebAssembly kernel. Instead of isolating tools via network sockets, ORE physically injects them into the agent's live RAM.
+Ore introduces `ore-ld`, a `dlopen`-style dynamic linker built into the WebAssembly kernel. Instead of isolating tools via network sockets, Ore physically injects them into the agent's live RAM.
 
 ### 1. Position Independent Code (fPIC)
 Developers compile their plugins as WebAssembly Shared Objects (`.wasi.so`). The `ore mktool --shared` compiler flag forces LLVM to generate Position Independent Code. This means the plugin does not assume it owns the memory from address `0x0`. Instead, it relies on global variables (`__memory_base` and `__table_base`) to know where it is loaded.
 
 ### 2. The Custom MMU (`linker/mmu.rs`)
-When a Host Agent calls `ore_dlopen("plugin.wasi.so")`, the ORE Kernel halts execution. The internal Memory Management Unit (MMU):
+When a Host Agent calls `ore_dlopen("plugin.wasi.so")`, the Ore Kernel halts execution. The internal Memory Management Unit (MMU):
 - Inspects the plugin's `.data` segments.
 - Calls `memory.grow` on the Host Agent's WebAssembly linear memory to allocate fresh pages.
 - Calculates the offset and dynamically injects the `__memory_base` integer into the plugin.
@@ -29,7 +29,7 @@ When a Host Agent calls `ore_dlopen("plugin.wasi.so")`, the ORE Kernel halts exe
 
 ### 3. Function Table Hijacking (`trap_ore_dlsym`)
 WebAssembly enforces strict Control Flow Integrity (CFI). A Host Agent cannot arbitrarily jump to an unverified memory address.
-When the Host Agent calls `ore_dlsym("my_function")`, ORE:
+When the Host Agent calls `ore_dlsym("my_function")`, Ore:
 - Dynamically expands the Host Agent's `__indirect_function_table`.
 - Maps the plugin's function pointer into the newly created table slots.
 - Returns the exact integer index to the Host Agent.

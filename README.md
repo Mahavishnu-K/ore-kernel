@@ -1,17 +1,19 @@
 <div align="center">
 
-# ORE
+# Ore
 
 ### Open Runtime Environment for local LLM agents
 
 A kernel daemon, written in Rust, that sits between your agents and your hardware.<br>
 It schedules the GPU, persists agent memory to disk, sandboxes tools in WebAssembly, and enforces per-agent permissions.
 
-[![Build](https://img.shields.io/github/actions/workflow/status/Mahavishnu-K/ore-kernel/ci.yml?style=flat-square&logo=githubactions&logoColor=white)](https://github.com/Mahavishnu-K/ore-kernel/actions/workflows/ci.yml)
-[![Rust](https://img.shields.io/badge/rust-1.93+-orange?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
-[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
-[![Status](https://img.shields.io/badge/status-alpha-red?style=flat-square)](ROADMAP.md)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/channels/1477053099494342755/1477053558879686737)
+[![Build](https://img.shields.io/github/actions/workflow/status/Mahavishnu-K/ore-kernel/ci.yml?style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/Mahavishnu-K/ore-kernel/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/rust-1.93+-orange?style=for-the-badge&logo=rust&logoColor=white)]()
+[![Version](https://img.shields.io/badge/version-v0.1.0-4D8F91?style=for-the-badge)](https://github.com/Mahavishnu-K/ore-kernel/releases)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey?style=for-the-badge&logo=linux&logoColor=white)]()
+[![Status](https://img.shields.io/badge/status-alpha-red?style=for-the-badge)]()
+[![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/channels/1477053099494342755/1477053558879686737)
 
 [Quick start](#quick-start) · [Architecture](#architecture) · [Documentation](#documentation) · [Roadmap](ROADMAP.md) · [Contributing](#contributing)
 
@@ -19,7 +21,7 @@ It schedules the GPU, persists agent memory to disk, sandboxes tools in WebAssem
 
 ---
 
-## Why
+## Why ore?
 
 Local inference engines are built for one client at a time. Run several agents against them and you get three problems:
 
@@ -27,16 +29,16 @@ Local inference engines are built for one client at a time. Run several agents a
 - **No memory.** When an engine switches between agents it discards the KV cache, so every resume re-runs prefill over the whole conversation.
 - **No boundaries.** Tool-using agents run with the full privileges of the host process.
 
-ORE is a single daemon that all your agents talk to. Applications never touch the GPU directly. They send requests to ORE, and ORE decides when they run, what they can access, and what they remember.
+Ore is a single daemon that all your agents talk to. Applications never touch the GPU directly. They send requests to Ore, and Ore decides when they run, what they can access, and what they remember.
 
 ## Benchmark
 
-On CPU, the cost of switching between agents is prefill. ORE saves each agent's KV cache to disk and restores it instead of recomputing it:
+On CPU, the cost of switching between agents is prefill. Ore saves each agent's KV cache to disk and restores it instead of recomputing it:
 
 | Resuming a paused agent (Ryzen 7, 16 GB RAM, CPU only) | Time |
 |---|---:|
 | Recompute prefill over the conversation history | 37.03 s |
-| Restore saved KV cache from SSD (ORE) | **2.41 s** |
+| Restore saved KV cache from SSD (Ore) | **2.41 s** |
 | **Speedup** | **15.4×** |
 
 Saved caches also survive restarts, so an agent can pick up a long conversation after a reboot without re-processing it.
@@ -55,7 +57,7 @@ Saved caches also survive restarts, so an agent can pick up a long conversation 
 | **Prompt filtering** | Optional regex-based PII redaction and prompt-injection heuristics. These are best-effort filters, not a security boundary. See the [security model](docs/security-model.md). |
 
 > [!WARNING]
-> ORE is **alpha** software. APIs, manifest fields, and on-disk formats will change.
+> Ore is **alpha** software. APIs, manifest fields, and on-disk formats will change.
 
 ## Quick start
 
@@ -172,18 +174,18 @@ flowchart TB
 
 | | |
 |---|---|
-| [Why ORE?](docs/why-ore.md) | The problems ORE solves and the reasoning behind each subsystem |
+| [Why Ore?](docs/why-ore.md) | The problems Ore solves and the reasoning behind each subsystem |
 | [Getting Started](docs/getting-started.md) | Install, first inference, first sandboxed tool, first agent |
 | [Architecture](docs/architecture.md) | Request lifecycles and workspace layout |
 | [CLI Reference](docs/cli-reference.md) · [API Reference](docs/api-reference.md) | Every command and HTTP route |
 | [Manifest Reference](docs/manifest-reference.md) · [Configuration](docs/configuration.md) | Agent permissions and `ore.toml` |
 | [Security Model](docs/security-model.md) | Threat model and what each layer does and doesn't protect against |
-| [Building Plugins](docs/building-plugins.md) · [Extending ORE](docs/extending-ore.md) | Writing `ore-ld` plugins, drivers, and model architectures |
+| [Building Plugins](docs/building-plugins.md) · [Extending Ore](docs/extending-ore.md) | Writing `ore-ld` plugins, drivers, and model architectures |
 | [Kernel Internals](docs/kernel-internals/) | Subsystem-by-subsystem deep dives |
 
 ## Contributing
 
-ORE is early, so design feedback is as valuable as code. Please open an issue to discuss larger changes before sending a PR. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Roadmap](ROADMAP.md).
+Ore is early, so design feedback is as valuable as code. Please open an issue to discuss larger changes before sending a PR. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Roadmap](ROADMAP.md).
 
 Areas where help is especially welcome:
 
@@ -196,7 +198,7 @@ Chat with us on [Discord](https://discord.com/channels/1477053099494342755/14770
 
 ## Acknowledgments
 
-- [Hugging Face Candle](https://github.com/huggingface/candle) powers the native engine. ORE adapts several of its transformer implementations, including community work on Nomic and SwiGLU.
+- [Hugging Face Candle](https://github.com/huggingface/candle) powers the native engine. Ore adapts several of its transformer implementations, including community work on Nomic and SwiGLU.
 - [Wasmtime](https://github.com/bytecodealliance/wasmtime) powers the sandbox.
 - [Ollama](https://github.com/ollama/ollama) serves as the alternative inference backend.
 

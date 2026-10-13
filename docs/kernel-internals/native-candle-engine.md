@@ -8,7 +8,7 @@
 
 ## Overview
 
-The Native Candle Engine is ORE's built-in inference backend, powered by Hugging Face's [Candle](https://github.com/huggingface/candle) framework. It runs quantized GGUF models directly on CPU, CUDA, or Metal - no Python, no daemon, no external runtime.
+The Native Candle Engine is Ore's built-in inference backend, powered by Hugging Face's [Candle](https://github.com/huggingface/candle) framework. It runs quantized GGUF models directly on CPU, CUDA, or Metal - no Python, no daemon, no external runtime.
 
 ```
 ore-core/src/native/
@@ -177,7 +177,7 @@ No manual memory management. No garbage collector. The Rust type system enforces
 
 ## Adding New Architectures
 
-To add support for a new model architecture (Mistral, Phi, Gemma, etc.), see [Extending ORE → Adding a New Model Architecture](../extending-ore.md#2-adding-a-new-model-architecture-native-engine).
+To add support for a new model architecture (Mistral, Phi, Gemma, etc.), see [Extending Ore → Adding a New Model Architecture](../extending-ore.md#2-adding-a-new-model-architecture-native-engine).
 
 ---
 

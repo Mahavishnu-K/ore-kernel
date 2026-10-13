@@ -1,6 +1,6 @@
 # CLI Reference
 
-> Every command the ORE CLI provides, with syntax, flags, and example output.
+> Every command the Ore CLI provides, with syntax, flags, and example output.
 
 The CLI binary is `ore`. Install it with `cargo install --path ore-cli`.
 
@@ -31,7 +31,7 @@ Check if the kernel daemon is online.
 ore status
 
 # Output:
-# ORE Kernel Status: ONLINE
+# Ore Kernel Status: ONLINE
 # Engine: native
 ```
 
@@ -45,7 +45,7 @@ View kernel telemetry - driver info, scheduler state, firewall status.
 ore top
 
 # Output:
-# === ORE KERNEL TELEMETRY ===
+# === Ore KERNEL TELEMETRY ===
 # Driver      : Native Candle Engine
 # Scheduler   : ACTIVE (Model: qwen2.5:0.5b, Users: 1)
 # Firewall    : ARMED

@@ -8,7 +8,7 @@
 
 ## Overview
 
-ORE's IPC layer has three components:
+Ore's IPC layer has three components:
 
 | Component | Purpose | Data Structure |
 |---|---|---|

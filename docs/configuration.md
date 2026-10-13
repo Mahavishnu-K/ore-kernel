@@ -1,11 +1,11 @@
 # Configuration Reference
 
-> Every knob you can turn in the ORE kernel.
+> Every knob you can turn in the Ore kernel.
 
 ## `ore.toml` - System Configuration
 
-The kernel reads `ore.toml` from the ORE base directory on boot. The base directory is resolved in the following order:
-1. The `$ORE_DIR` environment variable, if set.
+The kernel reads `ore.toml` from the Ore base directory on boot. The base directory is resolved in the following order:
+1. The `$Ore_DIR` environment variable, if set.
 2. The local `../` directory, if `../ore.toml` exists (for local development).
 3. The user's home directory (`~/.ore` on Linux/macOS, or `%USERPROFILE%\.ore` on Windows).
 

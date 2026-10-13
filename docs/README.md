@@ -1,14 +1,14 @@
-# ORE Documentation
+# Ore Documentation
 
 > **The Manual for the Kernel.**
-> This folder contains everything you need to understand how ORE works internally, how to configure it, how to extend it, and how to build on top of it.
+> This folder contains everything you need to understand how Ore works internally, how to configure it, how to extend it, and how to build on top of it.
 
 ## Where to Start
 
 | You want to... | Read this |
 |---|---|
-| **Know why ORE exists** | [Why ORE?](./why-ore.md) |
-| **Get ORE running** | [Getting Started](./getting-started.md) |
+| **Know why Ore exists** | [Why Ore?](./why-ore.md) |
+| **Get Ore running** | [Getting Started](./getting-started.md) |
 | **Understand the big picture** | [Architecture](./architecture.md) |
 | **Configure the kernel** | [Configuration Reference](./configuration.md) |
 | **Use the CLI** | [CLI Reference](./cli-reference.md) |
@@ -16,11 +16,11 @@
 | **Write a secure manifest** | [Manifest Reference](./manifest-reference.md) |
 | **Understand the security model** | [Security Model](./security-model.md) |
 | **Build dynamic WASM plugins** | [Building Plugins](./building-plugins.md) |
-| **Add a new driver or model** | [Extending ORE](./extending-ore.md) |
+| **Add a new driver or model** | [Extending Ore](./extending-ore.md) |
 
 ## Kernel Internals
 
-Deep-dives into each subsystem for contributors who want to understand ORE's brain before touching the code.
+Deep-dives into each subsystem for contributors who want to understand Ore's brain before touching the code.
 
 | Subsystem | Source | Doc |
 |---|---|---|

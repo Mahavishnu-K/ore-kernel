@@ -3,9 +3,9 @@
 **Difficulty:** Medium  
 **Required SDKs:** `ore-sys` (Rust) or `syskit` (C, C++, Zig)
 
-ORE's **Zero-Copy Cross-Language Memory Fusion** is powered by `ore-ld` (the ORE Dynamic Linker). It allows Host Agents to dynamically load pre-compiled WebAssembly plugins (`.wasi.so`) at runtime. 
+Ore's **Zero-Copy Cross-Language Memory Fusion** is powered by `ore-ld` (the Ore Dynamic Linker). It allows Host Agents to dynamically load pre-compiled WebAssembly plugins (`.wasi.so`) at runtime. 
 
-Unlike traditional Docker containers or standard WASM runtimes that force you to serialize data to JSON and pipe it over STDOUT/STDIN, ORE injects the exact same linear memory space into both the Host Agent and the Dynamically Loaded Plugin. This allows plugins to mutate the host's RAM directly in-place, achieving true bare-metal FFI performance with zero IPC overhead.
+Unlike traditional Docker containers or standard WASM runtimes that force you to serialize data to JSON and pipe it over STDOUT/STDIN, Ore injects the exact same linear memory space into both the Host Agent and the Dynamically Loaded Plugin. This allows plugins to mutate the host's RAM directly in-place, achieving true bare-metal FFI performance with zero IPC overhead.
 
 ---
 
@@ -79,7 +79,7 @@ fn main() {
 
 If you are writing the Host Agent or Plugin in C, C++, or Zig, you must use the raw system calls provided by the `syskit` SDK headers (`ore.h` or `ore.zig`). 
 
-Because ORE enforces the standard C-ABI across the linker boundary, **a Rust host can load a C plugin, and a C host can load a Zig plugin.**
+Because Ore enforces the standard C-ABI across the linker boundary, **a Rust host can load a C plugin, and a C host can load a Zig plugin.**
 
 ### Example: C Host Agent loading a C++ Plugin
 Include `ore.h` to access the SDK.
@@ -90,7 +90,7 @@ Include `ore.h` to access the SDK.
 #include <ore.h>
 
 int main() {
-    // 1. Request the dynamic library from the ORE Kernel using the elegant API
+    // 1. Request the dynamic library from the Ore Kernel using the elegant API
     OrePlugin plugin = ore_load("sanitizer.wasi.so");
     if (plugin <= 0) {
         printf("Failed to load plugin!\n");
@@ -98,8 +98,8 @@ int main() {
     }
 
     // 2. Automatically resolve and cast the function pointer!
-    // Syntax: ORE_BIND(plugin_handle, func_name, return_type, arg1_type, arg2_type...)
-    ORE_BIND(plugin, clean_string, void, char*, size_t);
+    // Syntax: Ore_BIND(plugin_handle, func_name, return_type, arg1_type, arg2_type...)
+    Ore_BIND(plugin, clean_string, void, char*, size_t);
 
     // 3. Execute in-place Memory Fusion
     char buffer[] = "USER_INPUT: DROP TABLE users;";
@@ -112,14 +112,14 @@ int main() {
 ```
 
 ### Writing a C/C++ Plugin
-To write a plugin in C or C++, simply mark the function with the `ORE_PLUGIN` macro so it is exported into the WASM binary without name-mangling.
+To write a plugin in C or C++, simply mark the function with the `Ore_PLUGIN` macro so it is exported into the WASM binary without name-mangling.
 
 ```cpp
 // sanitizer.cpp
-#define ORE_PLUGIN_MODE
+#define Ore_PLUGIN_MODE
 #include <ore.h>
 
-ORE_PLUGIN void clean_string(char* data, size_t len) {
+Ore_PLUGIN void clean_string(char* data, size_t len) {
     for (size_t i = 0; i < len; i++) {
         if (data[i] == ';') {
             data[i] = '_'; // Strip dangerous SQL characters in-place
@@ -131,12 +131,12 @@ ORE_PLUGIN void clean_string(char* data, size_t len) {
 ---
 
 ## Compiling with `ore mktool`
-Once you have written your Host Agent and your Plugin, you must compile them into WebAssembly cartridges using the ORE toolchain. ORE handles all the complex `-fPIC` linker flags and SDK bindings automatically.
+Once you have written your Host Agent and your Plugin, you must compile them into WebAssembly cartridges using the Ore toolchain. Ore handles all the complex `-fPIC` linker flags and SDK bindings automatically.
 
 Depending on if you are compiling a single file or a full project directory (like a Cargo crate or Go module), use the following commands:
 
 ### Forging the Host Agent
-The `--host` flag must be used when your WASM executable intends to *load* a plugin via `ore_load`. This flag tells the ORE compiler to surrender the Wasmtime function table to the OS so the kernel can hijack it. (If your tool doesn't use Memory Fusion plugins, just use `ore mktool` without the `--host` flag).
+The `--host` flag must be used when your WASM executable intends to *load* a plugin via `ore_load`. This flag tells the Ore compiler to surrender the Wasmtime function table to the OS so the kernel can hijack it. (If your tool doesn't use Memory Fusion plugins, just use `ore mktool` without the `--host` flag).
 ```bash
 # Compile a single file
 ore mktool host_agent.rs --host
@@ -144,7 +144,7 @@ ore mktool host_agent.rs --host
 # Compile a full project directory (e.g., Cargo/NPM project)
 ore mktool . --host
 ```
-*(Note: ORE automatically outputs `--host` executables into your `~/.ore/tools` directory so they can be securely executed by the sandbox!)*
+*(Note: Ore automatically outputs `--host` executables into your `~/.ore/tools` directory so they can be securely executed by the sandbox!)*
 
 ### Forging the Dynamic Plugin
 The `--shared` flag compiles your code into a dynamically loadable WebAssembly Shared Object (`.wasi.so`). This is required for it to be loaded via `ore_dlopen`.
@@ -155,7 +155,7 @@ ore mktool encryptor.rs --shared
 # Compile a full project directory plugin
 ore mktool . --shared
 ```
-*(Note: ORE automatically outputs `.wasi.so` plugins into your `~/.ore/plugins` directory so they can be instantly resolved by the kernel!)*
+*(Note: Ore automatically outputs `.wasi.so` plugins into your `~/.ore/plugins` directory so they can be instantly resolved by the kernel!)*
 
 ---
 
