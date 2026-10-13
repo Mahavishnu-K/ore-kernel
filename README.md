@@ -45,6 +45,7 @@ Saved caches also survive restarts, so an agent can pick up a long conversation 
 
 ## Features
 
+| Feature | Description |
 |---|---|
 | **GPU scheduler** | Agents acquire RAII leases before inference. Admission control reads real VRAM through NVML and estimates KV-cache size from GGUF geometry. Models that fit are loaded side by side, and the least recently used idle model is evicted when they don't. |
 | **KV-cache paging** | An agent's chat history and KV cache are written to `.safetensors` on disk when it goes idle and restored on its next turn. Background compaction caps disk usage. |
