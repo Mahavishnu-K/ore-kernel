@@ -21,7 +21,7 @@ It schedules the GPU, persists agent memory to disk, sandboxes tools in WebAssem
 
 ---
 
-## Why ore?
+## Why Ore?
 
 Local inference engines are built for one client at a time. Run several agents against them and you get three problems:
 
