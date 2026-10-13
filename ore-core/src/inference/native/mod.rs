@@ -582,4 +582,31 @@ impl InferenceDriver for NativeDriver {
         }
         Ok(())
     }
+
+    async fn count_tokens(&self, model: &str, text: &str) -> Option<u32> {
+        let safe_name = model.trim().replace(':', "-");
+
+        // 1. In-memory check: if the model is currently active, use its loaded tokenizer directly
+        {
+            let state = self.engine.lock().unwrap();
+            if let Some(active) = &*state
+                && (active.model_name == safe_name || active.model_name == model)
+                && let Ok(encoding) = active.tokenizer.encode(text, false)
+            {
+                return Some(encoding.get_ids().len() as u32);
+            }
+        }
+
+        // 2. On-disk check: read cached tokenizer.json if available
+        let model_dir = paths::get_models_dir().join(&safe_name);
+        let tokenizer_path = model_dir.join(constants::TOKENIZER_JSON_FILE_NAME);
+        if tokenizer_path.exists()
+            && let Ok(tok) = tokenizers::Tokenizer::from_file(&tokenizer_path)
+            && let Ok(encoding) = tok.encode(text, false)
+        {
+            return Some(encoding.get_ids().len() as u32);
+        }
+
+        None
+    }
 }

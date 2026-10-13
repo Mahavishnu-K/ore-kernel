@@ -58,4 +58,10 @@ pub trait InferenceDriver: Send + Sync {
     async fn flush_idle_memory(&self, idle_timeout_mins: u64) -> Result<(), DriverError>;
 
     async fn invalidate_agent_cache(&self, app_id: &str) -> Result<(), DriverError>;
+
+    /// Returns the exact token count for the given text using the engine's tokenizer,
+    /// or `None` if the driver does not have direct tokenizer access.
+    async fn count_tokens(&self, _model: &str, _text: &str) -> Option<u32> {
+        None
+    }
 }

@@ -13,6 +13,44 @@ use std::sync::Arc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+/// Two-Tier Context Token Estimator:
+/// - Tier 1: Fast, zero-allocation calibrated estimation (Unicode/syntax/CJK aware)
+/// - Tier 2: Exact token count queried from HAL InferenceDriver when nearing/exceeding 80% limit
+async fn estimate_or_count_context_tokens(
+    history: &[ore_core::memory::ContextMessage],
+    model: &str,
+    token_limit: u32,
+    driver: &Arc<dyn ore_core::driver::InferenceDriver>,
+) -> u32 {
+    let fast_est: u32 = history
+        .iter()
+        .map(|m| ore_common::estimate_tokens_calibrated(&m.content))
+        .sum();
+
+    // Adaptive Trigger: if fast estimate reaches or exceeds 80% of token_limit, query Tier 2 (HAL)
+    let threshold = (token_limit as f64 * 0.80) as u32;
+    if fast_est >= threshold {
+        let concatenated = history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(exact) = driver.count_tokens(model, &concatenated).await {
+            return exact;
+        }
+    }
+
+    fast_est
+}
+
+/// Instant calibrated token count for tight FIFO pruning loops
+fn fast_history_tokens(history: &[ore_core::memory::ContextMessage]) -> u32 {
+    history
+        .iter()
+        .map(|m| ore_common::estimate_tokens_calibrated(&m.content))
+        .sum()
+}
+
 // inference engine (The Proxy & Firewall)
 pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<String>) -> String {
     let clean_prompt = prompt.replace("_", " ");
@@ -113,9 +151,14 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
         // CRITICAL: write the updated JSON to the SSD before you drop the GpuLease.
         Pager::page_out_history(app_id, &new_history);
 
-        let total_chars: usize = new_history.iter().map(|m| m.content.len()).sum();
-        let estimated_tokens = (total_chars / 4) as u32;
         let token_limit = manifest.memory_limits.max_json_tokens;
+        let estimated_tokens = estimate_or_count_context_tokens(
+            &new_history,
+            target_model,
+            token_limit,
+            &state.driver,
+        )
+        .await;
         let token_cap_hit = estimated_tokens > token_limit;
 
         // CALCULATE PHYSICAL VRAM/SSD USAGE
@@ -205,10 +248,9 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                     drop(comp_lease); // Release the GPU
 
                     // OS SAFETY HEURISTIC 1: TRUNCATE BLOATED SUMMARIES
-                    let safe_target = (token_limit as f32 * 0.75) as usize;
-                    let max_summary_chars = safe_target * 4;
+                    let safe_target = (token_limit as f32 * 0.75) as u32;
 
-                    if summary.len() > max_summary_chars {
+                    if ore_common::estimate_tokens_calibrated(&summary) > safe_target {
                         kprintln!(
                             "-> [COMPACTION] [WARN] AI generated a bloated summary. Truncating mechanically."
                         );
@@ -216,16 +258,19 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                             "-> [COMPACTION] ACTION REQUIRED: Increase 'max_json_tokens' in the Agent's manifest!"
                         );
 
-                        // Safely slice the string at a valid UTF-8 character boundary
-                        let safe_idx = summary
-                            .char_indices()
-                            .nth(max_summary_chars)
-                            .map(|(i, _)| i)
-                            .unwrap_or(summary.len());
-                        summary = format!(
-                            "{}... [TRUNCATED BY ORE KERNEL - INCREASE MEMORY LIMITS]",
-                            &summary[..safe_idx]
-                        );
+                        while ore_common::estimate_tokens_calibrated(&summary) > safe_target
+                            && summary.len() > 10
+                        {
+                            let cut_at = summary.len().saturating_sub(40);
+                            let safe_idx = summary
+                                .char_indices()
+                                .map(|(i, _)| i)
+                                .take_while(|&i| i <= cut_at)
+                                .last()
+                                .unwrap_or(0);
+                            summary.truncate(safe_idx);
+                        }
+                        summary.push_str("... [TRUNCATED BY ORE KERNEL - INCREASE MEMORY LIMITS]");
                     }
 
                     // REWRITE THE BRAIN
@@ -246,22 +291,21 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                     }
 
                     // OS SAFETY HEURISTIC 2: PREVENT COMPACTION DEATH LOOP
-                    let new_estimated_tokens = (compacted_history
-                        .iter()
-                        .map(|m| m.content.len())
-                        .sum::<usize>()
-                        / 4) as u32;
+                    let new_estimated_tokens = estimate_or_count_context_tokens(
+                        &compacted_history,
+                        &model_to_use,
+                        safe_target,
+                        &driver_clone,
+                    )
+                    .await;
 
-                    if new_estimated_tokens > safe_target as u32 {
+                    if new_estimated_tokens > safe_target {
                         kprintln!(
-                            "-> [COMPACTION] [WARN] AI failed to compress below limit. Forcing brutal FIFO pruning."
+                            "-> [COMPACTION] [WARN] AI failed to compress below limit ({} > {} tokens). Forcing brutal FIFO pruning.",
+                            new_estimated_tokens,
+                            safe_target
                         );
-                        while compacted_history
-                            .iter()
-                            .map(|m| m.content.len())
-                            .sum::<usize>()
-                            / 4
-                            > safe_target
+                        while fast_history_tokens(&compacted_history) > safe_target
                             && compacted_history.len() > 1
                         {
                             compacted_history.remove(1);
@@ -287,10 +331,7 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
                     "-> [KERNEL] Agent '{}' memory cap reached. Pruning oldest messages (FIFO)...",
                     app_id
                 );
-                while new_history.iter().map(|m| m.content.len()).sum::<usize>() / 4
-                    > token_limit as usize
-                    && new_history.len() > 2
-                {
+                while fast_history_tokens(&new_history) > token_limit && new_history.len() > 2 {
                     new_history.remove(1);
                 }
                 Pager::page_out_history(app_id, &new_history);
@@ -444,9 +485,10 @@ pub async fn run_process(
 
             Pager::page_out_history(&app_id_str, &new_history);
 
-            let total_chars: usize = new_history.iter().map(|m| m.content.len()).sum();
-            let estimated_tokens = (total_chars / 4) as u32;
             let token_limit = manifest.memory_limits.max_json_tokens;
+            let estimated_tokens =
+                estimate_or_count_context_tokens(&new_history, &model_name, token_limit, &driver)
+                    .await;
             let token_cap_hit = estimated_tokens > token_limit;
 
             let mut kv_cap_hit = false;
@@ -526,10 +568,9 @@ pub async fn run_process(
                     drop(comp_lease);
 
                     // OS SAFETY HEURISTIC 1: TRUNCATE BLOATED SUMMARIES
-                    let safe_target = (token_limit as f32 * 0.75) as usize;
-                    let max_summary_chars = safe_target * 4;
+                    let safe_target = (token_limit as f32 * 0.75) as u32;
 
-                    if summary.len() > max_summary_chars {
+                    if ore_common::estimate_tokens_calibrated(&summary) > safe_target {
                         kprintln!(
                             "-> [COMPACTION] [WARN] AI generated a bloated summary. Truncating mechanically."
                         );
@@ -537,16 +578,19 @@ pub async fn run_process(
                             "-> [COMPACTION] ACTION REQUIRED: Increase 'max_json_tokens' in the user manifest!"
                         );
 
-                        // Safely slice the string at a valid UTF-8 character boundary
-                        let safe_idx = summary
-                            .char_indices()
-                            .nth(max_summary_chars)
-                            .map(|(i, _)| i)
-                            .unwrap_or(summary.len());
-                        summary = format!(
-                            "{}... [TRUNCATED BY ORE KERNEL - INCREASE MEMORY LIMITS]",
-                            &summary[..safe_idx]
-                        );
+                        while ore_common::estimate_tokens_calibrated(&summary) > safe_target
+                            && summary.len() > 10
+                        {
+                            let cut_at = summary.len().saturating_sub(40);
+                            let safe_idx = summary
+                                .char_indices()
+                                .map(|(i, _)| i)
+                                .take_while(|&i| i <= cut_at)
+                                .last()
+                                .unwrap_or(0);
+                            summary.truncate(safe_idx);
+                        }
+                        summary.push_str("... [TRUNCATED BY ORE KERNEL - INCREASE MEMORY LIMITS]");
                     }
 
                     let mut compacted_history = Vec::new();
@@ -564,22 +608,21 @@ pub async fn run_process(
                         compacted_history.push(new_history[len - 1].clone());
                     }
 
-                    let new_estimated_tokens = (compacted_history
-                        .iter()
-                        .map(|m| m.content.len())
-                        .sum::<usize>()
-                        / 4) as u32;
+                    let new_estimated_tokens = estimate_or_count_context_tokens(
+                        &compacted_history,
+                        &model_name,
+                        safe_target,
+                        &driver,
+                    )
+                    .await;
 
-                    if new_estimated_tokens > safe_target as u32 {
+                    if new_estimated_tokens > safe_target {
                         kprintln!(
-                            "-> [COMPACTION] [WARN] AI failed to compress below limit. Forcing brutal FIFO pruning."
+                            "-> [COMPACTION] [WARN] AI failed to compress below limit ({} > {} tokens). Forcing brutal FIFO pruning.",
+                            new_estimated_tokens,
+                            safe_target
                         );
-                        while compacted_history
-                            .iter()
-                            .map(|m| m.content.len())
-                            .sum::<usize>()
-                            / 4
-                            > safe_target
+                        while fast_history_tokens(&compacted_history) > safe_target
                             && compacted_history.len() > 1
                         {
                             compacted_history.remove(1);
@@ -600,16 +643,13 @@ pub async fn run_process(
                         "-> [KERNEL] User '{}' memory cap reached. Pruning oldest messages (FIFO)...",
                         app_id_str
                     );
-                    while new_history.iter().map(|m| m.content.len()).sum::<usize>() / 4
-                        > token_limit as usize
-                        && new_history.len() > 2
-                    {
+                    while fast_history_tokens(&new_history) > token_limit && new_history.len() > 2 {
                         new_history.remove(0);
                     }
                     Pager::page_out_history(&app_id_str, &new_history);
                     if is_stateful {
                         Pager::delete_kv_cache(&app_id_str);
-                        let _ = state.driver.invalidate_agent_cache(&app_id_str).await;
+                        let _ = driver.invalidate_agent_cache(&app_id_str).await;
                     }
                     kprintln!("-> Execution complete. Releasing GPU Lock.");
                     drop(lease);
