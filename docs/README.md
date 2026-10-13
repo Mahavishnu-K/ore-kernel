@@ -7,6 +7,7 @@
 
 | You want to... | Read this |
 |---|---|
+| **Know why ORE exists** | [Why ORE?](./why-ore.md) |
 | **Get ORE running** | [Getting Started](./getting-started.md) |
 | **Understand the big picture** | [Architecture](./architecture.md) |
 | **Configure the kernel** | [Configuration Reference](./configuration.md) |
@@ -39,7 +40,7 @@ ore-system/
 ├── ore-common/     Shared foundation crate (protocol DTOs, paths, constants, manifest schema)
 ├── ore-core/       Kernel logic (sandbox subsystem, MMU, firewall, multi-tenant scheduler, wasmtime runtime)
 │   ├── sandbox/    Modular Zero-Trust WASM Sandbox (AOT, VFS, Layer 7 network proxy, portals)
-│   └── linker/     ore-ld: POSIX Dynamic Linker & Memory Fusion Engine
+│   └── linker/     ore-ld: WebAssembly Dynamic Linker & Memory Fusion Engine
 ├── ore-server/     Axum HTTP daemon (routes, auth middleware, state)
 │   ├── execution/  Modular Execution Engine (Tool, Script, Shell dispatch)
 │   └── shims/      Runtime polyfills (CommonJS require bridge, Python WASI bootstrap)

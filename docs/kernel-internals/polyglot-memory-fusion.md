@@ -15,7 +15,7 @@ This **Serialization Tax** is unacceptable for high-frequency, memory-intensive 
 
 ## The ORE Solution: Zero-Copy Memory Fusion
 
-ORE introduces `ore-ld`, a custom POSIX-compliant Dynamic Linker built directly into the WebAssembly Kernel. Instead of isolating tools via network sockets, ORE physically injects them into the agent's live RAM.
+ORE introduces `ore-ld`, a `dlopen`-style dynamic linker built into the WebAssembly kernel. Instead of isolating tools via network sockets, ORE physically injects them into the agent's live RAM.
 
 ### 1. Position Independent Code (fPIC)
 Developers compile their plugins as WebAssembly Shared Objects (`.wasi.so`). The `ore mktool --shared` compiler flag forces LLVM to generate Position Independent Code. This means the plugin does not assume it owns the memory from address `0x0`. Instead, it relies on global variables (`__memory_base` and `__table_base`) to know where it is loaded.

@@ -266,6 +266,25 @@ ore-system/
 └── rust-toolchain.toml      Pinned Rust 1.93.0
 ```
 
+> **Directory resolution:** data directories (`manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`) and `ore.toml` are resolved relative to the **ORE base directory**, found in this order: 1) the `$ORE_DIR` environment variable, 2) `../` if it contains `ore.toml` (local development), 3) `~/.ore` on Linux/macOS or `%USERPROFILE%\.ore` on Windows.
+
+### Key Dependencies
+
+| Crate | Purpose |
+|---|---|
+| `axum` | HTTP server and auth middleware |
+| `tokio` + `tokio-stream` | Async runtime, semaphore scheduling, response streaming |
+| `candle-core` + `candle-transformers` + `candle-nn` | Native GGUF inference and safetensors embedders |
+| `wasmtime` + `wasmtime-wasi` | WebAssembly sandbox, fuel metering, WASI file system |
+| `tokenizers` | Hugging Face tokenizers |
+| `dashmap` | Concurrent maps for the IPC buses, rate limiter, and embedding cache |
+| `nvml-wrapper` + `sysinfo` | VRAM and system memory readings for the scheduler |
+| `clap` + `dialoguer` | CLI parsing and the interactive wizards |
+| `reqwest` + `hf-hub` | Ollama driver and Hugging Face model downloads |
+| `regex` | Firewall PII and injection patterns |
+| `serde` + `toml` | Manifest and config parsing |
+| `thiserror` + `anyhow` | Error types |
+
 ---
 
 ## Design Principles
@@ -273,7 +292,7 @@ ore-system/
 1. **Zero-Trust Security by Default** - Every prompt is firewalled. Every route is authenticated. Every tool executes inside a sandboxed WASM container with capability-restricted file and network permissions.
 2. **Multi-Tenant VRAM Bin-Packing** - Instead of single-model locks, the GPU scheduler manages physical VRAM budgets via NVML hardware monitoring, dynamically dimensions KV caches from GGUF geometry, and gracefully evicts LRU idle models when memory pressure arises.
 3. **Zero-RAM AOT Caching (`.cwasm`)** - WASM cartridges are compiled to native machine code once and serialized. Subsequent invocations dynamically `mmap` the pre-compiled binary directly from the OS Page Cache into the CPU, yielding ~10ms cold starts with zero memory bloat.
-4. **Zero-Copy Cross-Language Memory Fusion (`ore-ld`)** - A custom POSIX-compliant dynamic linker allows host tools written in Rust, C, C++, or Zig to load position-independent plugins (`.wasi.so`) directly into shared linear memory, bypassing serialization overhead.
+4. **Zero-Copy Cross-Language Memory Fusion (`ore-ld`)** - A `dlopen`-style dynamic linker for WebAssembly lets host tools written in Rust, C, C++, or Zig load position-independent plugins (`.wasi.so`) directly into shared linear memory, bypassing serialization overhead.
 5. **Layer 7 Network Isolation & Runtime Shims** - Pure compute sandboxes lack raw sockets. ORE routes egress HTTP requests through an asynchronous Layer 7 proxy with manifest-enforced domain, method, and path rules, supported by CommonJS and Python WASI shims.
 6. **OS-Style Memory Management** - Idle agent conversational context and physical KV caches are serialized to the SSD (`memory/` directory) and restored on demand. Background memory compaction keeps context sizes bounded.
 7. **Driver Abstraction (HAL)** - The `InferenceDriver` trait provides an engine-agnostic boundary with 11 core methods, enabling transparent swapping between Native Candle and Ollama backends.

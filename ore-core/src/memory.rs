@@ -61,13 +61,42 @@ impl Pager {
         let swap_dir = Self::get_swap_dir();
         let path = swap_dir.join(format!("{}.pipe", pipe_name));
 
-        // Bincode freezes the RAM structure into pure 1s and 0s instantly
-        if let Ok(data) = bincode::serialize(chunks) {
-            let _ = fs::write(&path, data);
-            kprintln!(
-                "-> [PAGER] Semantic Pipe '{}' flushed to SSD (.pipe).",
-                pipe_name
-            );
+        let tmp_path = swap_dir.join(format!("{}.pipe.{}.tmp", pipe_name, uuid::Uuid::new_v4()));
+
+        match bincode::serialize(chunks) {
+            Ok(data) => {
+                if let Err(e) = fs::write(&tmp_path, data) {
+                    kprintln!(
+                        "-> [PAGER] [ERROR] Failed to write temp file for pipe '{}': {}",
+                        pipe_name,
+                        e
+                    );
+                    let _ = fs::remove_file(&tmp_path);
+                    return;
+                }
+
+                if let Err(e) = fs::rename(&tmp_path, &path) {
+                    kprintln!(
+                        "-> [PAGER] [ERROR] Failed to atomically commit pipe '{}': {}",
+                        pipe_name,
+                        e
+                    );
+                    let _ = fs::remove_file(&tmp_path);
+                    return;
+                }
+
+                kprintln!(
+                    "-> [PAGER] Semantic Pipe '{}' atomically flushed to SSD (.pipe).",
+                    pipe_name
+                );
+            }
+            Err(e) => {
+                kprintln!(
+                    "-> [PAGER] [ERROR] Serialization failed for pipe '{}': {}",
+                    pipe_name,
+                    e
+                );
+            }
         }
     }
 
@@ -80,8 +109,9 @@ impl Pager {
             if let Ok(data) = fs::read(&path) {
                 if let Ok(chunks) = bincode::deserialize::<VecDeque<Arc<MemoryChunk>>>(&data) {
                     kprintln!(
-                        "-> [PAGER] Semantic Pipe '{}' mapped IN from SSD.",
-                        pipe_name
+                        "-> [PAGER] Semantic Pipe '{}' mapped IN from SSD ({} chunks).",
+                        pipe_name,
+                        chunks.len()
                     );
                     return Some(chunks);
                 } else {
