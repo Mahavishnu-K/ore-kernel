@@ -48,7 +48,7 @@ impl MessageBus {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             channel: DashMap::new(),
-            backlog_capacity: capacity.max(16),
+            backlog_capacity: capacity.max(1),
         }
     }
 
