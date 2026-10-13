@@ -56,7 +56,7 @@ Saved caches also survive restarts, so an agent can pick up a long conversation 
 | **Native inference** | Pure-Rust GGUF inference via [Candle](https://github.com/huggingface/candle) for Llama, Qwen2, Qwen3, and Qwen3-MoE on CPU, CUDA, or Metal. Ollama is supported as an alternative backend. |
 | **Prompt filtering** | Optional regex-based PII redaction and prompt-injection heuristics. These are best-effort filters, not a security boundary. See the [security model](docs/security-model.md). |
 
-> [!WARNING]
+> [!IMPORTANT]
 > Ore is **alpha** software. APIs, manifest fields, and on-disk formats will change.
 
 ## Quick start
