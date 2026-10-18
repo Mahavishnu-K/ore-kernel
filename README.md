@@ -15,7 +15,7 @@ It schedules the GPU, persists agent memory to disk, sandboxes tools in WebAssem
 [![Status](https://img.shields.io/badge/status-alpha-red?style=for-the-badge)]()
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/channels/1477053099494342755/1477053558879686737)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Documentation](#documentation) · [Roadmap](ROADMAP.md) · [Contributing](#contributing)
+[Quick start](#quick-start) · [Nano-services](#nano-services-tools-without-containers) · [Architecture](#architecture) · [Documentation](#documentation) · [Roadmap](ROADMAP.md) · [Contributing](#contributing)
 
 </div>
 
@@ -43,14 +43,110 @@ On CPU, the cost of switching between agents is prefill. Ore saves each agent's 
 
 Saved caches also survive restarts, so an agent can pick up a long conversation after a reboot without re-processing it.
 
+## Nano-services: tools without containers
+
+Agents need tools, and tools are usually written in a different language from the agent. Today the choice is between a container (safe, but every call is serialized over a socket) and a native library (fast, but a crash takes the agent down and you rebuild it for every platform).
+
+Ore adds a third option. A **nano-service** is a tool compiled to WebAssembly and run inside the Ore process. It is isolated like a service and called like a library. There are two kinds:
+
+| | Container / microservice | Native FFI | Ore tool (`.wasm`) | Ore plugin (`.wasi.so`) |
+|---|---|---|---|---|
+| **Isolation** | Process + namespaces | None | WebAssembly sandbox | Sandboxed from the kernel and OS; **shares memory with its host module** |
+| **Passing data** | Serialize over a socket | Pointer | stdin / stdout / files | Pointer into shared linear memory |
+| **Start-up** | Hundreds of ms to seconds | `dlopen` | ~10 ms (AOT `.cwasm`) | Compile + instantiate on `ore_dlopen` |
+| **When it crashes** | Container exits | Host process dies | Trap; kernel keeps running | Trap aborts the host's execution; kernel keeps running |
+| **Portability** | Image per architecture | Build per OS and architecture | One `.wasm` runs everywhere | One `.wasi.so` runs everywhere |
+
+### Sandboxed tools (`.wasm`)
+
+`ore mktool` compiles a file or project written in Rust, Go, Python, JavaScript, TypeScript, Zig, C, or C++ into a `.wasm` tool. Any agent, in any language, can then call it through the kernel. Each run gets:
+
+- **A CPU budget.** `wasmtime` fuel metering is enabled for every store. When the manifest's `max_cpu_instructions` budget (default 5×10⁹) runs out, the guest traps instead of hanging the host.
+- **Only the files it's allowed.** The guest sees WASI pre-opened directories and nothing else: the manifest's paths, plus a private per-run `/ore_tmp`. Read-only paths are mounted without write rights, so the denial happens at the WASI layer, not in a policy check.
+- **No sockets.** The guest has no TCP or UDP access. Outbound HTTP goes through the `ore.fetch` host call to a Layer 7 proxy in the kernel, which checks domain, method, and path against `[[network.rules]]` and writes the response into `/ore_tmp`.
+- **Fast start-up.** The first run compiles the module to native code and serializes it as `.cwasm`. Later runs memory-map that file instead of recompiling, cutting a 300–600 ms cold start to about 10 ms. The page cache shares the code pages across concurrent instances.
+
+```bash
+ore mktool go_hasher.go        # → ~/.ore/tools/go_hasher.wasm
+
+curl -X POST http://127.0.0.1:6767/execute \
+     -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     -H "Content-Type: application/json" \
+     -d '{"app_id": "my_agent", "tool_name": "go_hasher", "input_data": "hello"}'
+```
+
+**Good fit:** tools that take data in, compute, call `ore.fetch` if they need the network, and write data out. **Not a fit:** browsers, GPU training loops, or anything that needs raw sockets or OS threads.
+
+### Memory Fusion with `ore-ld`
+
+Piping through stdin and stdout means serializing. That's fine for most tools, but not when a host module holds a large buffer and a tool needs to transform it in place. `ore-ld` lets a running WebAssembly host load a plugin into its own address space and call it through a function pointer, with no copy.
+
+**What `ore_dlopen("encryptor.wasi.so")` does** ([`linker/syscalls.rs`](ore-core/src/linker/syscalls.rs)):
+
+1. Reads the plugin from `~/.ore/plugins/` and compiles it.
+2. Grows the host's linear memory by 16 pages (1 MiB) for the plugin's data segment. The old end of memory becomes the plugin's `__memory_base`.
+3. Sets `__table_base` to the current size of the host's function table.
+4. Instantiates the plugin with the **host's** `memory` and `__indirect_function_table` as its imports, plus the two base globals. This is the LLVM `-fPIC` WebAssembly dynamic-linking convention.
+5. Runs the plugin's `__wasm_call_ctors` and returns a handle (≥ 1, or −1 on error).
+
+**What `ore_dlsym(handle, "xor_cipher")` does:** it grows the host's function table by one slot, stores the plugin's export there, and returns the index. In C, that index *is* a function pointer, so the call compiles to an ordinary `call_indirect`.
+
+```c
+// Host (C), trimmed from tests/cross_lang_memory_fusion/c_uses_rust.c
+#include <ore.h>
+
+int main() {
+    OrePlugin plugin = ore_load("encryptor.wasi.so");
+    ORE_BIND(plugin, xor_cipher, void, char*, int, unsigned char);
+
+    char data[] = "C_LOVES_RUST_MEMORY_FUSION";
+    xor_cipher(data, sizeof data - 1, 0xAA);   // Rust mutates C's buffer in place
+}
+```
+
+```rust
+// Plugin (Rust), from tests/memory_fusion/encryptor.rs
+#![no_std]
+use ore_sys::ore_export;
+
+ore_export! {
+    fn xor_cipher(data_ptr: *mut u8, len: usize, key: u8) {
+        let slice = unsafe { core::slice::from_raw_parts_mut(data_ptr, len) };
+        for byte in slice.iter_mut() { *byte ^= key; }
+    }
+}
+```
+
+```bash
+ore mktool encryptor.rs --shared    # position-independent plugin → ~/.ore/plugins/encryptor.wasi.so
+ore mktool c_uses_rust.c --host     # host built with --export-dynamic --import-table
+```
+
+The SDKs hide the ABI details: `ore.h` (`ore_load`, `ORE_BIND`) for C and C++, the `ore-sys` crate (`ore_export!`, `ore_bind!`) for Rust, and `ore.zig` for Zig.
+
+**What this does and doesn't guarantee:**
+
+- ✅ A plugin can't reach the kernel, the host OS, or other agents. It can only touch the host module's linear memory and the imports Ore gives it.
+- ✅ An out-of-bounds access or other fault becomes a WebAssembly trap. The execution is aborted and the kernel keeps running.
+- ✅ The same `.wasi.so` runs on Linux, macOS, and Windows without rebuilding.
+- ⚠️ A plugin is **not** isolated from its host. They share one linear memory, so a buggy plugin can corrupt host data, just as a native shared library could. Only load plugins you trust as much as the host.
+
+**Hot-swapping.** A long-running host can `ore_dlopen` a new version of a plugin and re-bind its function pointers. The host's state is untouched because it lives in the host's memory, not the plugin's. The old version stays loaded until `dlclose` exists.
+
+**Why only Rust, C, C++, and Zig?** These toolchains can emit position-independent WebAssembly that uses an *imported* memory and table. Garbage-collected runtimes (Python, JavaScript, Go) expect to own the whole linear memory, so they can't share one with another module's allocator. They use regular `.wasm` tools instead.
+
+**Current limits:** each plugin gets a fixed 1 MiB data region; there's no `dlclose` or `dlerror` yet; symbols aren't resolved between plugins; and plugins are compiled on every `ore_dlopen` rather than AOT-cached.
+
+More: [Polyglot Memory Fusion internals](docs/kernel-internals/polyglot-memory-fusion.md) · [Building plugins](docs/building-plugins.md)
+
 ## Features
 
 | Feature | Description |
 |---|---|
 | **GPU scheduler** | Agents acquire RAII leases before inference. Admission control reads real VRAM through NVML and estimates KV-cache size from GGUF geometry. Models that fit are loaded side by side, and the least recently used idle model is evicted when they don't. |
 | **KV-cache paging** | An agent's chat history and KV cache are written to `.safetensors` on disk when it goes idle and restored on its next turn. Background compaction caps disk usage. |
-| **WebAssembly sandbox** | Tools compiled from Rust, Go, Python, JS, TS, Zig, C, or C++ run in `wasmtime` with a CPU fuel limit, manifest-scoped directory mounts, and no raw sockets. Outbound HTTP goes through a proxy that checks domain, method, and path. Compiled modules are cached as `.cwasm`, for roughly 10 ms start-up. |
-| **`ore-ld` dynamic linker** | Load `.wasi.so` plugins (Rust, C, C++, Zig) into a running WebAssembly host with `ore_dlopen` / `ore_dlsym`. The plugin shares the host's linear memory, so large buffers are passed by pointer instead of being serialized. |
+| **WebAssembly sandbox** | Tools in eight languages run in-process under `wasmtime`, with fuel limits, scoped mounts, and an egress proxy. [Details ↓](#sandboxed-tools-wasm) |
+| **`ore-ld` dynamic linker** | Plugins are linked into a running WebAssembly host and share its memory, so data is passed by pointer. [Details ↓](#memory-fusion-with-ore-ld) |
 | **Agent manifests** | Each agent has a TOML manifest listing the models, files, network domains, tools, and IPC channels it may use, plus a token-per-minute rate limit. Requests are checked against it on every call. |
 | **Semantic Bus** | Built-in vector memory shared between agents through named pipes. The embedding model loads on demand and unloads when idle. Pipe access is gated by the manifest. |
 | **Native inference** | Pure-Rust GGUF inference via [Candle](https://github.com/huggingface/candle) for Llama, Qwen2, Qwen3, and Qwen3-MoE on CPU, CUDA, or Metal. Ollama is supported as an alternative backend. |
@@ -172,7 +268,7 @@ flowchart TB
 
 ## Documentation
 
-| | |
+| Topics | Description |
 |---|---|
 | [Why Ore?](docs/why-ore.md) | The problems Ore solves and the reasoning behind each subsystem |
 | [Getting Started](docs/getting-started.md) | Install, first inference, first sandboxed tool, first agent |

@@ -62,7 +62,7 @@ The usual alternatives each give something up:
 - **Portable.** A plugin compiled on macOS runs on Linux unchanged.
 - **Hot-swappable.** A long-running host can load a new version of a plugin without losing its own in-memory state.
 
-Plugins are limited to Rust, C, C++, and Zig. Languages with garbage collectors (Python, JS, Go) can't safely share a linear memory with another module's allocator, so they call plugins through the SDK bridge instead.
+Plugins are limited to Rust, C, C++, and Zig. These toolchains can emit position-independent WebAssembly that uses an imported memory and table. Garbage-collected runtimes (Python, JS, Go) expect to own the whole linear memory, so they can't share one with another module's allocator. They use regular `.wasm` tools instead. (A bridge that lets them call plugins through the kernel is planned but not shipped yet.)
 
 The SDKs handle the ABI boilerplate: `ore.h` with the `Ore_BIND` macro for C/C++, `ore-sys` with `ore_export!` / `ore_bind!` for Rust, and `ore.zig` for Zig. Build a plugin with `ore mktool math.c --shared` and a host with `ore mktool agent.rs --host`.
 
