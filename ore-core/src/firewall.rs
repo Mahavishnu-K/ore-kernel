@@ -78,8 +78,9 @@ static DLP_RULES: [DlpRule; 10] = [
         DlpCategory::Pii,
     ),
     // --- FINANCIAL (PCI-DSS) ---
+    // Matches Visa, Mastercard, Amex, Discover specifically
     DlpRule::new(
-        r"\b(?:\d[ -]*?){13,16}\b",
+        r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b",
         "[CREDIT CARD REDACTED]",
         DlpCategory::Financial,
     ),
@@ -164,7 +165,8 @@ pub enum ThreatSeverity {
 pub enum ThreatCategory {
     General,       // Jailbreaks, Context Escapes (Always enforced)
     CodeExecution, // Python os.system, Bash, Eval (Bypassed if shell allowed)
-    NetworkProbe,  // cURL, wget (Bypassed if network allowed)
+    Sql, // SQL Injection heuristics like DROP TABLE, UNION SELECT (Bypassed if is_coding_agent)
+    NetworkProbe, // cURL, wget (Bypassed if network allowed)
 }
 
 struct ThreatRule {
@@ -223,7 +225,7 @@ static THREAT_RULES: [ThreatRule; 7] = [
         r"(?i)(\bUNION\b\s+\bSELECT\b|\bDROP\b\s+\bTABLE\b|\bOR\b\s+1=1)",
         "SQL Injection Attempt",
         ThreatSeverity::Critical,
-        ThreatCategory::General,
+        ThreatCategory::Sql,
     ),
     // --- CONTEXT ESCAPE (General - Always Blocked) ---
     ThreatRule::new(
@@ -257,9 +259,13 @@ impl InjectionBlocker {
         for rule in &THREAT_RULES {
             if rule.regex().is_match(prompt) {
                 let is_authorized = match rule.category {
-                    // If rule is CodeExecution AND user granted shell, allow it!
-                    ThreatCategory::CodeExecution => manifest.execution.can_execute_shell,
-                    // If rule is NetworkProbe AND user granted network, allow it!
+                    // Code execution keywords allowed if shell is granted OR it's a coding agent discussing code
+                    ThreatCategory::CodeExecution => {
+                        manifest.execution.can_execute_shell || manifest.execution.is_coding_agent
+                    }
+                    // SQL statements allowed if explicitly declared as a coding/database agent!
+                    ThreatCategory::Sql => manifest.execution.is_coding_agent,
+                    // Network probes allowed if network is enabled
                     ThreatCategory::NetworkProbe => manifest.network.network_enabled,
                     // General jailbreaks are never authorized
                     ThreatCategory::General => false,

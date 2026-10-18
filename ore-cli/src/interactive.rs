@@ -399,6 +399,15 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
             .with_render_config(theme)
             .prompt()
             .unwrap_or(true);
+        let coding_agent = Confirm::new(&format!(
+            "Is this a Coding/Database Agent? ({} {})",
+            "⚠ ".yellow(),
+            "Allows SQL and Code Execution. Only enable if necessary."
+        )).with_default(false)
+            .with_help_message("If true, prevents false-positive firewall blocks on prompts containing SQL (e.g. DROP TABLE) or code snippets.")
+            .with_render_config(theme)
+            .prompt()
+            .unwrap_or(false);
         let tools = Text::new("Allowed Agent Tools (comma-separated):")
             .with_render_config(theme)
             .prompt()
@@ -423,6 +432,7 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
 
         manifest.execution.can_execute_shell = shell;
         manifest.execution.can_execute_wasm = wasm;
+        manifest.execution.is_coding_agent = coding_agent;
         manifest.execution.allowed_tools = parse_comma_list(&tools);
         manifest.execution.allowed_language_runtimes =
             runtimes_selection.into_iter().map(String::from).collect();

@@ -117,6 +117,8 @@ pub struct Execution {
     #[serde(default = "default_true")]
     pub can_execute_wasm: bool,
     #[serde(default)]
+    pub is_coding_agent: bool,
+    #[serde(default)]
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub allowed_language_runtimes: Vec<String>,
@@ -130,6 +132,7 @@ impl Default for Execution {
         Self {
             can_execute_shell: false,
             can_execute_wasm: true,
+            is_coding_agent: false,
             allowed_tools: Vec::new(),
             allowed_language_runtimes: Vec::new(),
             max_cpu_instructions: DEFAULT_FUEL_LIMIT,
