@@ -56,8 +56,7 @@ def main():
     t2 = threading.Thread(target=run_agent, args=(ore, "terminal_user", "llama3.2:1b", "Explain quantum physics in detail."))
     t3 = threading.Thread(target=run_agent, args=(ore, "agent_alpha", "llama3.2:1b", "Write a python script for a web server."))
     
-    # qwen2.5:0.5b must be added to allowed_models in a manifest if it's checked, but let's assume we can run it.
-    # We will just use llama for all to be safe, but let's try qwen2.5:0.5b.
+    # /run enforces allowed_models: agent_beta's manifest lists qwen2.5:0.5b.
     t4 = threading.Thread(target=run_agent, args=(ore, "agent_beta", "qwen2.5:0.5b", "Write a story about a dragon."))
     
     threads.extend([t1, t2, t3, t4])

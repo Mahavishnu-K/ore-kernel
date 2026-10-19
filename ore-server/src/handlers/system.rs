@@ -438,12 +438,7 @@ pub async fn compact_memory(
         return "SUCCESS: History is already too short to compact.".to_string();
     }
 
-    let target_model = manifest
-        .resources
-        .allowed_models
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("llama3.2:1b");
+    let target_model = manifest.default_model().unwrap_or("llama3.2:1b");
     let lease = match state.scheduler.request_gpu(target_model, &app_id).await {
         Ok(l) => l,
         Err(e) => return format!("ORE KERNEL ALERT: GPU unavailable - {}", e),

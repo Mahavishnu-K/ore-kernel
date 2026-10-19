@@ -32,7 +32,7 @@ enforce_pii_redaction = true          # Run the DLP redactor on prompts before i
 
 # ─── Resources ───────────────────────────────────
 [resources]
-allowed_models = ["llama3.2:1b", "qwen2.5:0.5b"]
+allowed_models = ["llama3.2:1b", "qwen2.5:0.5b"]   # or ["*"] for any installed model
 max_tokens_per_minute = 10000         # Rate limit enforced by the kernel
 gpu_priority = "normal"               # "low", "normal", "high" (not yet used by the scheduler)
 json_history = true                   # Keep chat history as JSON (required for paging)
@@ -57,7 +57,7 @@ allow_localhost_access = false
 [[network.rules]]
 domain = "api.github.com"              # Exact host match, or "*"
 allowed_methods = ["GET", "POST"]      # Specific HTTP verbs, or ["*"]
-allowed_paths = ["*"]                  # Parsed, but not enforced yet
+allowed_paths = ["/repos*"]            # "*", a "/prefix*", or an exact path (and below)
 
 # ─── Execution ───────────────────────────────────
 [execution]
@@ -100,7 +100,7 @@ allow_time_decay = false                     # Older memories lose relevance in 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `allowed_models` | string[] | `[]` · required in section | Models for this agent. `/ask` uses the first one. **`/run` doesn't check this list yet** |
+| `allowed_models` | string[] | `[]` · required in section | Models this agent may run. `/run` rejects any other model with `403`. `"*"` allows every installed model. `:` and `-` match each other (`qwen2.5:0.5b` = `qwen2.5-0.5b`). `/ask` and `/compact` use the first entry that isn't `"*"` |
 | `max_tokens_per_minute` | u32 | `10000` · required in section | Rate limit per 60-second window. Must not be `0`. `/run` charges a flat 1,000 tokens per request |
 | `gpu_priority` | string | `"normal"` · required in section | `"low"`, `"normal"`, or `"high"`. Shown in dashboards; not yet used by the scheduler |
 | `json_history` | bool | `true` | Keep chat history as JSON text. Required for paging and compaction |
@@ -128,7 +128,7 @@ WASI can only mount directories, not individual files.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `network_enabled` | bool | `false` · required in section | Whether the agent has any network access. Also lets network-probe text through the firewall |
-| `allow_localhost_access` | bool | `false` · required in section | Whether sandboxed tools can reach `localhost`, `127.0.0.1`, `0.0.0.0`, or `[::1]` |
+| `allow_localhost_access` | bool | `false` · required in section | Whether sandboxed tools can reach this machine: `localhost`, `127.0.0.0/8`, `0.0.0.0`, `::1`, and link-local addresses such as the cloud metadata IP `169.254.169.254` |
 | `rules` | NetworkRule[] | `[]` | `[[network.rules]]` entries. See below |
 
 **`[[network.rules]]`** (all three fields required per rule):
@@ -137,7 +137,7 @@ WASI can only mount directories, not individual files.
 |---|---|---|
 | `domain` | string | Host that must **exactly** equal the URL's host (`api.github.com` doesn't cover `github.com`), or `"*"` for any host |
 | `allowed_methods` | string[] | HTTP methods allowed for that host, or `["*"]` |
-| `allowed_paths` | string[] | Intended path prefixes. **Parsed but not enforced yet:** every path on an allowed host is reachable |
+| `allowed_paths` | string[] | Paths allowed on that host: `"*"` for all, `"/prefix*"` for a prefix, or a plain path for that path and everything below it (`"/api"` covers `/api/v1` but not `/apiary`). An empty list allows nothing |
 
 ### `[execution]`
 
@@ -165,8 +165,9 @@ WASI can only mount directories, not individual files.
 
 At boot, the registry reads every `.toml` file in `manifests/`:
 
-- **Parse errors are fatal.** A manifest with invalid TOML, a wrong type, or a missing required field stops the kernel from booting (`FATAL: Failed to initialize App Registry`).
-- **Validation errors skip the manifest.** The kernel logs `[SECURITY ALERT] Failed to load manifest for '<app_id>'` and boots without that agent.
+- **Bad manifests are skipped, never fatal.** A file with invalid TOML, a wrong type, or a missing required field is logged as `[SECURITY ALERT] Skipping manifest '<file>'`, and the kernel boots without that agent.
+- **Validation errors skip the manifest** the same way (`[SECURITY ALERT] Failed to load manifest for '<app_id>'`).
+- **Duplicate `app_id`s:** the first file loaded wins, and later ones are skipped with a warning.
 
 Validation rules (`AppManifest::validate`):
 

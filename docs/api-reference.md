@@ -321,9 +321,9 @@ curl -X POST \
 
 **Response:** a chunked plain-text stream of tokens, written as they're generated.
 
-**Errors:** `401` for an unregistered `app_id`, `429` when the agent's rate limit is exceeded (each request is charged 1,000 tokens), `403` with `ORE KERNEL ALERT: SECURITY BREACH …` when the firewall blocks the prompt, and `503` when the scheduler can't admit the request.
+**Errors:** `401` for an unregistered `app_id`; `403` with `ORE KERNEL ALERT: Model '…' is not in allowed_models for agent '…'.` when the model isn't in the agent's `allowed_models` (`"*"` allows all); `429` when the agent's rate limit is exceeded (each request is charged 1,000 tokens); `403` with `ORE KERNEL ALERT: SECURITY BREACH …` when the firewall blocks the prompt; and `503` when the scheduler can't admit the request.
 
-The `model` field isn't checked against the agent's `allowed_models` yet.
+The `ore run` CLI command calls this route as `terminal_user`, whose manifest ships with `allowed_models = ["*"]`.
 
 ---
 

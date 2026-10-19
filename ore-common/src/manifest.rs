@@ -171,6 +171,26 @@ impl Default for Ipc {
 }
 
 impl AppManifest {
+    /// Whether this agent may run `model`. `"*"` in `allowed_models` allows every model.
+    /// Names match with `:` and `-` treated alike (`qwen2.5:0.5b` == `qwen2.5-0.5b`),
+    /// since that's how models are stored on disk.
+    pub fn allows_model(&self, model: &str) -> bool {
+        let wanted = model.trim().replace(':', "-");
+        self.resources
+            .allowed_models
+            .iter()
+            .any(|m| m == "*" || m.trim().replace(':', "-") == wanted)
+    }
+
+    /// The first concrete model in `allowed_models` (skipping the `"*"` wildcard).
+    pub fn default_model(&self) -> Option<&str> {
+        self.resources
+            .allowed_models
+            .iter()
+            .map(|m| m.as_str())
+            .find(|m| *m != "*")
+    }
+
     /// Validates core invariant rules for the manifest.
     pub fn validate(&self) -> Result<(), String> {
         if self.app_id.trim().is_empty() {
@@ -205,8 +225,10 @@ mod tests {
 
     #[test]
     fn test_valid_manifest() {
-        let mut manifest = AppManifest::default();
-        manifest.app_id = "test_agent".to_string();
+        let mut manifest = AppManifest {
+            app_id: "test_agent".to_string(),
+            ..Default::default()
+        };
         manifest.resources.max_tokens_per_minute = 1000;
         assert!(manifest.validate().is_ok());
     }
@@ -218,9 +240,36 @@ mod tests {
     }
 
     #[test]
-    fn test_paging_without_json_invalid() {
+    fn test_allows_model() {
         let mut manifest = AppManifest::default();
-        manifest.app_id = "agent_x".to_string();
+        manifest.resources.allowed_models = vec!["qwen2.5:0.5b".to_string()];
+        assert!(manifest.allows_model("qwen2.5:0.5b"));
+        assert!(manifest.allows_model("qwen2.5-0.5b"));
+        assert!(!manifest.allows_model("llama3.2:1b"));
+
+        manifest.resources.allowed_models.clear();
+        assert!(!manifest.allows_model("qwen2.5:0.5b"));
+
+        manifest.resources.allowed_models = vec!["*".to_string()];
+        assert!(manifest.allows_model("anything:7b"));
+    }
+
+    #[test]
+    fn test_default_model_skips_wildcard() {
+        let mut manifest = AppManifest::default();
+        manifest.resources.allowed_models = vec!["*".to_string(), "llama3.2:1b".to_string()];
+        assert_eq!(manifest.default_model(), Some("llama3.2:1b"));
+
+        manifest.resources.allowed_models = vec!["*".to_string()];
+        assert_eq!(manifest.default_model(), None);
+    }
+
+    #[test]
+    fn test_paging_without_json_invalid() {
+        let mut manifest = AppManifest {
+            app_id: "agent_x".to_string(),
+            ..Default::default()
+        };
         manifest.resources.stateful_paging = true;
         manifest.resources.json_history = false;
         assert!(manifest.validate().is_err());

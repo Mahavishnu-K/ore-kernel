@@ -80,13 +80,8 @@ pub async fn ask_ai(State(state): State<Arc<KernelState>>, Path(prompt): Path<St
 
     kprintln!("-> Waiting for GPU Scheduler...");
 
-    // If the agent lists allowed_models, pick the first one. Default to "llama3.2:1b"
-    let target_model = manifest
-        .resources
-        .allowed_models
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("llama3.2:1b");
+    // Use the first concrete model in allowed_models. Default to "llama3.2:1b"
+    let target_model = manifest.default_model().unwrap_or("llama3.2:1b");
 
     // the GPU scheduler
     let lease = match state.scheduler.request_gpu(target_model, app_id).await {
@@ -379,6 +374,23 @@ pub async fn run_process(
                 .into_response();
         }
     };
+
+    // The agent may only run models its manifest allows ("*" allows all)
+    if !manifest.allows_model(&payload.model) {
+        kprintln!(
+            "-> [BLOCKED] Agent '{}' is not allowed to use model '{}'.",
+            app_id,
+            payload.model
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "ORE KERNEL ALERT: Model '{}' is not in allowed_models for agent '{}'.",
+                payload.model, app_id
+            ),
+        )
+            .into_response();
+    }
 
     // future update: calculate tokens based on prompt length or use a more dynamic approach
     let limit = manifest.resources.max_tokens_per_minute;

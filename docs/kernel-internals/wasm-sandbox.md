@@ -147,13 +147,17 @@ WASM Guest (any language via ore.fetch, or Python / JS via the shims)
 ┌──────────────────────────────────────────────┐
 │ Background Network Watcher Thread (Host)     │  sandbox/portals/network.rs
 │ 1. Parse URL & target host                   │
-│ 2. Localhost check (allow_localhost_access)  │  sandbox/net/fetch.rs
-│ 3. Check [[network.rules]] in Manifest       │
+│ 2. check_egress():                           │  sandbox/net/fetch.rs
+│    - http/https only                         │
+│    - Local-address block (loopback,          │
+│      link-local, metadata IP) unless allowed │
 │    - Host must equal `domain` (or "*")       │
-│    - Method must be in `allowed_methods`     │
-│ 4. Execute reqwest HTTP call (60 s timeout)  │
-│ 5. Stream response body to disk              │
-│ 6. Write res_<id>.bin + res_<id>.meta        │
+│    - Method in `allowed_methods`             │
+│    - Path matches `allowed_paths`            │
+│ 3. Execute reqwest call (60 s timeout);      │
+│    every redirect hop re-runs check_egress() │
+│ 4. Stream response body to disk              │
+│ 5. Write res_<id>.bin + res_<id>.meta        │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
@@ -166,10 +170,21 @@ WASM Guest (any language via ore.fetch, or Python / JS via the shims)
 - **Zero-RAM Response Streaming**: Incoming HTTP bodies stream directly to ephemeral files in `/ore_tmp`, preventing agents from crashing host memory with large payloads.
 - **Ephemeral Auto-Destruction**: The `/ore_tmp` host folder is bound to a Rust `TempDirGuard` and wiped immediately when execution ends.
 
+### Path Rules
+
+`allowed_paths` entries match the URL path (after the URL parser has normalized `..` segments):
+
+| Entry | Matches |
+|---|---|
+| `"*"` | Every path |
+| `"/repos*"` | Paths starting with `/repos` |
+| `"/api"` | `/api` and everything below it (`/api/v1/…`), but not `/apiary` |
+
+An empty list allows nothing. The policy is covered by unit tests in `sandbox/net/fetch.rs`, including a live redirect to `169.254.169.254` that must be blocked.
+
 ### Current Limits
-- `[[network.rules]].allowed_paths` is parsed but **not enforced**. Only the host and method are checked.
-- The HTTP client follows redirects (up to 10) without re-checking them against the rules.
-- Only `localhost`, `127.0.0.1`, `0.0.0.0`, and `[::1]` count as local. Private ranges such as `10.x` and `192.168.x` aren't blocked.
+- Private LAN ranges (`10.x`, `172.16–31.x`, `192.168.x`) aren't treated as local, so a `"*"` domain rule can reach them.
+- Hosts are checked by name, not by resolved IP (no DNS-rebinding protection).
 
 See [Security Model → Known Limitations](../security-model.md#known-limitations).
 

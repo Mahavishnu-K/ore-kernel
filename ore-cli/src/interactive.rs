@@ -129,7 +129,7 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
     let theme = get_ore_theme();
 
     print_panel(
-        "Secure Manifest Forage",
+        "Secure Manifest Forge",
         &format!("Target Agent: {}", app_id.cyan()),
     );
 
@@ -228,13 +228,20 @@ pub async fn run_manifest_wizard(app_id: &String, client: &Client) {
 
             parse_comma_list(&manual)
         } else {
-            MultiSelect::new(
-                "Select allowed models for this agent:",
-                available_models.clone(),
-            )
-            .with_render_config(theme)
-            .prompt()
-            .unwrap_or_default()
+            const ALL_MODELS: &str = "* (any installed model)";
+            let mut choices = vec![ALL_MODELS.to_string()];
+            choices.extend(available_models.clone());
+
+            let picked = MultiSelect::new("Select allowed models for this agent:", choices)
+                .with_render_config(theme)
+                .prompt()
+                .unwrap_or_default();
+
+            if picked.iter().any(|m| m == ALL_MODELS) {
+                vec!["*".to_string()]
+            } else {
+                picked
+            }
         };
 
         let tokens = CustomType::<u32>::new("Max tokens per minute (Rate Limit):")

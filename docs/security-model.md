@@ -57,13 +57,14 @@ Handlers look up the caller's manifest in the `AppRegistry` (loaded from `manife
 | Check | Where |
 |---|---|
 | Unregistered `app_id` → rejected | `/run` (`401`), `/ipc/*`, `/execute` (error text) |
+| `allowed_models` (`403`; `"*"` allows every model) | `/run` |
 | `max_tokens_per_minute` rate limit (`429`) | `/run` |
 | `allowed_agent_targets` for agent-to-agent messages | `/ipc/send` |
 | `allowed_semantic_pipes` for reading and writing shared memory | `/ipc/share`, `/ipc/search` |
 | `can_execute_wasm`, `allowed_tools`, `allowed_language_runtimes`, `can_execute_shell` | `/execute` |
-| `allowed_models` (picks the model) | `/ask` |
+| `allowed_models` (first concrete entry picks the model) | `/ask`, `/compact` |
 
-Manifests are read once at boot. Restart the kernel after editing them.
+Manifests are read once at boot. Restart the kernel after editing them. A manifest that fails to parse or validate is skipped with a `[SECURITY ALERT]` log; the kernel still boots without that agent.
 
 ---
 
@@ -175,11 +176,12 @@ Memory Fusion plugins (`.wasi.so`) are linked into a host tool's linear memory. 
 
 The sandbox has **no raw TCP/UDP access**. Outbound HTTP is routed through the kernel's Layer 7 proxy:
 
-1. **Domain and method whitelist.** The URL's host must exactly equal a `[[network.rules]]` `domain` (or the rule must be `"*"`), and the method must be in that rule's `allowed_methods` (or `["*"]`). Otherwise the call fails (`-1` for an unlisted domain, `-2` for a forbidden method).
-2. **Localhost block.** `localhost`, `127.0.0.1`, `0.0.0.0`, and `[::1]` are rejected unless `allow_localhost_access = true`.
-3. **Path traversal protection.** Download file names containing `/`, `\`, or `..` are rejected.
-4. **Streamed responses.** Bodies are streamed to `/ore_tmp` on disk rather than buffered in RAM.
-5. **Runtime shims.** The Node.js (`commonjs.js`) and Python (`bootstrap.py`) shims route `fetch`, `requests`, and `httpx` through the proxy.
+1. **Domain, method, and path whitelist.** The URL's host must equal a `[[network.rules]]` `domain` (case-insensitive) or the rule must be `"*"`; the method must be in that rule's `allowed_methods` (or `["*"]`); and the path must match its `allowed_paths`. Otherwise the call fails (`-1` for an unlisted domain or path, `-2` for a forbidden method). Only `http` and `https` are allowed.
+2. **Local-address block.** Unless `allow_localhost_access = true`, requests to this machine are rejected, even under a `"*"` domain rule: `localhost` and `*.localhost`, all of `127.0.0.0/8`, `0.0.0.0`, `::1`, `::`, IPv4-mapped forms like `[::ffff:127.0.0.1]`, and link-local addresses (`169.254.0.0/16`, including the cloud metadata endpoint `169.254.169.254`, and `fe80::/10`). Alternate spellings such as `http://2130706433/` are normalized before the check.
+3. **Redirects are re-checked.** Every redirect hop (up to 10) goes through the same domain, method, path, and local-address checks. A whitelisted host can't bounce a request to a forbidden one.
+4. **Path traversal protection.** Download file names containing `/`, `\`, or `..` are rejected.
+5. **Streamed responses.** Bodies are streamed to `/ore_tmp` on disk rather than buffered in RAM.
+6. **Runtime shims.** The Node.js (`commonjs.js`) and Python (`bootstrap.py`) shims route `fetch`, `requests`, and `httpx` through the proxy.
 
 ---
 
@@ -197,10 +199,8 @@ These are tracked in the [Roadmap](../ROADMAP.md#phase-4-hardening-current-focus
 
 | Area | Limitation |
 |---|---|
-| **Model access** | `/run` doesn't check `allowed_models`; any registered agent can request any installed model. |
-| **Egress paths** | `[[network.rules]].allowed_paths` is parsed but **not enforced**; only domain and method are checked. |
-| **Egress redirects** | The proxy's HTTP client follows redirects (up to 10) without re-checking them, so a whitelisted domain can redirect to a non-whitelisted host, including localhost. |
-| **Internal addresses** | Only the four localhost names above are blocked. Private ranges (`10.x`, `192.168.x`, `169.254.x`) and alternate loopback forms (e.g. `127.0.0.2`) are not. |
+| **Private networks** | Private LAN ranges (`10.x`, `172.16–31.x`, `192.168.x`) aren't treated as local. A `"*"` domain rule therefore reaches your LAN; list domains explicitly if that matters. |
+| **DNS rebinding** | Hosts are checked by name, not by resolved IP. A whitelisted domain whose DNS points at `127.0.0.1` would be reached. |
 | **Sandbox memory** | There's no memory cap: a tool can grow its linear memory up to the wasm32 limit (4 GiB). |
 | **Firewall** | Regex heuristics: paraphrased injections pass, and some rules produce false positives (see [Context Firewall](./kernel-internals/context-firewall.md)). |
 | **Auth** | A single shared token, with no per-agent identity: the `app_id` in a request is trusted. |

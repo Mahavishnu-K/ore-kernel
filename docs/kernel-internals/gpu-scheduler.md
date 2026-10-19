@@ -138,7 +138,7 @@ Only the **KV-cache** estimate is reserved in the `MemoryAccountant`. Model weig
 
 Instead of guessing memory requirements, `GpuScheduler` inspects the GGUF model header directly using `candle_core::quantized::gguf_file`:
 
-The scheduler opens `models/<model>/model.gguf` in the Ore base directory:
+The scheduler opens `models/<model>/model.gguf` in the Ore base directory, with `:` in the name replaced by `-` (matching how `ore pull` stores models, e.g. `models/qwen2.5-0.5b/`):
 
 1. **Exact Weight Size**: Read from file metadata on disk.
 2. **Architecture Geometry**:
@@ -148,8 +148,8 @@ The scheduler opens `models/<model>/model.gguf` in the Ore base directory:
 3. **Mathematical Formula**:
    $$\text{Bytes per Token} = 2 \times \text{layers} \times \text{kv\_heads} \times \text{head\_dim} \times 2 \text{ (f16 bytes)}$$
    $$\text{Total KV Bytes} = \text{Bytes per Token} \times \text{max\_tokens}$$
-   `max_tokens` is currently a fixed **8,192**.
-4. **Config Override**: a `[models."<name>"] kv_cache_mb_per_1k` entry in `ore.toml` replaces the computed KV size (see [Configuration](../configuration.md)).
+   `max_tokens` is currently a fixed **8,192** (`KV_CONTEXT_TOKENS`).
+4. **Config Override**: a `[models."<name>"] kv_cache_mb_per_1k` entry in `ore.toml` replaces the computed size with `ceil(kv_cache_mb_per_1k × 8192 / 1000)` MB (see [Configuration](../configuration.md)).
 5. **Fallback**: if the GGUF can't be opened, the scheduler assumes **2,048 MB** of weights and **256 MB** of KV cache.
 
 ---
@@ -230,7 +230,6 @@ Unloading a heavy model from VRAM involves disk I/O and GPU driver calls that ca
 
 ## Current Limitations
 
-- **Model-name mismatch disables exact estimates.** `ore pull` stores models under names with `:` replaced by `-` (`models/qwen2.5-0.5b/`), but the scheduler opens `models/<name as requested>/model.gguf` (`models/qwen2.5:0.5b/`). For names containing `:`, the GGUF isn't found and the **2,048 MB / 256 MB fallback** is used instead of the computed size.
 - **Fixed context assumption.** KV estimates assume 8,192 tokens, not the agent's `max_json_tokens`.
 - **No priorities.** `gpu_priority` from the manifest isn't used; leases are granted in the order the 32 permits are acquired.
 - **One model at a time in the native driver.** The registry can track several co-resident models (useful with Ollama), but `NativeDriver` holds a single active model, so switching models on the native engine always reloads.

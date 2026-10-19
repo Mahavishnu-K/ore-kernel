@@ -214,9 +214,13 @@ impl GpuScheduler {
             .await
             .unwrap();
 
+        // `ore pull` stores models with ':' replaced by '-' (e.g. models/qwen2.5-0.5b/)
         let model_path = paths::get_models_dir()
-            .join(requested_model)
+            .join(requested_model.trim().replace(':', "-"))
             .join(constants::MODEL_GGUF_FILE_NAME);
+
+        // Context length the KV-cache reservation is sized for.
+        const KV_CONTEXT_TOKENS: u64 = 8192;
 
         let mut estimated_model_mb = 2048;
         let mut required_kv_cache_mb = 256;
@@ -259,8 +263,7 @@ impl GpuScheduler {
                 // Bytes per Token = 2 (K & V) * Layers * KV_Heads * Head_Dim * 2 (f16 bytes)
                 let bytes_per_token = 2 * layers * kv_heads * head_dim * 2;
 
-                // Multiply by the Manifest's Max Token Limit!
-                let max_tokens = 8192; // Default limit fallback
+                let max_tokens = KV_CONTEXT_TOKENS;
                 let total_kv_bytes = bytes_per_token * max_tokens;
 
                 required_kv_cache_mb = (total_kv_bytes / (1024 * 1024)).max(1); // Ensure at least 1MB
@@ -280,8 +283,15 @@ impl GpuScheduler {
             }
         }
 
-        if let Some(override_mb) = self.config.model_overrides.get(requested_model) {
-            required_kv_cache_mb = *override_mb;
+        // ore.toml `[models."<name>"] kv_cache_mb_per_1k`: MB per 1,000 tokens of context
+        if let Some(mb_per_1k) = self.config.model_overrides.get(requested_model) {
+            required_kv_cache_mb = (mb_per_1k * KV_CONTEXT_TOKENS).div_ceil(1000).max(1);
+            crate::kprintln!(
+                "-> [SCHEDULER MATH] Override for '{}': {} MB per 1k tokens -> {} MB KV-Cache",
+                requested_model,
+                mb_per_1k,
+                required_kv_cache_mb
+            );
         }
 
         let mut required_vram_mb = required_kv_cache_mb;

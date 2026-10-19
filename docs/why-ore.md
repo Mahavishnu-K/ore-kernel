@@ -35,7 +35,7 @@ Giving an agent the ability to run code usually means a Docker container or a cl
 
 - **Language-agnostic tools.** `ore mktool` compiles Rust, Go, Python, JavaScript, TypeScript, Zig, C, and C++ to `.wasm`. An agent written in any language can call a tool written in any other.
 - **CPU fuel limits.** Each execution gets a fuel budget (`max_cpu_instructions` in the manifest, default 5 billion). A runaway loop traps instead of hanging the host.
-- **No raw sockets.** The sandbox has no TCP/UDP access. Outbound HTTP goes through a Layer 7 proxy in the kernel that checks the domain and method against the manifest's `[[network.rules]]` (path rules aren't enforced yet). Responses are written to the sandbox's temp directory.
+- **No raw sockets.** The sandbox has no TCP/UDP access. Outbound HTTP goes through a Layer 7 proxy in the kernel that checks the domain, method, and path against the manifest's `[[network.rules]]`, re-checks every redirect, and blocks local and cloud-metadata addresses. Responses are written to the sandbox's temp directory.
 - **Capability-based file system.** Only directories listed in the manifest are mounted. Read-only paths are mounted without write permission at the WASI boundary.
 - **AOT caching.** Modules are compiled to native code on first run and cached as `.cwasm`. Later runs memory-map the cached artifact, so start-up is around 10 ms and the OS page cache shares the code between concurrent instances.
 - **Portable artifacts.** A `.wasm` tool built on one OS runs on any other without a Python environment, dependency tree, or CUDA install.

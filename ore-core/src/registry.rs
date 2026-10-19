@@ -39,12 +39,35 @@ impl AppRegistry {
             let file_path = entry.path();
 
             if file_path.extension().and_then(|s| s.to_str()) == Some("toml") {
-                let toml_string = fs::read_to_string(&file_path)
-                    .map_err(|e| RegistryError::IoError(e.to_string()))?;
+                // A broken manifest only disables its own agent; it never stops the kernel.
+                let toml_string = match fs::read_to_string(&file_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let err = RegistryError::IoError(e.to_string());
+                        kprintln!(
+                            "-> [SECURITY ALERT] Skipping manifest '{}'.",
+                            file_path.display()
+                        );
+                        kprintln!("   KERNEL ERROR: {}", err);
+                        continue;
+                    }
+                };
 
-                let manifest: AppManifest = toml::from_str(&toml_string).map_err(|e| {
-                    RegistryError::ParseError(file_path.display().to_string(), e.to_string())
-                })?;
+                let manifest: AppManifest = match toml::from_str(&toml_string) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let err = RegistryError::ParseError(
+                            file_path.display().to_string(),
+                            e.to_string(),
+                        );
+                        kprintln!(
+                            "-> [SECURITY ALERT] Skipping manifest '{}'.",
+                            file_path.display()
+                        );
+                        kprintln!("   KERNEL ERROR: {}", err);
+                        continue;
+                    }
+                };
 
                 if let Err(e) = manifest.validate() {
                     kprintln!(
@@ -52,6 +75,15 @@ impl AppRegistry {
                         manifest.app_id
                     );
                     kprintln!("   KERNEL ERROR: {}", e);
+                    continue;
+                }
+
+                if apps.contains_key(&manifest.app_id) {
+                    kprintln!(
+                        "-> [SECURITY ALERT] Duplicate app_id '{}' in '{}'. Keeping the first one loaded.",
+                        manifest.app_id,
+                        file_path.display()
+                    );
                     continue;
                 }
 
@@ -70,5 +102,33 @@ impl AppRegistry {
 
     pub fn list_apps(&self) -> Vec<AppManifest> {
         self.apps.values().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bad_manifests_are_skipped_not_fatal() {
+        let dir = std::env::temp_dir().join(format!("ore_registry_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let good = "app_id = \"good\"\ndescription = \"\"\nversion = \"1\"\n";
+        fs::write(dir.join("good.toml"), good).unwrap();
+        fs::write(dir.join("broken.toml"), "app_id = \"broken\"\n[[[ not toml").unwrap();
+        fs::write(
+            dir.join("invalid.toml"),
+            "app_id = \"\"\ndescription = \"\"\nversion = \"1\"\n",
+        )
+        .unwrap();
+        fs::write(dir.join("notes.txt"), "ignored").unwrap();
+
+        let registry = AppRegistry::boot_load(dir.to_str().unwrap()).expect("boot must not fail");
+        assert!(registry.get_app("good").is_some());
+        assert_eq!(registry.list_apps().len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

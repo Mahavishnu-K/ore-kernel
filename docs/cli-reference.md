@@ -173,7 +173,7 @@ ore manifest my_agent
 ```
 
 ```text
- ╭─ Secure Manifest Forage ───────────────────────────╮
+ ╭─ Secure Manifest Forge ────────────────────────────╮
  │            Target Agent: my_agent                  │
  ╰────────────────────────────────────────────────────╯
  
@@ -187,7 +187,7 @@ ore manifest my_agent
 ```
 
 The wizard dynamically prompts based on selections:
-- **Resources**: Configures `max_tokens_per_minute`, Stateful Paging, and Memory Compaction limits (`max_json_tokens`).
+- **Resources**: Picks `allowed_models` from your installed models (or `* (any installed model)`), and configures `max_tokens_per_minute`, Stateful Paging, and Memory Compaction limits (`max_json_tokens`).
 - **Network**: Prompts to block data exfiltration (forces `allowed_methods = ["GET"]`).
 - **Execution**: Configures WASM execution, `allowed_language_runtimes`, Raw Host Shell access, and whether this is a **coding/database agent** (`is_coding_agent`), which stops the firewall from blocking prompts that contain SQL or code.
 - **IPC**: Configures Agent-to-Agent Swarm, Semantic Pipes, Semantic Persistence, and Time Decay.

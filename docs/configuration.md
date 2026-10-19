@@ -27,7 +27,7 @@ pipe_ttl_hours = 32         # Semantic pipe data lifetime in hours (0 = infinite
 
 # Optional, per model: override the scheduler's KV-cache estimate
 [models."qwen2.5:0.5b"]
-kv_cache_mb_per_1k = 96     # KV-cache MB the scheduler reserves per request (see below)
+kv_cache_mb_per_1k = 12     # MB of KV cache per 1,000 tokens of context
 ```
 
 ### `[system]` Section
@@ -45,7 +45,7 @@ Written by `ore init` when you choose the native engine.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `default_model` | string | - | Recorded for tooling. The kernel doesn't read it yet: `/ask` uses the first model in the agent's `allowed_models`, and `/run` uses the model in the request |
+| `default_model` | string | - | Recorded for tooling. The kernel doesn't read it yet: `/ask` uses the first concrete model in the agent's `allowed_models`, and `/run` uses the model in the request |
 
 ### `[memory]` Section
 
@@ -69,7 +69,7 @@ Per-model overrides for the GPU scheduler, keyed by model name.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kv_cache_mb_per_1k` | u64 | *(estimated from GGUF geometry)* | KV-cache size, in MB, that VRAM admission control reserves for each request on this model. Use it when the automatic estimate is wrong. **Despite the name, the value replaces the whole reservation and isn't multiplied by context length.** The automatic estimate is `2 × layers × kv_heads × head_dim × 2 bytes × 8192 tokens` |
+| `kv_cache_mb_per_1k` | u64 | *(estimated from GGUF geometry)* | MB of KV cache per 1,000 tokens of context. The scheduler reserves `ceil(value × 8192 / 1000)` MB per request on this model (e.g. `12` → 99 MB), replacing the automatic estimate of `2 × layers × kv_heads × head_dim × 2 bytes × 8192 tokens`. Use it when the automatic estimate is wrong for a model |
 
 ---
 
