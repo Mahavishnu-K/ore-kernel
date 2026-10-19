@@ -27,6 +27,18 @@ These tests demonstrate the absolute power of ORE for enterprise AI workloads:
 - **Plugin Required:** `stats.wasi.so` (Compiled from C)
 - **Mechanics:** The Zig Host Agent creates an array of `f64` floats (market data). It dynamically binds to the C `calculate_variance` function. The C plugin calculates standard variance reading the Zig slice natively.
 
+### 4. Rust recycles C (`rust_recycles_c.rs`)
+- **Plugin Required:** `counter.wasi.so` (Compiled from C, in `../memory_fusion/`)
+- **Mechanics:** The Rust host loads the C plugin five times in a loop. Each round, the `Plugin` is dropped at the end of the loop body, which calls `ore_dlclose`. It checks that every round counts `1, 2` (fresh state), gets the **same state address** (the slab was reused), and doesn't grow linear memory by another 16-page slab. It prints the page count each round, so you can watch memory stay flat.
+
+### 5. C++ hot-swaps Rust (`cpp_hotswaps_rust.cpp`)
+- **Plugins Required:** `pricing_v1.wasi.so` and `pricing_v2.wasi.so` (Compiled from Rust, in `../memory_fusion/`)
+- **Mechanics:** The C++ host keeps an order book and a `std::vector` of quotes in its own memory. It quotes with Rust v1 (total **850**), unloads it with `ore_close`, checks that a missing `pricing_v3` fails with an `ore_error` message, then loads v2 (total **1275**). The quote vector must end up holding all six results from both models.
+
+### 6. Zig gets errors from C++ (`zig_errors_from_cpp.zig`)
+- **Plugin Required:** `sanitizer.wasi.so` (Compiled from C++)
+- **Mechanics:** The Zig host provokes a failed load and a failed bind, and checks that `ore.lastError()` explains both and is cleared after it's read. It then binds the real `sanitize_spaces`, lets C++ clean a Zig buffer in place (expects `'Zig hands C++ its buffer'`), and closes the plugin.
+
 ## How to run the tests
 
 1. Ensure all plugins are compiled to `~/.ore/plugins/`:
@@ -34,6 +46,11 @@ These tests demonstrate the absolute power of ORE for enterprise AI workloads:
    ore mktool encryptor.rs --shared
    ore mktool sanitizer.cpp --shared
    ore mktool stats.c --shared
+
+   # For tests 4 and 5 (sources live in ../memory_fusion/)
+   ore mktool ../memory_fusion/counter.c --shared
+   ore mktool ../memory_fusion/pricing_v1.rs --shared
+   ore mktool ../memory_fusion/pricing_v2.rs --shared
    ```
 
 2. Compile these Host Agents to `~/.ore/tools/` using the `--host` flag (which surrenders the WebAssembly function table to the OS):
@@ -41,7 +58,12 @@ These tests demonstrate the absolute power of ORE for enterprise AI workloads:
    ore mktool c_uses_rust.c --host
    ore mktool rust_uses_cpp.rs --host
    ore mktool zig_uses_c.zig --host
+   ore mktool rust_recycles_c.rs --host
+   ore mktool cpp_hotswaps_rust.cpp --host
+   ore mktool zig_errors_from_cpp.zig --host
    ```
+
+   Tests 4–6 print a `PASS` / `FAIL` line per check and end with `ALL CHECKS PASSED`.
 
 3. Run them via the ORE Sandbox!
 

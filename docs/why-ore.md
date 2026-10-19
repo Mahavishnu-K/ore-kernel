@@ -35,10 +35,11 @@ Giving an agent the ability to run code usually means a Docker container or a cl
 
 - **Language-agnostic tools.** `ore mktool` compiles Rust, Go, Python, JavaScript, TypeScript, Zig, C, and C++ to `.wasm`. An agent written in any language can call a tool written in any other.
 - **CPU fuel limits.** Each execution gets a fuel budget (`max_cpu_instructions` in the manifest, default 5 billion). A runaway loop traps instead of hanging the host.
-- **No raw sockets.** The sandbox has no TCP/UDP access. Outbound HTTP goes through a Layer 7 proxy in the kernel that checks domain, method, and path against the manifest's `[[network.rules]]`. Responses are written to the sandbox's temp directory.
+- **No raw sockets.** The sandbox has no TCP/UDP access. Outbound HTTP goes through a Layer 7 proxy in the kernel that checks the domain and method against the manifest's `[[network.rules]]` (path rules aren't enforced yet). Responses are written to the sandbox's temp directory.
 - **Capability-based file system.** Only directories listed in the manifest are mounted. Read-only paths are mounted without write permission at the WASI boundary.
 - **AOT caching.** Modules are compiled to native code on first run and cached as `.cwasm`. Later runs memory-map the cached artifact, so start-up is around 10 ms and the OS page cache shares the code between concurrent instances.
 - **Portable artifacts.** A `.wasm` tool built on one OS runs on any other without a Python environment, dependency tree, or CUDA install.
+- **Honest failures.** A crash, a non-zero exit, or fuel exhaustion always ends the response with a `KERNEL ERROR:` line, whatever language the tool is written in.
 
 **What it is not for:** WebAssembly is a compute environment. Tools should take data in through stdin or files, compute, use `ore.fetch` for network access, and write data out. Browsers, GPU training loops, and native database drivers don't belong here.
 
@@ -55,16 +56,16 @@ The usual alternatives each give something up:
 - **Native FFI** shares memory and is fast, but a crash in the library takes down the host, and the library must be rebuilt for each OS.
 - **Microservices** are isolated, but every call pays for serialization and a network hop.
 
-`ore-ld` is a dynamic linker for WebAssembly shared objects (`.wasi.so`). A host module calls `ore_dlopen` / `ore_dlsym` at runtime. The linker grows the host's function table and memory, places the plugin in the host's linear memory, and resolves its symbols. The host can then pass a pointer instead of a copy.
+`ore-ld` is a dynamic linker for WebAssembly shared objects (`.wasi.so`). A host module calls `ore_dlopen` / `ore_dlsym` at runtime. The linker gives the plugin a memory slab in the host's linear memory, grows the host's function table, and resolves its symbols. The host can then pass a pointer instead of a copy. `ore_dlclose` unloads a plugin (stale function pointers trap, and the slab is reused), and `ore_dlerror` explains failures.
 
 - **No copying.** The plugin operates on the host's memory in place.
 - **Fault containment.** A memory violation in the plugin is a WebAssembly trap. It stops the execution without crashing the kernel or the host OS.
 - **Portable.** A plugin compiled on macOS runs on Linux unchanged.
-- **Hot-swappable.** A long-running host can load a new version of a plugin without losing its own in-memory state.
+- **Hot-swappable.** A long-running host can load a new version of a plugin and close the old one without losing its own in-memory state.
 
 Plugins are limited to Rust, C, C++, and Zig. These toolchains can emit position-independent WebAssembly that uses an imported memory and table. Garbage-collected runtimes (Python, JS, Go) expect to own the whole linear memory, so they can't share one with another module's allocator. They use regular `.wasm` tools instead. (A bridge that lets them call plugins through the kernel is planned but not shipped yet.)
 
-The SDKs handle the ABI boilerplate: `ore.h` with the `Ore_BIND` macro for C/C++, `ore-sys` with `ore_export!` / `ore_bind!` for Rust, and `ore.zig` for Zig. Build a plugin with `ore mktool math.c --shared` and a host with `ore mktool agent.rs --host`.
+The SDKs handle the ABI boilerplate: `ore.h` with the `ORE_BIND` macro for C/C++, `ore-sys` with `ore_export!` / `ore_bind!` for Rust, and `ore.zig` for Zig. Build a plugin with `ore mktool math.c --shared` and a host with `ore mktool agent.rs --host`.
 
 Details: [Polyglot Memory Fusion](./kernel-internals/polyglot-memory-fusion.md) · [Building Plugins](./building-plugins.md).
 
@@ -79,7 +80,7 @@ Ore's scheduler:
 - Hands out a `GpuLease` (an RAII semaphore permit) before inference. When the lease drops, its KV-cache reservation is released.
 - Reads real VRAM usage through NVML on NVIDIA GPUs (falling back to system memory elsewhere) and admits a request only if its estimated KV cache fits.
 - Estimates KV-cache size from the model's GGUF geometry, with overrides in `ore.toml`.
-- Loads multiple models side by side when they fit, and evicts the least recently used idle model when they don't.
+- Tracks multiple models side by side when they fit, and evicts the least recently used idle model when they don't. (The native engine itself keeps one model active at a time.)
 
 Combined with KV-cache paging (below), this means agents queue for the GPU instead of crashing it.
 
@@ -91,7 +92,7 @@ Details: [GPU Scheduler](./kernel-internals/gpu-scheduler.md).
 
 When an inference engine switches from agent A to agent B, it normally discards A's KV cache. When A resumes, the engine re-runs prefill over A's whole history. On CPU this is the dominant cost.
 
-Ore serializes an agent's KV cache to `.safetensors` on disk when it's paged out and restores it on the next request, so prefill isn't repeated.
+Ore serializes an agent's KV cache to `.safetensors` on disk when another agent or model takes over the engine, and restores it when the agent returns, so prefill isn't repeated. A fingerprint of the conversation is saved alongside, so a cache is only reused for exactly the history it was computed from.
 
 **Measured:** on a Ryzen 7 with 16 GB RAM (CPU only), resuming an agent took **37.03 s** when recomputing prefill and **2.41 s** when restoring the saved KV cache. That's **15.4× faster**.
 

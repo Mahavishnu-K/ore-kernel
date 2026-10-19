@@ -4,7 +4,7 @@
 
 ## Overview
 
-An AppManifest is a `.toml` file in the `manifests/` directory that declares exactly what an agent is allowed to do. Ore enforces these permissions at the kernel level - not in the application. No manifest = no access.
+An AppManifest is a `.toml` file in the `manifests/` directory that declares what an agent is allowed to do. Ore enforces these permissions in the kernel, not in the application. No manifest = no access.
 
 Generate one interactively:
 
@@ -12,7 +12,9 @@ Generate one interactively:
 ore manifest my_agent
 ```
 
-Source: [`ore-core/src/registry.rs`](../ore-core/src/registry.rs)
+**Schema:** [`ore-common/src/manifest.rs`](../ore-common/src/manifest.rs) · **Loader:** [`ore-core/src/registry.rs`](../ore-core/src/registry.rs)
+
+Manifests are loaded **once, at boot**. Restart the kernel after adding or editing one.
 
 ---
 
@@ -26,25 +28,25 @@ version = "1.0.0"
 
 # ─── Privacy ─────────────────────────────────────
 [privacy]
-enforce_pii_redaction = true          # Scrub emails + credit cards before inference
+enforce_pii_redaction = true          # Run the DLP redactor on prompts before inference
 
 # ─── Resources ───────────────────────────────────
 [resources]
 allowed_models = ["llama3.2:1b", "qwen2.5:0.5b"]
 max_tokens_per_minute = 10000         # Rate limit enforced by the kernel
-gpu_priority = "normal"               # "low", "normal", "high"
-json_history = true                   # Use JSON text fallback for memory compaction
-stateful_paging = true                # Enable SSD context swap for long conversations
+gpu_priority = "normal"               # "low", "normal", "high" (not yet used by the scheduler)
+json_history = true                   # Keep chat history as JSON (required for paging)
+stateful_paging = true                # Page the KV cache to SSD between turns
 
 # ─── Memory Limits ───────────────────────────────
 [memory_limits]
-max_json_tokens = 8192                # Max conversational context tokens before summarization
-max_kv_cache_mb = 1024                # SSD/VRAM size limit for frozen state
-auto_summarize_on_cap = true          # Summarize history when limits hit
+max_json_tokens = 8192                # Max conversational context tokens before compaction
+max_kv_cache_mb = 1024                # Size limit for the frozen KV cache
+auto_summarize_on_cap = true          # Summarize history when limits are hit
 
 # ─── File System ─────────────────────────────────
 [file_system]
-allowed_read_paths = ["/home/user/projects"]
+allowed_read_paths = ["/home/user/projects"]   # Directories only
 allowed_write_paths = []
 
 # ─── Network ─────────────────────────────────────
@@ -53,118 +55,137 @@ network_enabled = true
 allow_localhost_access = false
 
 [[network.rules]]
-domain = "api.github.com"
-allowed_methods = ["GET", "POST"]      # Supports specific HTTP verbs or ["*"] for all
-allowed_paths = ["/repos/*"]           # Supports specific path prefixes or ["*"]
+domain = "api.github.com"              # Exact host match, or "*"
+allowed_methods = ["GET", "POST"]      # Specific HTTP verbs, or ["*"]
+allowed_paths = ["*"]                  # Parsed, but not enforced yet
 
 # ─── Execution ───────────────────────────────────
 [execution]
-can_execute_shell = false             # ⚠️ High risk - flagged as UNSAFE
+can_execute_shell = false             # ⚠️ High risk: flagged as UNSAFE
 can_execute_wasm = true
+is_coding_agent = false               # Let code/SQL text pass the injection firewall
 allowed_tools = ["file_search", "git_commit"] # Use ["*"] to allow all tools
 allowed_language_runtimes = ["python", "js"]  # Use ["*"] to allow all runtimes
-max_cpu_instructions = 5000000000     # Fuel limit (default: 5 Billion instructions)
+max_cpu_instructions = 5000000000     # Fuel limit (default: 5 billion instructions)
 
 # ─── IPC ─────────────────────────────────────────
 [ipc]
 allowed_agent_targets = ["writer_agent"]     # Tier 1: Direct messaging
 allowed_semantic_pipes = ["rust_docs"]       # Tier 2: Semantic memory access
 semantic_persistence = true                  # Freeze semantic pipes to SSD
-allow_time_decay = false                     # Allow older memories to lose relevance
+allow_time_decay = false                     # Older memories lose relevance in search
 ```
 
 ---
 
 ## Field Reference
 
+**Defaults:** every section (`[privacy]`, `[resources]`, …) can be left out entirely, and then gets the defaults below. If you **do** write a section, the fields marked **required in section** must be present, or the manifest fails to parse.
+
 ### Root Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `app_id` | string | ✅ | Unique identifier for this agent |
+| `app_id` | string | ✅ | Unique identifier for this agent. Must not be empty |
 | `description` | string | ✅ | Human-readable description |
-| `version` | string | ✅ | Semantic version string |
+| `version` | string | ✅ | Version string |
 
 ### `[privacy]`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enforce_pii_redaction` | bool | `false` | When `true`, the firewall scrubs emails and credit card numbers from prompts before inference |
+| `enforce_pii_redaction` | bool | `false` · required in section | When `true`, the firewall redacts emails, phone numbers, SSNs, card numbers, IBANs, API keys, private keys, and internal IPs from prompts. See [Context Firewall](./kernel-internals/context-firewall.md) |
 
 ### `[resources]`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `allowed_models` | string[] | `[]` | Models this agent is permitted to use. Inference requests for unlisted models are rejected |
-| `max_tokens_per_minute` | u32 | `0` | Token rate limit per 60-second window. `0` = unlimited |
-| `gpu_priority` | string | `""` | Scheduling priority: `"low"`, `"normal"`, `"high"` |
-| `json_history` | bool | `true` | When `true`, retains chat history as JSON text to prevent KV-cache corruption |
-| `stateful_paging` | bool | `false` | When `true`, Memory Management freezes and restores chat history across requests |
+| `allowed_models` | string[] | `[]` · required in section | Models for this agent. `/ask` uses the first one. **`/run` doesn't check this list yet** |
+| `max_tokens_per_minute` | u32 | `10000` · required in section | Rate limit per 60-second window. Must not be `0`. `/run` charges a flat 1,000 tokens per request |
+| `gpu_priority` | string | `"normal"` · required in section | `"low"`, `"normal"`, or `"high"`. Shown in dashboards; not yet used by the scheduler |
+| `json_history` | bool | `true` | Keep chat history as JSON text. Required for paging and compaction |
+| `stateful_paging` | bool | `false` | Page the agent's physical KV cache to SSD between turns and restore it on the next request |
 
 ### `[memory_limits]`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `max_json_tokens` | u32 | `8192` | Maximum conversational context in tokens. (Heuristic: 1 token ~= 4 chars of JSON text) |
-| `max_kv_cache_mb` | u32 | `1024` | The physical SSD/VRAM size limit for the frozen brain state in MB |
-| `auto_summarize_on_cap` | bool | `true` | If limits are hit, whether Ore should summarize the history |
+| `max_json_tokens` | u32 | `8192` · required in section | Maximum conversational context, in tokens, before compaction |
+| `max_kv_cache_mb` | u32 | `1024` · required in section | Size limit for the agent's frozen KV cache, in MB |
+| `auto_summarize_on_cap` | bool | `true` · required in section | Summarize the history when a limit is reached |
 
 ### `[file_system]`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `allowed_read_paths` | string[] | `[]` | File system paths the agent can read from |
-| `allowed_write_paths` | string[] | `[]` | File system paths the agent can write to |
+| `allowed_read_paths` | string[] | `[]` · required in section | Host **directories** mounted read-only into the sandbox under `/workspace` |
+| `allowed_write_paths` | string[] | `[]` · required in section | Host **directories** mounted read-write under `/workspace` |
+
+WASI can only mount directories, not individual files.
 
 ### `[network]`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `network_enabled` | bool | `false` | Whether the agent has any network access |
-| `allow_localhost_access` | bool | `false` | Whether the agent can reach `127.0.0.1` / `localhost` |
-| `rules` | NetworkRule[] | `[]` | List of `{ domain, allowed_methods, allowed_paths }` granular network rules |
+| `network_enabled` | bool | `false` · required in section | Whether the agent has any network access. Also lets network-probe text through the firewall |
+| `allow_localhost_access` | bool | `false` · required in section | Whether sandboxed tools can reach `localhost`, `127.0.0.1`, `0.0.0.0`, or `[::1]` |
+| `rules` | NetworkRule[] | `[]` | `[[network.rules]]` entries. See below |
+
+**`[[network.rules]]`** (all three fields required per rule):
+
+| Field | Type | Description |
+|---|---|---|
+| `domain` | string | Host that must **exactly** equal the URL's host (`api.github.com` doesn't cover `github.com`), or `"*"` for any host |
+| `allowed_methods` | string[] | HTTP methods allowed for that host, or `["*"]` |
+| `allowed_paths` | string[] | Intended path prefixes. **Parsed but not enforced yet:** every path on an allowed host is reachable |
 
 ### `[execution]`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `can_execute_shell` | bool | `false` | Whether shell execution is allowed. **⚠️ Flagged as UNSAFE** in `ore ls --agents` |
-| `can_execute_wasm` | bool | `false` | Whether WASM sandboxed execution is allowed |
-| `allowed_tools` | string[] | `[]` | Named tools this agent may invoke. Use `["*"]` to allow all. |
-| `allowed_language_runtimes` | string[] | `[]` | Allowed script languages for Autonomous Mode. Use `["*"]` to allow all. |
-| `max_cpu_instructions` | u64 | `5000000000` | Instruction fuel limit for the WASM sandbox (5 Billion = ~2-3s pure compute) |
+| `can_execute_shell` | bool | `false` | Allows raw host shell commands, bypassing the sandbox. **⚠️ Marks the agent UNSAFE**, and makes the firewall block any matched threat regardless of severity |
+| `can_execute_wasm` | bool | `true` | Allows sandboxed WASM execution (`/execute` tools and scripts) |
+| `is_coding_agent` | bool | `false` | Lets SQL and code-execution text (`DROP TABLE`, `eval(`, `os.system`) through the injection firewall, for agents that legitimately discuss code |
+| `allowed_tools` | string[] | `[]` | Tool names (from `~/.ore/tools/<name>.wasm`) this agent may run. `["*"]` allows all |
+| `allowed_language_runtimes` | string[] | `[]` | Script languages for Inception (script) mode. `["*"]` allows all |
+| `max_cpu_instructions` | u64 | `5000000000` | Fuel limit per WASM execution (5 billion ≈ 2–3 s of pure compute) |
 
 ### `[ipc]`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `allowed_agent_targets` | string[] | `[]` | Agent IDs this agent can send direct messages to via the Message Bus |
-| `allowed_semantic_pipes` | string[] | `[]` | Named semantic pipes this agent can read from and write to |
-| `semantic_persistence` | bool | `true` | When `true`, the Pager will save semantic pipes to the SSD using Bincode serialization |
-| `allow_time_decay` | bool | `false` | When `true`, older memories gradually lose relevance during semantic searches |
+| `allowed_agent_targets` | string[] | `[]` | Agent IDs this agent can message via the Message Bus |
+| `allowed_semantic_pipes` | string[] | `[]` | Semantic pipes this agent can read from and write to |
+| `semantic_persistence` | bool | `true` | Save this agent's semantic pipes to SSD (Bincode) |
+| `allow_time_decay` | bool | `false` | Older memories gradually lose relevance in semantic search |
 
 ---
 
-## Validation Rules
+## Loading and Validation
 
-The Ore Kernel enforces strict sanity checks on manifests at boot:
+At boot, the registry reads every `.toml` file in `manifests/`:
 
-- **Immutable Anchor:** `stateful_paging` cannot be `true` if `json_history` is `false`. JSON fallbacks are required for memory compaction.
-- **Non-Zero Budgets:** `max_tokens_per_minute` cannot be `0`.
-- **Memory Context:** If `json_history` is true, `max_json_tokens` must be at least `500`.
-- **VRAM Space:** If `stateful_paging` is true, `max_kv_cache_mb` cannot be `0`.
+- **Parse errors are fatal.** A manifest with invalid TOML, a wrong type, or a missing required field stops the kernel from booting (`FATAL: Failed to initialize App Registry`).
+- **Validation errors skip the manifest.** The kernel logs `[SECURITY ALERT] Failed to load manifest for '<app_id>'` and boots without that agent.
+
+Validation rules (`AppManifest::validate`):
+
+- **Non-empty ID:** `app_id` cannot be blank.
+- **Immutable anchor:** `stateful_paging` cannot be `true` if `json_history` is `false`. JSON history is required for KV-cache recovery and compaction.
+- **Non-zero budget:** `max_tokens_per_minute` cannot be `0`.
+- **Paging space:** if `stateful_paging` is `true`, `max_kv_cache_mb` cannot be `0`.
 
 ---
 
 ## Security Status Rules
 
-The `ore ls --agents` command flags each agent based on its manifest:
+The `ore ls --agents` dashboard labels each agent from its manifest:
 
 | Status | Condition |
 |---|---|
-| **SECURED** | PII redaction enabled AND no shell access |
-| **UNSAFE** | Shell access granted OR PII redaction disabled |
-| **DORMANT** | No models assigned (`allowed_models` is empty) |
+| **UNSAFE** | `can_execute_shell = true` |
+| **AIR-GAPPED** | No shell access and `network_enabled = false` |
+| **SECURED** | No shell access and `network_enabled = true` |
 
 ---
 
@@ -184,6 +205,24 @@ enforce_pii_redaction = true
 allowed_models = ["qwen2.5:0.5b"]
 max_tokens_per_minute = 5000
 gpu_priority = "normal"
+```
+
+### Coding Agent
+
+```toml
+app_id = "code_reviewer"
+description = "Reviews code, including SQL and shell snippets"
+version = "1.0.0"
+
+[resources]
+allowed_models = ["qwen2.5:0.5b"]
+max_tokens_per_minute = 10000
+gpu_priority = "normal"
+
+[execution]
+can_execute_wasm = true
+is_coding_agent = true                # `DROP TABLE` / `eval(` in prompts won't be blocked
+allowed_tools = ["linter"]
 ```
 
 ### Collaborative Agent (IPC Enabled)

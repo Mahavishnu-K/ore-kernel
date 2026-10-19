@@ -14,8 +14,8 @@ Two implementations ship today:
 
 | Driver | Engine | Source |
 |---|---|---|
-| `OllamaDriver` | Ollama daemon (HTTP proxy) | `ore-core/src/external/ollama.rs` |
-| `NativeDriver` | Pure-Rust Candle (GGUF) | `ore-core/src/native/mod.rs` |
+| `OllamaDriver` | Ollama daemon (HTTP proxy) | `ore-core/src/inference/external/ollama.rs` |
+| `NativeDriver` | Pure-Rust Candle (GGUF) | `ore-core/src/inference/native/mod.rs` |
 
 ---
 
@@ -26,6 +26,11 @@ Two implementations ship today:
 pub trait InferenceDriver: Send + Sync {
     /// Human-readable engine name (e.g., "Native Candle Engine")
     fn engine_name(&self) -> &'static str;
+
+    /// Compute device in use, shown in telemetry (default: "Default Device")
+    fn device_name(&self) -> String {
+        "Default Device".to_string()
+    }
 
     /// Health check - is the backend reachable?
     async fn is_online(&self) -> bool;
@@ -45,13 +50,18 @@ pub trait InferenceDriver: Send + Sync {
     /// List all models installed on disk
     async fn list_local_models(&self) -> Result<Vec<LocalModel>, DriverError>;
 
-    /// Run inference - stream tokens through the mpsc channel
+    /// Run inference - stream tokens through the mpsc channel.
+    /// `app_id` + `stateful_paging` let the driver page this agent's KV cache in and out;
+    /// `current_fingerprint` identifies the conversation prefix the saved cache must match.
     async fn generate_text(
         &self,
         model: &str,
+        app_id: &str,
+        stateful_paging: bool,
         prompt: &str,
         history: Option<Vec<ContextMessage>>,
         tx: UnboundedSender<String>,
+        current_fingerprint: &str,
     ) -> Result<(), DriverError>;
 
     /// Generate embedding vectors for a batch of texts
@@ -66,8 +76,16 @@ pub trait InferenceDriver: Send + Sync {
 
     /// Wipe a specific agent's KV-Cache from RAM (Memory Compaction)
     async fn invalidate_agent_cache(&self, app_id: &str) -> Result<(), DriverError>;
+
+    /// Exact token count using the engine's own tokenizer, or `None` if the driver
+    /// has no direct tokenizer access (default: `None`)
+    async fn count_tokens(&self, _model: &str, _text: &str) -> Option<u32> {
+        None
+    }
 }
 ```
+
+The trait has **13 methods**: 11 are required, and `device_name` and `count_tokens` have default implementations.
 
 ### Trait Bounds: `Send + Sync`
 
@@ -84,10 +102,13 @@ pub struct VramProcess {
     pub model_name: String,
     pub size_bytes: u64,
     pub size_vram_bytes: u64,
+    pub status: String,          // e.g. Loaded / Loading (defaults to "")
+    pub active_requests: usize,  // in-flight requests on this model (defaults to 0)
+    pub last_used_secs: u64,     // seconds since last use (defaults to 0)
 }
 ```
 
-Represents a model currently occupying GPU VRAM. Used by `ore ps` and the `/ps` route.
+Represents a model currently occupying GPU VRAM. Used by `ore ps` and the `/ps` route. Defined in `ore-common/src/types.rs` and re-exported from `driver.rs`.
 
 ### `LocalModel`
 
@@ -96,6 +117,7 @@ pub struct LocalModel {
     pub name: String,
     pub size_bytes: u64,
     pub modified_at: String,
+    pub format: String,          // e.g. GGUF / Safetensors (defaults to "")
 }
 ```
 
@@ -119,6 +141,17 @@ pub enum DriverError {
 
 ---
 
+## Token Counting
+
+Context-window checks in `ore-server/src/handlers/inference.rs` use two tiers:
+
+1. **Fast estimate:** `ore_common::estimate_tokens_calibrated` approximates the history size without a tokenizer.
+2. **Exact count:** only when the estimate reaches **80%** of the agent's token limit does the kernel call `driver.count_tokens(model, text)`. `NativeDriver` answers with the loaded model's tokenizer (or the one on disk); drivers that return `None`, such as `OllamaDriver`, fall back to the estimate.
+
+This keeps the common path cheap while making the decision to compact or summarize history exact near the limit.
+
+---
+
 ## How Engine Swapping Works
 
 The kernel decides which driver to instantiate at boot based on `ore.toml`:
@@ -128,7 +161,7 @@ The kernel decides which driver to instantiate at boot based on `ore.toml`:
 let driver: Arc<dyn InferenceDriver> = if config.system.engine == "native" {
     Arc::new(NativeDriver::new())
 } else {
-    Arc::new(OllamaDriver::new("http://127.0.0.1:11434"))
+    Arc::new(OllamaDriver::default()) // constants::DEFAULT_OLLAMA_URL
 };
 ```
 
@@ -150,7 +183,7 @@ Then reboot the kernel. Zero code changes required.
 
 ### `OllamaDriver`
 
-**Source:** [`ore-core/src/external/ollama.rs`](../../ore-core/src/external/ollama.rs)
+**Source:** [`ore-core/src/inference/external/ollama.rs`](../../ore-core/src/inference/external/ollama.rs)
 
 HTTP proxy to a running Ollama daemon. All operations translate to Ollama API calls:
 
@@ -161,12 +194,13 @@ HTTP proxy to a running Ollama daemon. All operations translate to Ollama API ca
 | `generate_text` | `POST /api/chat` (streaming) |
 | `generate_embeddings` | `POST /api/embed` |
 | `pull_model` | `POST /api/pull` |
-| `unload_model` | `POST /api/generate` (keep_alive: 0) |
+| `unload_model` | `POST /api/generate` (`keep_alive: 0`) |
+| `preload_model` | `POST /api/generate` (`keep_alive: -1`) |
 | `list_local_models` | `GET /api/tags` |
 
 ### `NativeDriver`
 
-**Source:** [`ore-core/src/native/mod.rs`](../../ore-core/src/native/mod.rs)
+**Source:** [`ore-core/src/inference/native/mod.rs`](../../ore-core/src/inference/native/mod.rs)
 
 Pure-Rust inference using Candle. See [Native Candle Engine](./native-candle-engine.md) for the full deep-dive.
 
@@ -177,7 +211,7 @@ Pure-Rust inference using Candle. See [Native Candle Engine](./native-candle-eng
 See [Extending Ore → Adding a New Inference Driver](../extending-ore.md#1-adding-a-new-inference-driver) for a step-by-step guide.
 
 Key requirements:
-1. Implement all 11 trait methods
+1. Implement the 11 required trait methods (override `device_name` and `count_tokens` if your backend can answer them)
 2. Stream tokens through the `UnboundedSender<String>` channel
 3. Use `DriverError` for all error reporting
 4. Register the module and wire it into the boot sequence

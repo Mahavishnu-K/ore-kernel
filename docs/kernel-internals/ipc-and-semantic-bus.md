@@ -2,7 +2,7 @@
 
 > Agent-to-agent communication and shared vector memory.
 
-**Source:** [`ore-core/src/ipc.rs`](../../ore-core/src/ipc.rs)
+**Source:** [`ore-core/src/ipc.rs`](../../ore-core/src/ipc.rs) · Handlers: [`ore-server/src/handlers/ipc.rs`](../../ore-server/src/handlers/ipc.rs)
 
 ---
 
@@ -12,25 +12,24 @@ Ore's IPC layer has three components:
 
 | Component | Purpose | Data Structure |
 |---|---|---|
-| **Message Bus** | Real-time agent-to-agent messaging | `DashMap<String, (mpsc::Tx, Mutex<mpsc::Rx>)>` |
-| **Semantic Bus** | In-memory vector database for shared knowledge | `DashMap<String, VecDeque<Arc<MemoryChunk>>>` |
-| **Rate Limiter** | Per-agent token quota enforcement | `DashMap<String, (u32, Instant)>` |
+| **Message Bus** | Agent-to-agent messaging | `DashMap<String, (mpsc::Sender, Mutex<mpsc::Receiver>)>`, bounded |
+| **Semantic Bus** | In-memory vector database for shared knowledge | `DashMap<String, PipeState>` + an embedding cache |
+| **Rate Limiter** | Per-agent token quota | `DashMap<String, (u32, Instant)>` |
 
-All three use `DashMap` for lock-free concurrent access across async tasks.
+All three use `DashMap` for sharded, low-contention concurrent access across async tasks.
 
 ---
 
 ## Message Bus (Tier 1: Direct Messaging)
 
 ```rust
+pub const DEFAULT_MESSAGE_BACKLOG: usize = 1024;
+
 pub struct MessageBus {
-    channel: DashMap<String, (mpsc::UnboundedSender<AgentMessage>, StdMutex<mpsc::UnboundedReceiver<AgentMessage>>)>,
+    channel: DashMap<String, (mpsc::Sender<AgentMessage>, StdMutex<mpsc::Receiver<AgentMessage>>)>,
+    backlog_capacity: usize,
 }
-```
 
-### `AgentMessage`
-
-```rust
 pub struct AgentMessage {
     pub from_app: String,
     pub to_app: String,
@@ -41,33 +40,28 @@ pub struct AgentMessage {
 
 ### Operations
 
-**Read a message** - An agent polls for messages on its own channel:
-
-```rust
-pub fn read_message(&self, app_id: &str) -> Option<AgentMessage> {
-    if let Some(target_channel) = self.channel.get(app_id) {
-        let mut rx = target_channel.1.lock().unwrap();
-        // Non-blocking read
-        if let Ok(msg) = rx.try_recv() {
-            return Some(msg);
-        }
-    }
-    None
-}
-```
-
-**Send a message** - Agent A sends to Agent B's channel:
+**Send:** the receiver's inbox is created on first use as a **bounded** channel (`DEFAULT_MESSAGE_BACKLOG = 1024` messages; `MessageBus::with_capacity` sets another size, minimum 1). Sending never blocks:
 
 ```rust
 pub fn send_message(&self, msg: AgentMessage) -> Result<(), String> {
     let target_channel = self.channel.entry(msg.to_app.clone()).or_insert_with(|| {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(self.backlog_capacity);
         (tx, StdMutex::new(rx))
     });
 
-    target_channel.0.send(msg).map_err(|_| "Failed to deliver message.".to_string())
+    target_channel.0.try_send(msg).map_err(|e| match e {
+        TrySendError::Full(dropped) => format!(
+            "Target agent '{}' queue is full (capacity: {}). Backpressure applied.",
+            dropped.to_app, self.backlog_capacity
+        ),
+        TrySendError::Closed(_) => "Target agent channel receiver has closed.".to_string(),
+    })
 }
 ```
+
+A full inbox **rejects** the new message instead of growing without bound, so an agent that never reads its messages can't exhaust the kernel's memory.
+
+**Read:** an agent polls its own inbox without blocking (`try_recv`). `GET /ipc/listen/:app_id` returns the next message, or `null`.
 
 ### Permission Check
 
@@ -78,67 +72,56 @@ The sender's manifest must list the receiver in `allowed_agent_targets`:
 allowed_agent_targets = ["writer_agent"]
 ```
 
-This check is enforced in the handler layer (`ore-server/src/handlers/ipc.rs`), not in the `MessageBus` itself.
+This check is enforced in the handler layer (`ore-server/src/handlers/ipc.rs`), not in `MessageBus` itself.
 
 ---
 
 ## Semantic Bus (Tier 2: Vector Memory)
 
-An in-memory vector database that enables agents to share knowledge through natural-language search.
+An in-memory vector database that lets agents share knowledge through natural-language search.
 
 ```rust
 pub struct SemanticBus {
-    memory_pipes: DashMap<String, (bool, VecDeque<Arc<MemoryChunk>>)>, // Pipe persistence flag + chunks
-    embedding_cache: DashMap<u64, (Arc<Vec<f32>>, u64)>,          // Hash → (vector, timestamp)
+    memory_pipes: DashMap<String, PipeState>,
+    embedding_cache: DashMap<u64, (Arc<Vec<f32>>, u64)>, // hash(text) → (vector, timestamp)
     cache_ttl_secs: u64,
     pipe_ttl_secs: u64,
 }
-```
 
-### `MemoryChunk`
+pub enum PipeState {
+    Active { is_persistent: bool, chunks: VecDeque<Arc<MemoryChunk>> },
+    PagedToDisk,   // persistent pipe evicted from RAM; lives in memory/<pipe>.pipe
+}
 
-```rust
 pub struct MemoryChunk {
-    pub text: Arc<String>,      // Original text
-    pub vector: Arc<Vec<f32>>,  // Pre-normalized embedding vector
-    pub source_app: String,     // Which agent wrote this
-    pub timestamp: u64,         // Unix timestamp (epoch seconds)
+    pub text: Arc<String>,
+    pub vector: Arc<Vec<f32>>, // pre-normalized unit vector
+    pub source_app: String,
+    pub timestamp: u64,        // Unix seconds
 }
 ```
 
-### Writing Knowledge
+### Writing Knowledge (`POST /ipc/share`)
 
-```rust
-pub fn write_chunk(&self, pipe_name: &str, text: String, mut vector: Vec<f32>, source_app: &str, is_persistent: bool) {
-    // 1. Cache the embedding (hash → vector) for deduplication
-    let hash = Self::hash_text(&text);
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    self.embedding_cache.insert(hash, (Arc::new(vector.clone()), timestamp));
+1. The handler checks `allowed_semantic_pipes`.
+2. The text is split with the requested **chunking strategy** (`SemanticBus::chunk_text`):
 
-    // 2. Append the chunk to the named pipe
-    let mut pipe = self.memory_pipes.entry(pipe_name.to_string()).or_default();
-    // ... constructs MemoryChunk and pushes to pipe
-}
+   | Strategy | Behavior |
+   |---|---|
+   | `sliding_window` (default) | Fixed-size word windows that advance by `size - overlap` |
+   | `sentence_aware` | Packs whole sentences into chunks of up to `size`, with overlap |
+   | `paragraph` | Splits on paragraphs, keeping each under `size` |
+   | `exact_match` | The whole text as one chunk |
 
-/// Bypasses cache insertion to directly write an existing cached pointer to a new pipe
-pub fn write_cached_chunk(&self, pipe_name: &str, text: String, arc_vector: Arc<Vec<f32>>, source_app: &str, is_persistent: bool) {
-    // ZERO COPY - We just pass the memory pointer!
-    // ... constructs MemoryChunk using the Arc pointer and pushes to pipe
-}
-```
+   Defaults: `chunk_size = 100`, `chunk_overlap = 20` (an overlap ≥ the size is replaced with `size / 4`).
+3. Chunks already in the embedding cache reuse their vector. The rest are embedded in one batch, under the `embedder_lock` so only one embedder is loaded at a time.
+4. Each chunk is written to the pipe:
+   - `write_chunk` **normalizes the vector to unit length**, stores it in the cache, and appends the chunk.
+   - `write_cached_chunk` appends a chunk that shares an existing `Arc<Vec<f32>>`, with no copy and no re-embedding.
 
-Before writing, the handler layer splits the raw text into sliding window chunks:
+Each pipe holds at most **10,000 chunks**. Beyond that, the oldest chunk is dropped.
 
-```rust
-pub fn create_sliding_windows(text: &str, window_size: usize, overlap: usize) -> Vec<String> {
-    // Splits by whitespace, slides forward by (window_size - overlap) words
-    // Maintains context coherence across chunk boundaries
-}
-```
-
-Default: 50 words per chunk, 10 words overlap.
-
-### Searching
+### Searching (`POST /ipc/search`)
 
 ```rust
 pub fn search_pipe(
@@ -151,107 +134,68 @@ pub fn search_pipe(
 ) -> Vec<(f32, Arc<MemoryChunk>)>
 ```
 
-The search algorithm:
+1. **Page-fault recovery:** if the pipe isn't in RAM, or is `PagedToDisk`, it's restored from `memory/<pipe>.pipe` first.
+2. **Filter** by `source_app` if `filter_app` is set.
+3. **Score** each chunk with a dot product against the query vector. Both are unit vectors, so this equals cosine similarity.
+4. **Time decay** (if the searching agent has `allow_time_decay = true`): `score × (1 − 0.01 × hours_old)`, clamped to `[0.5, 1.0]`. Memories lose 1% relevance per hour, down to half.
+5. **Top-K** with a bounded `BinaryHeap`: `O(N log K)` instead of sorting the whole pipe.
+6. Results are returned highest score first (default `top_k = 5`).
 
-1. **Iterate** all chunks in the specified pipe
-2. **Filter** by `source_app` (if `filter_app` is provided)
-3. **Score** each chunk:
-   - **Fast Dot Product** between the query vector and chunk vector (since vectors are pre-normalized)
-   - **Time decay** (if `allow_time_decay` is true) - Older memories lose 1% relevance per hour (clamped at 50% minimum): `decay = (1.0 - hours_old * 0.01).clamp(0.5, 1.0)`
-   - **Final score** = `dot_product × decay_factor` (or just `dot_product` if time decay is disabled)
-4. **BinaryHeap (Top-K)** - Push into a max-heap of size K (`O(log K)` complexity) instead of sorting the whole pipe `O(N log N)`.
-5. **Return** top-K chunks sorted by score.
+### Fast Dot Product
 
-### Fast Dot Product (Normalized Cosine Similarity)
+Because vectors are normalized when they're written, search never needs `sqrt`. The dot product uses 8 independent accumulators over `chunks_exact(8)`, which breaks the floating-point dependency chain and lets the compiler auto-vectorize:
 
 ```rust
-fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() { return 0.0; }
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    // sum0..sum7 accumulate lanes 0..7 of each 8-wide chunk,
+    // then the remainder is added at the end
+    ...
 }
 ```
 
 ### Embedding Cache
 
-The cache maps `hash(text) → (embedding_vector, timestamp)`:
-
-```rust
-pub fn get_cached_embedding(&self, text: &str) -> Option<Arc<Vec<f32>>> {
-    let hash = Self::hash_text(text);
-    if let Some(entry) = self.embedding_cache.get(&hash) {
-        // ... dynamically checks TTL
-        return Some(entry.0.clone());
-    }
-    None
-}
-```
-
-If the same text is written twice, the embedding is served directly from the cache buffer instead of re-invoking the embedder. Fast IPC caching utilizes `write_cached_chunk()` allowing identical embedding nodes to share the same `Arc<Vec<f32>>` pointer across countless memory chunks without duplicating bytes in RAM. For pure querying (which shouldn't be added to a pipe), the handlers call `cache_only()` to ensure the generated embedding query is cached for speed without adding it to the readable `VecDeque` memory space.
+The cache maps `hash(text) → (vector, timestamp)`. If the same text is shared again, its embedding comes from the cache, and identical chunks share one `Arc<Vec<f32>>` across pipes. Search queries are cached with `cache_only()`, which caches the vector without adding it to any pipe.
 
 ### Pipe Permissions
 
-Both read and write operations are gated by the manifest:
+Both reads and writes are gated by the manifest:
 
 ```toml
 [ipc]
 allowed_semantic_pipes = ["rust_docs", "research_papers"]
 ```
 
-An agent can only access pipes that are explicitly listed. This prevents unauthorized cross-agent memory access.
+An agent can only access pipes that are explicitly listed.
 
-### Semantic Persistence & Time Decay
-
-The Semantic Bus generally operates entirely in RAM for maximum speed. By default, agents freeze their knowledge pipelines to the SSD using the `semantic_persistence` manifest flag. Additionally, you can configure memories to decay over time:
+### Semantic Persistence
 
 ```toml
 [ipc]
-semantic_persistence = true
+semantic_persistence = true   # default
 allow_time_decay = false
 ```
 
-When enabled, the IPC handler layer spawns an asynchronous Tokio thread upon any knowledge ingestion (`/ipc/share`), grabbing the updated vector pipeline from RAM and flushing it to the SSD (`memory/<pipe_name>.pipe`) via `Pager::page_out_semantic`. This enables persistence across kernel reboots without blocking the HTTP API.
+With `semantic_persistence = true`, the handler spawns a background task after each `/ipc/share` that writes the pipe to `memory/<pipe_name>.pipe` (Bincode) via `Pager::page_out_semantic`. Pipes survive kernel restarts and are paged back in on first use. With `false`, the pipe lives only in RAM.
 
 ---
 
 ## Garbage Collection
 
-The kernel runs a background task that wakes every hour and sweeps stale data:
+A background loop in `ore-server` calls `run_garbage_collection()` every hour (see [Configuration](../configuration.md#memory-section)):
 
-```rust
-pub fn run_garbage_collection(&self) {
-    // 1. Sweep the embedding cache - evict entries older than cache_ttl_secs
-    self.embedding_cache.retain(|_, (_, timestamp)| {
-        current_time.saturating_sub(*timestamp) < self.cache_ttl_secs
-    });
+1. **Embedding cache:** entries older than `cache_ttl_hours` are evicted.
+2. **Persistent pipes:** written to SSD and switched to `PagedToDisk`, which frees their RAM without losing data. The next read or write pages them back in.
+3. **Ephemeral pipes:** chunks older than `pipe_ttl_hours` are evicted. Pipes that end up empty are removed.
 
-    // 2. Sweep each pipe
-    for mut pipe_ref in self.memory_pipes.iter_mut() {
-        let (is_persistent, pipe_contents) = pipe_ref.value_mut();
-        if *is_persistent {
-            // Persistent pipes rely on SSD paging, evict from RAM to save memory
-            pipe_contents.clear();
-        } else {
-            // Ephemeral pipes evict old chunks natively
-            pipe_contents.retain(|chunk| {
-                current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
-            });
-        }
-    }
-
-    // 3. Prune empty pipes
-    self.memory_pipes.retain(|_, (_, chunks)| !chunks.is_empty());
-}
-```
-
-TTLs are configured in `ore.toml`:
+A TTL of `0` disables that sweep (infinite retention in RAM).
 
 ```toml
 [memory]
-cache_ttl_hours = 24    # Embedding cache lifetime
-pipe_ttl_hours = 32     # Semantic pipe data lifetime
+cache_ttl_hours = 24
+pipe_ttl_hours = 32
 ```
-
-Setting either to `0` disables GC for that category (infinite retention).
 
 ---
 
@@ -261,41 +205,39 @@ Setting either to `0` disables GC for that category (infinite retention).
 pub struct RateLimiter {
     usage: DashMap<String, (u32, Instant)>,  // app_id → (tokens_used, window_start)
 }
-```
 
-### Algorithm
-
-```rust
 pub fn check_and_add(&self, app_id: &str, limit: u32, requested_tokens: u32) -> bool {
     let mut entry = self.usage.entry(app_id.to_string()).or_insert((0, Instant::now()));
-
-    // Reset counter if 60 seconds have elapsed
-    if entry.1.elapsed() > Duration::from_secs(60) {
+    if entry.1.elapsed() > Duration::from_secs(60) {   // new 60-second window
         entry.0 = 0;
         entry.1 = Instant::now();
     }
-
-    // Check quota
     if entry.0 + requested_tokens > limit {
-        return false;  // Blocked!
+        return false;                                   // rejected (429)
     }
-
     entry.0 += requested_tokens;
     true
 }
 ```
 
-The quota comes from the agent's manifest: `[resources].max_tokens_per_minute`.
+The limit is the agent's `[resources].max_tokens_per_minute`. `/run` currently charges a flat 1,000 tokens per request.
+
+---
+
+## Tests
+
+`ore-core/src/ipc.rs` has unit tests for the unrolled dot product, bounded Message Bus backpressure, and sentence-aware chunking (`cargo test -p ore-core ipc`).
 
 ---
 
 ## Design Decisions
 
-- **`DashMap` everywhere** - All three components need concurrent access from multiple async tasks. `DashMap` provides lock-free read/write without wrapping everything in `Arc<Mutex<HashMap>>`, reducing contention.
-- **Vectors are Zero-Copied** - Using `Arc<Vec<f32>>` and `Arc<MemoryChunk>` ensures that large knowledge documents don't duplicate memory during pipe transitions and memory queries. 
-- **Time decay, not FIFO** - Search results favor recent memories with a 1%/hour decay. This naturally surfaces fresh knowledge without explicit "forget" operations, while clamping at 50% ensures old memories aren't completely lost.
-- **Fast Dot-Product replacing Cosine Similarity** - By strictly normalizing embed tensors at insertion point, the expensive search-time `sqrt()` normalization is removed, resulting in purely arithmetic inner `dot_product` mappings. Max-heap (`BinaryHeap`) guarantees immediate O(log K) extraction.
-- **`mpsc` instead of `broadcast`** - The Message Bus transitioned to `mpsc::unbounded_channel` to allow agent-only non-blocking delivery avoiding broadcast lag.
+- **`DashMap` everywhere.** All three components are accessed concurrently from many async tasks; sharded locking avoids one global `Mutex<HashMap>`.
+- **Bounded inboxes.** Backpressure is explicit: senders get an error instead of the kernel buffering unboundedly.
+- **Zero-copy vectors.** `Arc<Vec<f32>>` and `Arc<MemoryChunk>` let pipes, the cache, and search results share memory instead of duplicating it.
+- **Normalize once, at write time.** Search is a pure dot product, with no per-query `sqrt`.
+- **Page persistent pipes, don't drop them.** `PipeState::PagedToDisk` makes GC safe for persistent memory; a page fault restores the pipe transparently.
+- **Time decay, not deletion.** Fresh knowledge ranks higher without an explicit "forget" step, and the 50% floor keeps old memories reachable.
 
 ---
 

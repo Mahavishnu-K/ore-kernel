@@ -5,7 +5,7 @@
 ## `ore.toml` - System Configuration
 
 The kernel reads `ore.toml` from the Ore base directory on boot. The base directory is resolved in the following order:
-1. The `$Ore_DIR` environment variable, if set.
+1. The `$ORE_DIR` environment variable, if set.
 2. The local `../` directory, if `../ore.toml` exists (for local development).
 3. The user's home directory (`~/.ore` on Linux/macOS, or `%USERPROFILE%\.ore` on Windows).
 
@@ -19,11 +19,15 @@ engine = "native"           # "native" or "ollama"
 embedder = "all-minilm"     # "all-minilm" (90MB Fast) or "system-embedder" (500MB Nomic)
 
 [native]
-default_model = "llama3.2:1b"  # Default model for the Native Candle engine
+default_model = "llama3.2:1b"  # Written by `ore init`; not read by the kernel yet
 
 [memory]
 cache_ttl_hours = 24        # Embedding cache lifetime in hours (0 = infinite)
 pipe_ttl_hours = 32         # Semantic pipe data lifetime in hours (0 = infinite)
+
+# Optional, per model: override the scheduler's KV-cache estimate
+[models."qwen2.5:0.5b"]
+kv_cache_mb_per_1k = 96     # KV-cache MB the scheduler reserves per request (see below)
 ```
 
 ### `[system]` Section
@@ -31,28 +35,51 @@ pipe_ttl_hours = 32         # Semantic pipe data lifetime in hours (0 = infinite
 | Key | Type | Values | Description |
 |---|---|---|---|
 | `engine` | string | `"native"`, `"ollama"` | Which inference backend to use on boot |
-| `embedder` | string | `"all-minilm"`, `"system-embedder"` | Which Native System Embedder architecture to use for Semantic Bus searching |
+| `embedder` | string | `"all-minilm"` (default), `"system-embedder"` | Which embedding model the Semantic Bus uses. Optional |
+
+`[system]` and `[memory]` are both **required**: the kernel won't boot if either is missing.
 
 ### `[native]` Section
 
-Only read when `engine = "native"`.
+Written by `ore init` when you choose the native engine.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `default_model` | string | - | The model loaded by default when no model is specified |
+| `default_model` | string | - | Recorded for tooling. The kernel doesn't read it yet: `/ask` uses the first model in the agent's `allowed_models`, and `/run` uses the model in the request |
 
 ### `[memory]` Section
 
-Controls the kernel's garbage collector, which runs every hour.
+Controls the Semantic Bus garbage collector, which runs every hour.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `cache_ttl_hours` | u64 | `24` | How long computed embeddings stay cached in RAM. Set to `0` for infinite retention |
 | `pipe_ttl_hours` | u64 | `32` | How long semantic pipe data (memory chunks) survive before eviction. Set to `0` for infinite retention |
 
-**How GC works:** A background `tokio::spawn` task wakes every 3600 seconds and calls `SemanticBus::run_garbage_collection()`. It walks the embedding cache and all memory pipes, evicting entries older than their configured TTL. Empty pipes are pruned automatically.
+**How the background loop works:** a `tokio::spawn` task in `ore-server/src/main.rs` wakes **every minute**:
 
-Source: [`ore-server/src/main.rs:89-96`](../ore-server/src/main.rs) · [`ore-core/src/ipc.rs:186-236`](../ore-core/src/ipc.rs)
+- Every tick, it calls `driver.flush_idle_memory(5)`, which unloads an engine that's been idle for more than 5 minutes.
+- Every 60th tick (hourly), it calls `SemanticBus::run_garbage_collection()`, which walks the embedding cache and all memory pipes and evicts entries older than their TTL. Empty pipes are pruned.
+
+Source: [`ore-server/src/main.rs`](../ore-server/src/main.rs) · [`ore-core/src/ipc.rs`](../ore-core/src/ipc.rs)
+
+### `[models."<name>"]` Sections (optional)
+
+Per-model overrides for the GPU scheduler, keyed by model name.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kv_cache_mb_per_1k` | u64 | *(estimated from GGUF geometry)* | KV-cache size, in MB, that VRAM admission control reserves for each request on this model. Use it when the automatic estimate is wrong. **Despite the name, the value replaces the whole reservation and isn't multiplied by context length.** The automatic estimate is `2 × layers × kv_heads × head_dim × 2 bytes × 8192 tokens` |
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ORE_DIR` | *(see resolution order above)* | Ore base directory: `ore.toml`, `manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`, `plugins/` |
+| `ORE_GPU_ID` | `0` | NVIDIA GPU index the scheduler reads VRAM from through NVML. If NVML isn't available, the scheduler falls back to system-memory figures |
+| `HF_TOKEN` | - | Hugging Face token for `ore pull` of gated models |
 
 ---
 
@@ -72,7 +99,7 @@ channel = "1.93.0"
 ```toml
 [workspace]
 resolver = "2"
-members = ["ore-core", "ore-server", "ore-cli", "ore-sys"]
+members = ["ore-common", "ore-core", "ore-server", "ore-cli", "ore-sys"]
 
 [profile.release]
 opt-level = 3        # Maximum optimization
@@ -92,7 +119,10 @@ strip = true         # Strip debug symbols
 | **Dependencies** | Zero - pure Rust | Requires Ollama daemon |
 | **Model Format** | GGUF (quantized) | All Ollama-compatible |
 | **Hardware** | CPU / CUDA / Metal (auto-detected) | Depends on Ollama |
-| **Embeddings** | Built-in BERT (Safetensors) | Via `/api/embed` endpoint |
+| **Architectures** | Llama, Qwen2, Qwen3, Qwen3-MoE | Anything Ollama supports |
+| **KV-cache paging** | Yes (`stateful_paging`) | No (JSON history only) |
+| **Exact token counts** | Yes (`count_tokens`) | No (estimates) |
+| **Embeddings** | Built-in BERT / Nomic (Safetensors) | Via `/api/embed` endpoint |
 | **Best For** | Airgapped, embedded, maximum control | Easy setup, broad model support |
 
 Switch engines by changing one line in `ore.toml` and rebooting.

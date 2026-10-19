@@ -21,7 +21,7 @@ Applications never talk to the GPU or host operating system directly. They talk 
 ║                                                      ║
 ║   ┌─────────────┐    ┌──────────────────────────┐    ║
 ║   │ Auth Guard  │───▶│ Manifest Permission Check│    ║
-║   │(Bearer JWT) │    │   + Rate Limiter         │    ║
+║   │(Bearer UUID)│    │   + Rate Limiter         │    ║
 ║   └─────────────┘    └────────────┬─────────────┘    ║
 ║                                   │                  ║
 ║   ┌─────────────────┐             │                  ║
@@ -48,7 +48,8 @@ Applications never talk to the GPU or host operating system directly. They talk 
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
 ║   │  Dynamic Linker (ore-ld) & Memory Fusion     │   ║
-║   │  · Table Hijacking (__indirect_function)     │   ║
+║   │  · ore_dlopen / dlsym / dlclose / dlerror    │   ║
+║   │  · Table slots + 1 MiB recycled memory slabs │   ║
 ║   │  · Linear Memory Sharing (Zero-Copy FFI)     │   ║
 ║   └──────────────────────────────────────────────┘   ║
 ║                                                      ║
@@ -61,7 +62,7 @@ Applications never talk to the GPU or host operating system directly. They talk 
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
 ║   │  IPC Layer                                   │   ║
-║   │  · Message Bus  (mpsc non-blocking queues)   │   ║
+║   │  · Message Bus  (bounded mpsc, 1024/agent)   │   ║
 ║   │  · Semantic Bus (Vector memory + dot product)│   ║
 ║   │  · Zero-Copy Embedding Cache (DashMap + Arc) │   ║
 ║   │  · Memory GC  (Hourly TTL-based sweep)       │   ║
@@ -114,7 +115,7 @@ Client (curl / CLI / App)
 │ 2. ROUTE HANDLER                    │  ore-server/src/handlers/inference.rs
 │    Parse request (model + prompt)   │
 │    Lookup AppManifest from registry │
-│    Enforce token rate limit         │
+│    Enforce rate limit (/run)        │
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
@@ -178,7 +179,9 @@ Return stdout/stderr                   Mount VFS (/workspace, /ore_tmp)
                                        Spawn blocking thread in WasmSandbox
                                        Monitor Layer 7 Network Portal
                                        Enforce max_cpu_instructions fuel
-                                       Capture stdout/stderr & return
+                                       Capture stdout/stderr (10 MiB each)
+                                       Classify exit / trap by error type
+                                       Return output (+ KERNEL ERROR line)
 ```
 
 ---
@@ -214,22 +217,26 @@ ore-system/
 │   ├── crypto.rs            VFS-mapped hardware cryptographic subsystem
 │   ├── linker/              WebAssembly Dynamic Linker (ore-ld)
 │   │   ├── mod.rs           Linker entrypoint
-│   │   ├── linker_state.rs  Handle tracking & module registry
+│   │   ├── linker_state.rs  Loaded plugins, handles, last error, free memory slabs
 │   │   ├── mmu.rs           MMU: memory.grow allocation, -fPIC C-ABI globals
-│   │   └── syscalls.rs      Table expansion & plugin loading (ore_dlopen, ore_dlsym)
+│   │   └── syscalls.rs      ore_dlopen / ore_dlsym / ore_dlclose / ore_dlerror
 │   └── inference/           Inference Engine Implementations
 │       ├── external/        External inference drivers
 │       │   └── ollama.rs    OllamaDriver (HTTP proxy to Ollama daemon)
 │       └── native/          Native Candle Engine
-│           ├── mod.rs       NativeDriver (GGUF loading + hardware detection)
-│           ├── engine.rs    OreEngine enum (Llama/Qwen2/Qwen3 MoE) + ActiveEngine
+│           ├── mod.rs       NativeDriver (hardware detection, generation, token counting)
+│           ├── engine.rs    OreEngine enum (Llama / Qwen2 / Qwen3 / Qwen3-MoE) + architecture router
+│           ├── kv_manager.rs KV-cache flatten/unflatten for .safetensors paging
 │           ├── gguf_tokenizer.rs GGUF metadata tokenizer extractor
 │           └── models/      Architecture-specific model loaders
-│               ├── llama.rs Llama family loader
-│               ├── qwen2.rs Qwen2 family loader
-│               ├── qwen3.rs Qwen3 MoE family loader
-│               ├── bert.rs  BERT embedder (all-MiniLM)
-│               └── nomic.rs Nomic v1.5 embedder (Safetensors)
+│               ├── llama.rs     Llama family
+│               ├── qwen2.rs     Qwen2 family
+│               ├── qwen3.rs     Qwen3 (dense)
+│               ├── qwen3_moe.rs Qwen3-MoE (also loads qwen2moe)
+│               ├── bert.rs      BERT embedder (all-MiniLM)
+│               ├── nomic.rs     Nomic v1.5 embedder (Safetensors)
+│               ├── transformers/ Quantized layers, fused MoE
+│               └── nn/          KV cache
 ├── ore-server/              Axum HTTP daemon
 │   ├── main.rs              Boot sequence, router, token generator, GC scheduler
 │   ├── state.rs             KernelState + OreConfig (shared application state)
@@ -251,22 +258,27 @@ ore-system/
 │   ├── main.rs              Command dispatch + package downloads
 │   ├── cli.rs               Clap argument definitions
 │   ├── interactive.rs       Interactive wizards (init, manifest)
+│   ├── telemetry.rs         Dashboards for status, top, ps, ls
 │   ├── utils.rs             HTTP client helpers, token file reader
-│   └── src/syskit/          C and Zig SDK headers (ore.h, ore.zig) for plugins
-├── ore-sys/                 Rust SDK Crate for building WASM plugins
-│   └── src/                 SDK Source Code (`ore_bind!`, `ore_export!`, `Plugin`)
+│   └── syskit/              C and Zig SDK headers (ore.h, ore.zig) for ore-ld
+├── ore-sys/                 Rust SDK for ore-ld hosts and plugins
+│   ├── host.rs              `Plugin` (load, get_func, close, last_error, Drop) + `ore_bind!` (feature "host")
+│   └── plugin.rs            `ore_export!` + no_std panic handler (feature "plugin")
 ├── manifests/               App permission manifests (.toml files)
 ├── models/                  Downloaded model weights
 ├── memory/                  SSD page files for agent context and KV-caches
 ├── runtimes/                Language runtimes for Inception Mode (system-py, system-js)
 ├── tools/                   Pre-compiled WebAssembly tools (Console Cartridges)
-├── tests/                   Integration tests (memory_fusion, linker, sandbox)
+├── plugins/                 ore-ld plugins (.wasi.so)
+├── tests/                   Tool sources for integration tests: memory_fusion, cross_lang_memory_fusion,
+│                            linker_test, wasm_sandbox_tools, project_tools
+├── examples/                Python agents and test runners that drive the kernel over HTTP
 ├── ore.toml                 System configuration
 ├── Cargo.toml               Workspace configuration + release profile
 └── rust-toolchain.toml      Pinned Rust 1.93.0
 ```
 
-> **Directory resolution:** data directories (`manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`) and `ore.toml` are resolved relative to the **Ore base directory**, found in this order: 1) the `$Ore_DIR` environment variable, 2) `../` if it contains `ore.toml` (local development), 3) `~/.ore` on Linux/macOS or `%USERPROFILE%\.ore` on Windows.
+> **Directory resolution:** data directories (`manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`, `plugins/`) and `ore.toml` are resolved relative to the **Ore base directory**, found in this order: 1) the `$ORE_DIR` environment variable, 2) `../` if it contains `ore.toml` (local development), 3) `~/.ore` on Linux/macOS or `%USERPROFILE%\.ore` on Windows.
 
 ### Key Dependencies
 
@@ -289,13 +301,13 @@ ore-system/
 
 ## Design Principles
 
-1. **Zero-Trust Security by Default** - Every prompt is firewalled. Every route is authenticated. Every tool executes inside a sandboxed WASM container with capability-restricted file and network permissions.
+1. **Zero-Trust Security by Default** - Every route is authenticated, every inference prompt passes the firewall heuristics, and every tool runs inside a WASM sandbox with capability-restricted file and network access. Failures are classified by type, so a crash can't masquerade as success.
 2. **Multi-Tenant VRAM Bin-Packing** - Instead of single-model locks, the GPU scheduler manages physical VRAM budgets via NVML hardware monitoring, dynamically dimensions KV caches from GGUF geometry, and gracefully evicts LRU idle models when memory pressure arises.
 3. **Zero-RAM AOT Caching (`.cwasm`)** - WASM cartridges are compiled to native machine code once and serialized. Subsequent invocations dynamically `mmap` the pre-compiled binary directly from the OS Page Cache into the CPU, yielding ~10ms cold starts with zero memory bloat.
 4. **Zero-Copy Cross-Language Memory Fusion (`ore-ld`)** - A `dlopen`-style dynamic linker for WebAssembly lets host tools written in Rust, C, C++, or Zig load position-independent plugins (`.wasi.so`) directly into shared linear memory, bypassing serialization overhead.
-5. **Layer 7 Network Isolation & Runtime Shims** - Pure compute sandboxes lack raw sockets. Ore routes egress HTTP requests through an asynchronous Layer 7 proxy with manifest-enforced domain, method, and path rules, supported by CommonJS and Python WASI shims.
+5. **Layer 7 Network Isolation & Runtime Shims** - Pure compute sandboxes lack raw sockets. Ore routes egress HTTP requests through a Layer 7 proxy with manifest-enforced domain and method rules (path rules are parsed but not yet enforced), supported by CommonJS and Python WASI shims.
 6. **OS-Style Memory Management** - Idle agent conversational context and physical KV caches are serialized to the SSD (`memory/` directory) and restored on demand. Background memory compaction keeps context sizes bounded.
-7. **Driver Abstraction (HAL)** - The `InferenceDriver` trait provides an engine-agnostic boundary with 11 core methods, enabling transparent swapping between Native Candle and Ollama backends.
+7. **Driver Abstraction (HAL)** - The `InferenceDriver` trait provides an engine-agnostic boundary with 13 methods (11 required), enabling transparent swapping between Native Candle and Ollama backends.
 
 ---
 

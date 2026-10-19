@@ -21,6 +21,8 @@ where
     // The C-ABI Native Linker (For Rust, C, C++, Zig)
     linker.func_wrap("env", "ore_dlopen", syscalls::trap_ore_dlopen)?;
     linker.func_wrap("env", "ore_dlsym", syscalls::trap_ore_dlsym)?;
+    linker.func_wrap("env", "ore_dlclose", syscalls::trap_ore_dlclose)?;
+    linker.func_wrap("env", "ore_dlerror", syscalls::trap_ore_dlerror)?;
 
     // The @ore/sdk Bridge (For Python & TS/JS)
     // We will build these syscalls next for Room-to-Room IPC!

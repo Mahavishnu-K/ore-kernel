@@ -9,8 +9,8 @@ pub mod vfs;
 pub use params::{ExecuteParams, OreResponseMeta};
 pub use state::OreSandboxState;
 
-use anyhow::{Error, Result};
-use wasmtime::{Config, Engine, Linker, Store};
+use anyhow::Result;
+use wasmtime::{Config, Engine, Linker, Store, Trap};
 use wasmtime_wasi::p1::add_to_linker_sync;
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 
@@ -113,24 +113,48 @@ impl WasmSandbox {
                 crate::kprintln!("-> [SANDBOX] Execution completed safely.");
                 Ok(final_output)
             }
+            // Classify by error *type*, never by message text: the message includes the guest's
+            // wasm backtrace, so a substring match (e.g. Zig's `start.startWasi`, Go's
+            // `runtime.exit`) can mistake a trap for a clean exit.
+            //
+            // Every outcome returns the guest's stdout/stderr. Failures append exactly one
+            // `KERNEL ERROR:` line, so agents can detect them the same way in every language.
             Err(e) => {
-                let err_msg = format!("{:#}", e);
-                if err_msg.contains("out of fuel") || err_msg.contains("all fuel consumed") {
-                    Err(Error::msg(
-                        "Sandbox Trap: CPU Fuel Exhausted (Runaway AI or Infinite Loop Detected)",
-                    ))
-                } else if err_msg.contains("guest exit")
-                    || err_msg.contains("runtime.exit")
-                    || err_msg.contains("proc_exit")
-                    || err_msg.contains("startWasi")
-                {
-                    crate::kprintln!("-> [SANDBOX] Program exited gracefully via OS syscall.");
-                    Ok(final_output)
-                } else {
-                    crate::kprintln!("-> [SANDBOX TRAP] Execution halted: {}", e);
-                    final_output.push_str(&format!("\nKERNEL ERROR: {}", e));
-                    Ok(final_output)
+                // The guest called proc_exit (returning from main in C/C++/Zig/Go/Python, or
+                // an explicit exit()). Status 0 is success; anything else is a failure,
+                // e.g. Go panics exit with 2 and uncaught Python exceptions exit with 1.
+                if let Some(exit) = e.downcast_ref::<wasmtime_wasi::I32Exit>() {
+                    if exit.0 == 0 {
+                        crate::kprintln!(
+                            "-> [SANDBOX] Program exited gracefully via OS syscall (status 0)."
+                        );
+                    } else {
+                        crate::kprintln!(
+                            "-> [SANDBOX] Program exited with failure status {}.",
+                            exit.0
+                        );
+                        final_output.push_str(&format!(
+                            "\nKERNEL ERROR: Guest exited with status {}",
+                            exit.0
+                        ));
+                    }
+                    return Ok(final_output);
                 }
+
+                // The fuel limit (manifest `max_cpu_instructions`) ran out.
+                if matches!(e.downcast_ref::<Trap>(), Some(Trap::OutOfFuel)) {
+                    crate::kprintln!("-> [SANDBOX TRAP] CPU fuel exhausted.");
+                    final_output.push_str(
+                        "\nKERNEL ERROR: Sandbox Trap: CPU Fuel Exhausted (Runaway AI or Infinite Loop Detected)",
+                    );
+                    return Ok(final_output);
+                }
+
+                // Any other trap: Rust panic, C abort, out-of-bounds access, null or
+                // mismatched indirect call (e.g. a stale ore-ld pointer), stack overflow...
+                crate::kprintln!("-> [SANDBOX TRAP] Execution halted: {}", e);
+                final_output.push_str(&format!("\nKERNEL ERROR: {}", e));
+                Ok(final_output)
             }
         }
     }
@@ -163,5 +187,66 @@ impl WasmSandbox {
             tmp_dir,
             on_headers,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasmtime_wasi::I32Exit;
+
+    fn run(exec_result: std::result::Result<(), wasmtime::Error>) -> String {
+        WasmSandbox::format_output(
+            exec_result,
+            MemoryOutputPipe::new(1024),
+            MemoryOutputPipe::new(1024),
+        )
+        .expect("format_output never returns Err")
+    }
+
+    #[test]
+    fn normal_return_is_success() {
+        assert!(!run(Ok(())).contains("KERNEL ERROR"));
+    }
+
+    #[test]
+    fn exit_status_zero_is_success() {
+        assert!(!run(Err(wasmtime::Error::new(I32Exit(0)))).contains("KERNEL ERROR"));
+    }
+
+    #[test]
+    fn nonzero_exit_status_is_failure() {
+        // e.g. Go panic (2) or uncaught Python exception (1)
+        let out = run(Err(wasmtime::Error::new(I32Exit(2))));
+        assert!(out.contains("KERNEL ERROR: Guest exited with status 2"));
+    }
+
+    #[test]
+    fn out_of_fuel_is_reported() {
+        let out = run(Err(wasmtime::Error::new(Trap::OutOfFuel)));
+        assert!(out.contains("KERNEL ERROR: Sandbox Trap: CPU Fuel Exhausted"));
+    }
+
+    #[test]
+    fn other_traps_are_failures() {
+        let out = run(Err(wasmtime::Error::new(Trap::TableOutOfBounds)));
+        assert!(out.contains("KERNEL ERROR"));
+    }
+
+    #[test]
+    fn trap_backtrace_text_is_not_mistaken_for_exit() {
+        // Regression: Zig traps carry `start.startWasi` in their backtrace, and Go traps can
+        // carry `runtime.exit`. Only a typed I32Exit may count as an exit.
+        for frame in ["start.startWasi", "runtime.exit", "proc_exit", "guest exit"] {
+            let err = wasmtime::Error::new(Trap::IndirectCallToNull)
+                .context(format!("wasm backtrace: 0: {}", frame));
+            assert!(run(Err(err)).contains("KERNEL ERROR"), "frame `{}`", frame);
+        }
+    }
+
+    #[test]
+    fn exit_is_detected_through_added_context() {
+        let err = wasmtime::Error::new(I32Exit(0)).context("wasm backtrace: ...");
+        assert!(!run(Err(err)).contains("KERNEL ERROR"));
     }
 }

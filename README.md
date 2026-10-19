@@ -131,11 +131,31 @@ The SDKs hide the ABI details: `ore.h` (`ore_load`, `ORE_BIND`) for C and C++, t
 - ✅ The same `.wasi.so` runs on Linux, macOS, and Windows without rebuilding.
 - ⚠️ A plugin is **not** isolated from its host. They share one linear memory, so a buggy plugin can corrupt host data, just as a native shared library could. Only load plugins you trust as much as the host.
 
-**Hot-swapping.** A long-running host can `ore_dlopen` a new version of a plugin and re-bind its function pointers. The host's state is untouched because it lives in the host's memory, not the plugin's. The old version stays loaded until `dlclose` exists.
+**Unloading.** `ore_dlclose(handle)` unloads a plugin immediately. Its table slots are nulled, so calling a stale function pointer traps instead of running freed code. Its 1 MiB slab is zeroed and reused by the next `ore_dlopen`. When a call fails, `ore_dlerror` returns the reason as a string. The SDKs wrap these as `ore_close` / `ore_error` (C), `Drop` / `Plugin::last_error` (Rust), and `close` / `lastError` (Zig).
+
+**Hot-swapping.** A long-running host can `ore_dlopen` a new version of a plugin, re-bind its function pointers, and then `ore_dlclose` the old handle. The host's state is untouched because it lives in the host's memory, not the plugin's.
 
 **Why only Rust, C, C++, and Zig?** These toolchains can emit position-independent WebAssembly that uses an *imported* memory and table. Garbage-collected runtimes (Python, JavaScript, Go) expect to own the whole linear memory, so they can't share one with another module's allocator. They use regular `.wasm` tools instead.
 
-**Current limits:** each plugin gets a fixed 1 MiB data region; there's no `dlclose` or `dlerror` yet; symbols aren't resolved between plugins; and plugins are compiled on every `ore_dlopen` rather than AOT-cached.
+#### is Ore POSIX(`dlfcn.h`) compliant?
+
+ore-ld has its own `dlopen`: `ore_dlopen`, together with `ore_dlsym`, `ore_dlclose`, and `ore_dlerror`. These deliberately don't copy the POSIX `<dlfcn.h>` signatures or semantics. POSIX assumes a process-wide symbol namespace (`RTLD_GLOBAL`), lazy binding, and reference-counted unloading. None of these map cleanly onto WebAssembly, where a module's functions are only reachable through its table. ore-ld keeps the model explicit instead:
+
+- Each plugin gets its own handle.
+- Symbols are resolved one at a time through `ore_dlsym`.
+- `ore_dlclose` unloads immediately, without reference counting.
+- Errors come back through `ore_dlerror`.
+
+The calls are `dlopen`-*style*, so porting existing C plugin code is mostly mechanical.
+
+**Current limits:**
+
+- Each plugin gets a fixed 1 MiB data region.
+- `ore_dlclose` doesn't run plugin destructors.
+- wasmtime keeps a closed plugin's instance until the agent's execution ends.
+- Function pointers a plugin hands to the host directly, rather than through `ore_dlsym`, are not nulled on close.
+- Symbols aren't resolved between plugins.
+- Plugins are compiled on every `ore_dlopen` rather than AOT-cached.
 
 More: [Polyglot Memory Fusion internals](docs/kernel-internals/polyglot-memory-fusion.md) · [Building plugins](docs/building-plugins.md)
 

@@ -1969,6 +1969,12 @@ async fn main() {
                         let mut cmd = std::process::Command::new("zig");
                         cmd.arg(compiler).arg(filepath);
 
+                        // WASI's libc++ ships without exception support (no __cxa_throw), so let
+                        // libc++ abort (-> WASM trap) instead of throwing, e.g. in std::vector.
+                        if is_cpp {
+                            cmd.arg("-fno-exceptions");
+                        }
+
                         let tmp_include_dir = get_ore_dir().join(".tmp_build").join("cpp_inject");
                         if *shared || *host {
                             fs::create_dir_all(&tmp_include_dir).unwrap();

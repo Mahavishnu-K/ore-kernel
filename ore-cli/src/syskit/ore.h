@@ -27,6 +27,12 @@ extern int __ore_dlopen(const char* filename, unsigned int len);
 __attribute__((import_module("env"), import_name("ore_dlsym")))
 extern int __ore_dlsym(int handle, const char* symbol, unsigned int len);
 
+__attribute__((import_module("env"), import_name("ore_dlclose")))
+extern int __ore_dlclose(int handle);
+
+__attribute__((import_module("env"), import_name("ore_dlerror")))
+extern int __ore_dlerror(char* buffer, unsigned int max_len);
+
 // A safe handle for a loaded ORE Plugin
 typedef int OrePlugin;
 
@@ -40,6 +46,14 @@ static inline unsigned int __ore_strlen(const char* str) {
 // Elegant API to load a plugin
 static inline OrePlugin ore_load(const char* plugin_name) {
     return __ore_dlopen(plugin_name, __ore_strlen(plugin_name));
+}
+
+static inline int ore_close(OrePlugin plugin) {
+    return __ore_dlclose(plugin);
+}
+
+static inline int ore_error(char* buffer, unsigned int max_len) {
+    return __ore_dlerror(buffer, max_len);
 }
 
 // Macro to automatically cast the function pointer and bind it to a variable

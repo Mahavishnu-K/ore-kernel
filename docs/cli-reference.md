@@ -4,6 +4,8 @@
 
 The CLI binary is `ore`. Install it with `cargo install --path ore-cli`.
 
+Most commands talk to the running kernel (`ore-server`) using the token in `ore-kernel.token`, and render its JSON responses as tables and dashboards. `ore init`, `ore pull`, `ore manifest`, and `ore mktool` work without the kernel.
+
 ---
 
 ## System Commands
@@ -29,42 +31,30 @@ Check if the kernel daemon is online.
 
 ```bash
 ore status
-
-# Output:
-# Ore Kernel Status: ONLINE
-# Engine: native
 ```
+
+Shows an **ORE KERNEL SYSTEM STATUS** panel: kernel state and version, inference engine, compute device, home directory, loaded models, registered agents, and uptime. If the kernel isn't reachable, it says so.
 
 ---
 
 ### `ore top`
 
-View kernel telemetry - driver info, scheduler state, firewall status.
+View kernel telemetry.
 
 ```bash
 ore top
-
-# Output:
-# === Ore KERNEL TELEMETRY ===
-# Driver      : Native Candle Engine
-# Scheduler   : ACTIVE (Model: qwen2.5:0.5b, Users: 1)
-# Firewall    : ARMED
-# Memory GC   : cache_ttl=24h, pipe_ttl=32h
 ```
+
+Shows host hardware and OS (CPU, RAM, load), the accelerator and its VRAM budget (total, used, free, reserved, safety margin), and the status of each subsystem: inference engine, scheduler, context firewall, Semantic Bus cache, and WASM sandbox.
 
 ---
 
 ### `ore ps`
 
-Show models currently loaded in GPU VRAM.
+Show models currently loaded in memory: engine, device, status, active requests, RAM / VRAM use, time since last use, and the agent currently using each one.
 
 ```bash
 ore ps
-
-# Output:
-# MODEL                     | TOTAL RAM    | GPU VRAM
-# ----------------------------------------------------------
-# qwen2.5:0.5b              | 476       MB | 476       MB
 ```
 
 ---
@@ -75,13 +65,9 @@ List all locally installed models on disk.
 
 ```bash
 ore ls
-
-# Output:
-# REPOSITORY                | SIZE       | UPDATED
-# ------------------------------------------------------
-# qwen2.5:0.5b              | 0.49 GB   | 2026-03-24 14:30:00
-# llama3.2:1b               | 1.12 GB   | 2026-03-22 09:15:00
 ```
+
+Lists each model's name, format (e.g. `GGUF (Quantized)`, `Safetensors`), size, last update, and whether it's loaded.
 
 **Flags:**
 
@@ -93,28 +79,20 @@ ore ls
 
 ```bash
 ore ls --agents
-
-# AGENT ID             | VERSION    | ALLOWED MODELS       | PRIORITY   | STATUS
-# ----------------------------------------------------------------------------------
-# openclaw             | 1.0.0      | llama3.2:1b          | NORMAL     | SECURED
-# terminal_user        | 1.0.0      | llama3.2:1b          | NORMAL     | SECURED
-# writer_agent         | 1.0.0      | llama3.2:1b          | NORMAL     | SECURED
-# cyber_spider         | 1.0.0      | qwen2.5:0.5b, lla... | NORMAL     | UNSAFE
 ```
 
+Lists each agent's ID, version, allowed models, priority, network access, file-system access, execution engine, PII enforcement, and status.
+
 Status values:
-- **SECURED** - PII redaction enabled, no shell access
-- **UNSAFE** - Shell access granted or PII redaction disabled
-- **DORMANT** - No models assigned
+- **UNSAFE**: `can_execute_shell = true`
+- **AIR-GAPPED**: no shell access, network disabled
+- **SECURED**: no shell access, network enabled
 
 ```bash
 ore ls --manifests
-
-# MANIFEST FILE        | NETWORK    | FILE I/O      | EXECUTION       | PII SCRUBBING
-# ------------------------------------------------------------------------------------
-# openclaw.toml        | ENABLED    | Read-Only     | WASM Sandbox    | ACTIVE
-# terminal_user.toml   | BLOCKED    | Air-gapped    | Disabled        | ACTIVE
 ```
+
+Shows the permission matrix per manifest file: network, file I/O, execution mode, and PII scrubbing.
 
 ---
 
@@ -134,6 +112,7 @@ ore pull system-embedder
 
 # WASM Runtimes (for Autonomous Scripts)
 ore pull system-py
+ore pull system-py-data   # CPython with data-science libraries (used by mktool --env data)
 ore pull system-js
 ```
 
@@ -210,7 +189,7 @@ ore manifest my_agent
 The wizard dynamically prompts based on selections:
 - **Resources**: Configures `max_tokens_per_minute`, Stateful Paging, and Memory Compaction limits (`max_json_tokens`).
 - **Network**: Prompts to block data exfiltration (forces `allowed_methods = ["GET"]`).
-- **Execution**: Configures WASM execution, `allowed_language_runtimes`, and Raw Host Shell access.
+- **Execution**: Configures WASM execution, `allowed_language_runtimes`, Raw Host Shell access, and whether this is a **coding/database agent** (`is_coding_agent`), which stops the firewall from blocking prompts that contain SQL or code.
 - **IPC**: Configures Agent-to-Agent Swarm, Semantic Pipes, Semantic Persistence, and Time Decay.
 
 Saves the manifest to `manifests/<app_id>.toml`. See [Manifest Reference](./manifest-reference.md).
@@ -239,7 +218,7 @@ ore compact my_agent
 
 ### `ore kill <app_id>`
 
-Emergency kill-switch for runaway agents.
+Emergency kill-switch for runaway agents: drops the agent's in-memory KV cache from the engine. Its frozen memory on disk is kept; use `ore clear` to wipe that too.
 
 ```bash
 ore kill my_agent
@@ -274,12 +253,18 @@ ore mktool script.py --env data   # Python only: compiles with NumPy, Pandas, et
 | Flag | Description |
 |---|---|
 | *(No flag)* | Compiles as a standard WASM Tool. Outputs to `~/.ore/tools`. |
-| `--host` | Compiles as a WASM Tool that intends to *load plugins* via Memory Fusion. |
-| `--shared` | Compiles as a dynamically loadable plugin (`.wasi.so`) for Memory Fusion. Outputs to `~/.ore/plugins`. |
-| `--name <name>` | Custom output name. Defaults to the filename or directory name. |
-| `--env <env>` | Python only: `pure` (RustPython AOT, ~25MB) or `data` (CPython 3.14 with Data Science libs, ~110MB). |
+| `-H`, `--host` | Compiles as a WASM Tool that *loads plugins* via Memory Fusion. Outputs to `~/.ore/tools`. |
+| `-s`, `--shared` | Compiles as a dynamically loadable plugin (`.wasi.so`) for Memory Fusion. Outputs to `~/.ore/plugins`. Rust, C, C++, and Zig only. |
+| `-n`, `--name <name>` | Custom output name. Defaults to the filename or directory name. |
+| `-e`, `--env <env>` | Python only: `pure` (RustPython AOT, ~25MB, default) or `data` (CPython 3.14 with Data Science libs, ~110MB). |
+
+`--host` and `--shared` can't be combined. See [Building Plugins](./building-plugins.md) for what each flag passes to the compiler.
 
 Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).
+
+**Toolchains:** Rust needs `cargo`/`rustup` (targets are added automatically). C, C++, and Zig are compiled with `zig` (`zig cc` / `zig c++`), which must be on your `PATH`. Python tools use the `system-py` runtimes, which are pulled automatically if missing.
+
+**C++ note:** WASI's libc++ has no exception support, so C++ is compiled with `-fno-exceptions`. `try`/`catch` won't compile, and code that would throw (for example an out-of-range `vector::at`) aborts instead, which ends the tool with a trap.
 
 > **Offline Toolchain:** `ore mktool` compiles cartridges completely offline and does not require `ore-server` to be running or an active security token.
 

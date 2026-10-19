@@ -2,7 +2,7 @@
 
 > Pure-Rust GGUF inference - zero external dependencies.
 
-**Source:** [`ore-core/src/native/`](../../ore-core/src/native/)
+**Source:** [`ore-core/src/inference/native/`](../../ore-core/src/inference/native/)
 
 ---
 
@@ -11,16 +11,19 @@
 The Native Candle Engine is Ore's built-in inference backend, powered by Hugging Face's [Candle](https://github.com/huggingface/candle) framework. It runs quantized GGUF models directly on CPU, CUDA, or Metal - no Python, no daemon, no external runtime.
 
 ```
-ore-core/src/native/
-├── mod.rs               NativeDriver (entry point, model loading, hardware detection)
-├── engine.rs            OreEngine enum (dispatches to architecture-specific loaders)
+ore-core/src/inference/native/
+├── mod.rs               NativeDriver (hardware detection, agent switching, generation, token counting)
+├── engine.rs            OreEngine enum + architecture router (OreEngine::load)
+├── kv_manager.rs        Flattens / restores KV-cache tensors for .safetensors paging
 ├── gguf_tokenizer.rs    GGUF metadata tokenizer extractor with JIT caching
 └── models/
-    ├── llama.rs          Llama family model loader
-    ├── qwen2.rs          Qwen2 family model loader
-    ├── qwen3.rs          Qwen3 MoE family model loader
-    ├── qwen3_moe.rs      Qwen3 MoE implementation
-    ├── transformers/     Specialized implementations (e.g. fused_moe)
+    ├── llama.rs          Llama family
+    ├── qwen2.rs          Qwen2 family
+    ├── qwen3.rs          Qwen3 (dense)
+    ├── qwen3_moe.rs      Qwen3-MoE (also loads qwen2moe GGUFs)
+    ├── transformers/     Quantized layers, quantized var builder, fused MoE
+    ├── nn/               KV cache
+    ├── utils/            Tracing helpers
     ├── bert.rs           BERT embedder (all-MiniLM)
     └── nomic.rs          Nomic v1.5 embedder (NomicBertModel with custom RoPE/SwiGLU)
 ```
@@ -32,9 +35,9 @@ ore-core/src/native/
 On boot, the `NativeDriver` probes for available compute hardware:
 
 ```
-CUDA available?  → Use CUDA
-Metal available? → Use Metal
-Neither?         → Fall back to CPU
+CUDA available?  → Use CUDA device 0
+Metal available? → Use Metal device 0
+Neither (or init fails)? → Fall back to CPU
 ```
 
 The selected `candle_core::Device` is passed to all model loaders. No manual configuration required.
@@ -45,23 +48,48 @@ The selected `candle_core::Device` is passed to all model loaders. No manual con
 
 When an inference request arrives and the model isn't loaded:
 
-1. **Locate the model** - Searches `models/<model_name>/` for `.gguf` files
+1. **Locate the model** - Searches `models/<model_name>/` for `.gguf` files (`:` in the name becomes `-`)
 2. **Instant Boot (`memmap2`)** - Maps the file directly into virtual memory using the OS's `mmap` syscall, achieving sub-50ms boot times by letting the OS lazily stream required weight pages into the GPU instead of stalling system RAM.
 3. **Read GGUF metadata** - Extracts architecture type from `general.architecture` field via the memory-mapped cursor without reading the entire file.
-4. **Route to loader** - Dispatches to Llama, Qwen2, or Qwen3 MoE loader based on architecture.
+4. **Route to loader** - `OreEngine::load` matches `general.architecture`: `llama`, `qwen2`, `qwen3`, or `qwen3moe` / `qwen2moe`. Anything else fails with `Architecture not supported natively`.
 5. **Store in engine** - The loaded model and its memory-mapped file lock are held as an `ActiveEngine` until evicted.
 
 ### `OreEngine` Enum
 
 ```rust
 pub enum OreEngine {
-    Llama(/* architecture-specific model state */),
-    Qwen2(/* architecture-specific model state */),
-    Qwen3(/* architecture-specific model state */),
+    Qwen2(Qwen2Model),
+    Llama(LlamaModel),
+    Qwen3(Qwen3Model),
+    Qwen3Moe(Qwen3MoeModel),
 }
 ```
 
-Each variant wraps the architecture-specific model loader and implements a common interface for text generation.
+`impl OreEngine` gives every architecture the same interface: `forward`, `num_layers`, and the KV-cache operations used by paging (`clear_kv_cache`, `truncate_kv_cache`, `get_kv_cache_len`, `get_kv_cache`, `set_kv_cache`).
+
+Sampling uses Candle's `LogitsProcessor` with temperature `0.7` and a fixed seed.
+
+---
+
+## One Active Model, Many Agents
+
+`NativeDriver` holds **one** active engine at a time (model weights + KV cache + the agent currently using it). On each `generate_text` call it compares the request with what's loaded:
+
+| Situation | What happens |
+|---|---|
+| Same model, same agent | **Hot hit**: keep the KV cache in RAM and skip the SSD |
+| Same model, different agent | **Agent swap**: freeze the old agent's KV cache to SSD (if it uses `stateful_paging`), then clear the cache but keep the weights |
+| Different model | **Model reload**: freeze the old agent's KV cache, drop the weights, and memory-map the new model |
+
+Then, for a `stateful_paging` agent that wasn't a hot hit, the driver calls `Pager::page_in_kv_cache`. It restores the saved cache only if its **fingerprint** matches the agent's current history, so a stale cache is never applied to a changed conversation. With a valid cache, prefill is skipped for the saved tokens; otherwise the cache is rebuilt from the JSON history.
+
+The SSD write runs as a background task, and generation waits for it to finish before starting. See [Memory Management](./memory-management.md) for the file format.
+
+---
+
+## Token Counting
+
+`NativeDriver` implements `count_tokens`: it encodes text with the active model's tokenizer (or the one on disk) and returns the exact count. The inference handler only asks for it when its fast estimate reaches 80% of the agent's context limit. See [Hardware Abstraction Layer → Token Counting](./hardware-abstraction-layer.md#token-counting).
 
 ---
 
@@ -81,7 +109,7 @@ Tier 2: Extract from GGUF metadata
 
 ### Tier 2: GGUF Metadata Extraction
 
-Source: [`ore-core/src/native/gguf_tokenizer.rs`](../../ore-core/src/native/gguf_tokenizer.rs)
+Source: [`ore-core/src/inference/native/gguf_tokenizer.rs`](../../ore-core/src/inference/native/gguf_tokenizer.rs)
 
 Some GGUF files embed tokenizer data in their metadata. The engine extracts this data, constructs a tokenizer JSON, and **caches it to disk** so subsequent loads skip the extraction. This is a JIT (just-in-time) caching strategy - the first load is slow, every load after is instant.
 
@@ -89,7 +117,7 @@ Some GGUF files embed tokenizer data in their metadata. The engine extracts this
 
 ## Streaming Token Generation
 
-Tokens are generated one-at-a-time and sent through a `tokio::sync::mpsc::UnboundedSender<String>`:
+Tokens are generated one at a time inside `spawn_blocking` and sent through a `tokio::sync::mpsc::UnboundedSender<String>`:
 
 ```
 Model generates token
@@ -101,7 +129,7 @@ tx.send(token_text)
 Handler receives via rx
      │
      ▼
-Streamed to client as text/event-stream
+Streamed to the client as a chunked text body
 ```
 
 This enables real-time streaming - the client sees tokens as they're generated, not all at once after completion.
@@ -110,7 +138,7 @@ This enables real-time streaming - the client sees tokens as they're generated, 
 
 ## Native System Embedders
 
-**Source:** [`ore-core/src/native/models/bert.rs`](../../ore-core/src/native/models/bert.rs) | [`ore-core/src/native/models/nomic.rs`](../../ore-core/src/native/models/nomic.rs)
+**Source:** [`ore-core/src/inference/native/models/bert.rs`](../../ore-core/src/inference/native/models/bert.rs) | [`ore-core/src/inference/native/models/nomic.rs`](../../ore-core/src/inference/native/models/nomic.rs)
 
 The kernel includes a built-in `SystemEmbedder` abstraction that generates vector embeddings using Safetensor models. Two architectures are supported:
 
@@ -161,14 +189,14 @@ No manual memory management. No garbage collector. The Rust type system enforces
 
 | Format | Type | Models | Pull Command |
 |---|---|---|---|
-| **GGUF** | Quantized weights | Llama 3.2, Qwen 2.5, Qwen 3 MoE, etc. | `ore pull llama3.2:1b` |
-| **Safetensors** | Full-precision weights | BERT embedders | `ore pull system-embedder` |
+| **GGUF** | Quantized weights | Llama 3.x, Qwen 2.5, Qwen 3, Qwen 3 MoE, DeepSeek-R1 distills (Qwen/Llama based) | `ore pull llama3.2:1b` |
+| **Safetensors** | Full-precision weights | BERT (all-MiniLM) and Nomic embedders | `ore pull all-minilm`, `ore pull system-embedder` |
 
 ### GGUF vs Safetensors
 
 | | GGUF | Safetensors |
 |---|---|---|
-| **Purpose** | Text generation (LLMs) | Embeddings (BERT) |
+| **Purpose** | Text generation (LLMs) | Embeddings (BERT / Nomic) |
 | **Precision** | Quantized (Q4, Q8, etc.) | Full precision (f32) |
 | **Size** | Smaller (quantized) | Larger (full weights) |
 | **Metadata** | Includes architecture info, can embed tokenizer | Requires separate config files |

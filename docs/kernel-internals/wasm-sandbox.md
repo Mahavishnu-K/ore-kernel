@@ -86,6 +86,7 @@ ore-core/src/sandbox/
 ├── cache.rs             # Ahead-Of-Time (.cwasm) compiler, timestamp validator & mmap loader
 ├── vfs.rs               # WASI VFS configuration, UNC sanitization & capability mounts
 ├── shims.rs             # Host syscalls (ore::fetch), dynamic shadowing (sock_accept) & OS table
+│                        # (the ore-ld linker in ore-core/src/linker/ is registered here too)
 ├── portals/             # Concurrent VFS background daemons
 │   ├── mod.rs           # Portal daemon coordinator (start_all)
 │   ├── crypto.rs        # Dedicated .ore_crypto portal (atomic req.bin / res.bin loop)
@@ -113,7 +114,7 @@ To allow modern Python and JavaScript packages to run inside pure WASI without n
 ### Python WASI Bootstrap Shim (`shims/python/bootstrap.py`)
 - **WASI Asyncio Event Loop**: Implements `WasiEventLoop` and `WasiSelector` bypassing missing `socketpair` calls, utilizing non-blocking `time.sleep` poll hooks that suspend the VM without burning CPU instructions.
 - **Transparent `requests` & `httpx` Polyfills**: Shims `requests.get()`, `requests.post()`, `requests.Session()`, `httpx.get()`, `httpx.post()`, and `httpx.Client()` directly into the Ore Network Portal.
-- **HTTP Metadata & Headers**: Implements `CaseInsensitiveDict` for headers, cookie jar persistence, and `Ore_Response` streaming.
+- **HTTP Metadata & Headers**: Implements `CaseInsensitiveDict` for headers, cookie jar persistence, and `ORE_Response` streaming.
 
 ---
 
@@ -139,25 +140,24 @@ Subsequent Executions (Cache Hit)                                  ▼
 The sandbox has **zero raw TCP/UDP socket access**. All network I/O is routed through kernel-controlled portals:
 
 ```text
-WASM Guest (Python / JS)
+WASM Guest (any language via ore.fetch, or Python / JS via the shims)
        │
-       │ Writes request to /.ore_network_portal/in/
+       │ Writes request to .ore_network/req_<id>.json (in its /ore_tmp)
        ▼
 ┌──────────────────────────────────────────────┐
-│ Background Network Watcher Thread (Host)     │
-│ 1. Parse URL & target domain                 │
-│ 2. Check [[network.rules]] in Manifest       │
-│    - Domain whitelist                        │
-│    - HTTP method whitelist (GET, POST, etc.) │
-│    - Path prefix whitelist                   │
-│    - Localhost isolation check               │
-│ 3. Execute reqwest HTTP call with timeout    │
-│ 4. Stream response to disk (/ore_tmp/)       │
-│ 5. Write metadata & status to out pipe       │
+│ Background Network Watcher Thread (Host)     │  sandbox/portals/network.rs
+│ 1. Parse URL & target host                   │
+│ 2. Localhost check (allow_localhost_access)  │  sandbox/net/fetch.rs
+│ 3. Check [[network.rules]] in Manifest       │
+│    - Host must equal `domain` (or "*")       │
+│    - Method must be in `allowed_methods`     │
+│ 4. Execute reqwest HTTP call (60 s timeout)  │
+│ 5. Stream response body to disk              │
+│ 6. Write res_<id>.bin + res_<id>.meta        │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
-       Reads response from /.ore_network_portal/out/
+       Guest reads the response files back
 ```
 
 ### Key Security Guarantees
@@ -165,6 +165,13 @@ WASM Guest (Python / JS)
 - **Path Traversal Protection**: Filenames written by network downloads are sanitized against `..`, `/`, and `\` paths.
 - **Zero-RAM Response Streaming**: Incoming HTTP bodies stream directly to ephemeral files in `/ore_tmp`, preventing agents from crashing host memory with large payloads.
 - **Ephemeral Auto-Destruction**: The `/ore_tmp` host folder is bound to a Rust `TempDirGuard` and wiped immediately when execution ends.
+
+### Current Limits
+- `[[network.rules]].allowed_paths` is parsed but **not enforced**. Only the host and method are checked.
+- The HTTP client follows redirects (up to 10) without re-checking them against the rules.
+- Only `localhost`, `127.0.0.1`, `0.0.0.0`, and `[::1]` count as local. Private ranges such as `10.x` and `192.168.x` aren't blocked.
+
+See [Security Model → Known Limitations](../security-model.md#known-limitations).
 
 ---
 
@@ -189,9 +196,28 @@ The sandbox isolates file I/O using capability-based directories (`cap-std`):
 
 ## Deterministic CPU Fuel Limits
 
-- Fuel is injected into the Wasmtime store via `store.set_fuel(fuel_limit)`.
+- Fuel metering is enabled on the engine (`config.consume_fuel(true)`) and injected into each store via `store.set_fuel(fuel_limit)`.
 - Configured by manifest: `[execution] max_cpu_instructions` (default: **5,000,000,000 instructions**, roughly 2-3 seconds of compute).
-- If an agent script enters an infinite loop or runaway computation, execution halts with an `Out of Fuel` trap, protecting host resources.
+- If an agent script enters an infinite loop or runaway computation, execution halts with `Trap::OutOfFuel`, protecting host resources.
+- There is **no memory limit** yet (no `StoreLimits`): a guest can grow its linear memory up to the wasm32 maximum of 4 GiB.
+
+---
+
+## How a Run Ends (Result Reporting)
+
+`WasmSandbox::format_output` decides the outcome from wasmtime's **typed error**, never from the error message. The message includes the guest's wasm backtrace, so matching on text (for example Zig's `start.startWasi` frame) could mistake a crash for a clean exit.
+
+The response always contains the guest's stdout, followed by `--- STDERR ---` and stderr if stderr isn't empty. stdout and stderr are each captured into a 10 MiB in-memory pipe. Then:
+
+| Outcome | Detected by | Appended to the output |
+|---|---|---|
+| Entry point returned | `Ok(())` | nothing |
+| `proc_exit(0)` (e.g. returning from `main`) | `wasmtime_wasi::I32Exit(0)` | nothing |
+| `proc_exit(n)`, `n ≠ 0` (Go panic → 2, uncaught Python exception → 1) | `wasmtime_wasi::I32Exit(n)` | `KERNEL ERROR: Guest exited with status n` |
+| Fuel ran out | `wasmtime::Trap::OutOfFuel` | `KERNEL ERROR: Sandbox Trap: CPU Fuel Exhausted (Runaway AI or Infinite Loop Detected)` |
+| Any other trap (Rust panic, C `abort`, out-of-bounds access, null or stale `call_indirect`, stack overflow) | anything else | `KERNEL ERROR: <trap>` |
+
+Every failure ends with exactly one `KERNEL ERROR:` line, so an agent can detect failure the same way for every language. The kernel logs `[SANDBOX] Program exited …` for exits and `[SANDBOX TRAP] …` for traps. These cases are covered by unit tests in `ore-core/src/sandbox/mod.rs`.
 
 ---
 

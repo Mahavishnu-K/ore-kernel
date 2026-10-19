@@ -1,22 +1,27 @@
 # Memory Management
 
-> OS-style page files for agent conversation history.
+> OS-style page files for agent conversation history, physical KV caches, and semantic pipes.
 
-**Source:** [`ore-core/src/memory.rs`](../../ore-core/src/memory.rs)
+**Source:** [`ore-core/src/memory.rs`](../../ore-core/src/memory.rs) (`Pager`) · Compaction: [`ore-server/src/handlers/inference.rs`](../../ore-server/src/handlers/inference.rs)
 
 ---
 
 ## Overview
 
-The `Pager` provides an operating system-style page file mechanism for agent conversation context. When an agent finishes an inference request, its chat history is serialized to JSON on the SSD. On the next request, the history is restored from disk, enabling multi-turn conversations across kernel restarts.
+The `Pager` gives agents an operating-system-style page file. There are two tiers:
 
-This mirrors how an OS pages idle processes to disk - agents that aren't actively running don't consume RAM.
+1. **JSON history:** an agent's chat history, written to SSD after every response and read back before the next one. Conversations survive kernel restarts.
+2. **Physical KV cache:** the model's attention key/value tensors, saved as `.safetensors` when the agent loses the engine and restored when it returns, so prefill isn't repeated.
+
+Agents that aren't running don't hold RAM: their state lives in the `memory/` directory of the Ore base directory.
 
 ---
 
 ## Data Structures
 
 ### `ContextMessage`
+
+Defined in `ore-common/src/types.rs` and re-exported by `memory.rs`:
 
 ```rust
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -26,158 +31,144 @@ pub struct ContextMessage {
 }
 ```
 
-This is the universal message format used across **all** model architectures (Llama, Qwen, etc.). The driver converts it to architecture-specific chat templates at inference time.
+This is the universal message format for every architecture. The driver turns it into the model's chat template at inference time.
 
 ---
 
-## Operations
-
-### Page Out (RAM → SSD)
+## Tier 1: JSON History
 
 ```rust
-pub fn page_out_history(app_id: &str, history: &Vec<ContextMessage>) {
-    let swap_dir = Self::get_swap_dir();
-    let path = swap_dir.join(format!("{}.json", app_id));
-
-    if let Ok(data) = serde_json::to_string_pretty(history) {
-        let _ = fs::write(&path, data);
-    }
-}
+pub fn page_out_history(app_id: &str, history: &Vec<ContextMessage>)  // → memory/<app_id>.json
+pub fn page_in_history(app_id: &str) -> Vec<ContextMessage>           // empty Vec if none
 ```
 
-Serializes the agent's full chat history to `memory/<app_id>.json` as pretty-printed JSON. Called **after** every inference response.
+- **Page out** pretty-prints the full history to `memory/<app_id>.json`. The inference handlers call it **after every response**, before the GPU lease is released.
+- **Page in** restores it before inference. A missing or unreadable file returns an empty history.
 
-### Page In (SSD → RAM)
+---
+
+## Tier 2: KV-Cache Paging
 
 ```rust
-pub fn page_in_history(app_id: &str) -> Vec<ContextMessage> {
-    let swap_dir = Self::get_swap_dir();
-    let path = swap_dir.join(format!("{}.json", app_id));
-
-    if Path::new(&path).exists()
-        && let Ok(data) = fs::read_to_string(&path)
-        && let Ok(history) = serde_json::from_str::<Vec<ContextMessage>>(&data)
-    {
-        return history;
-    }
-    Vec::new()
-}
+pub fn page_out_kv_cache(app_id: &str, model_name: &str,
+                         tensors: &HashMap<String, Tensor>, fingerprint: &str)
+pub fn page_in_kv_cache(app_id: &str, model_name: &str,
+                        device: &Device, current_fingerprint: &str) -> Option<HashMap<String, Tensor>>
+pub fn get_history_fingerprint(app_id: &str) -> String
 ```
 
-Restores frozen context from disk. Called **before** inference to reconstruct the conversation. Returns an empty `Vec` if no swap file exists.
+### When it happens
 
-### KV-Cache Paging (RAM ↔ SSD)
+KV caches are paged **lazily**, by the native driver, only when an agent loses the engine:
 
-The Pager also handles the physical AI memory state—the Attention Key-Value (KV) Cache tensors.
+- **Page out:** when a different agent or a different model takes over the engine, the outgoing agent's cache is flattened (`KvManager::flatten_cache`) and written to `memory/<app_id>_<model>.safetensors` in a background task.
+- **Page in:** when a `stateful_paging` agent returns and its cache isn't still in RAM, the saved tensors are loaded onto the device and injected into the model (`KvManager::unflatten_cache` → `set_kv_cache`).
+
+If the same agent keeps using the same model, the cache simply stays in RAM ("hot hit") and the SSD isn't touched. See [Native Candle Engine → One Active Model, Many Agents](./native-candle-engine.md#one-active-model-many-agents).
+
+### Fingerprints
+
+Restoring a cache that doesn't match the conversation would corrupt the model's output. So with each cache, the pager writes `memory/<app_id>_<model>.hash`: a SHA-256 over every message's role and content in the JSON history at the time it was saved.
+
+On page-in, the saved hash must equal the fingerprint of the agent's current history. On a mismatch (the history was edited, compacted, or cleared), the cache is ignored (`Context Fingerprint MISMATCH … Forcing Cold Start`) and the model rebuilds its state from the JSON history.
+
+### Measured effect
+
+Resuming an agent on a Ryzen 7 (16 GB RAM, CPU only) took **37.03 s** when prefill was recomputed and **2.41 s** when the saved cache was restored: **15.4× faster**.
+
+---
+
+## Compaction
+
+After each response, the handlers check the agent's `[memory_limits]`:
+
+- **Token cap:** the history's size, estimated with `estimate_tokens_calibrated` and counted exactly with the driver's tokenizer once the estimate reaches 80% of the limit, exceeds `max_json_tokens`.
+- **KV cap:** for `stateful_paging` agents, the saved `.safetensors` file exceeds `max_kv_cache_mb`.
+
+If either cap is hit:
+
+| `auto_summarize_on_cap` | What happens |
+|---|---|
+| `true` (default) | The GPU lease is released and a **background task** asks the model to compress the history into a dense fact summary. The new history is a system message holding the summary, plus the last 2 messages, with a target of 75% of `max_json_tokens`. If the summary is still too long, it's truncated, then the oldest messages are dropped (FIFO). |
+| `false` | The oldest messages are dropped (FIFO, keeping the first message and the last 2) until the history fits `max_json_tokens`. |
+
+Either way, the compacted history is paged out, and for `stateful_paging` agents the saved KV cache is deleted (`delete_kv_cache`) and the in-RAM copy invalidated, because the token sequence has changed.
+
+`ore compact <app_id>` (`GET /compact/:app_id`) runs a summarizing compaction on demand.
+
+---
+
+## Semantic Persistence
 
 ```rust
-pub fn page_out_kv_cache(app_id: &str, model_name: &str, tensors: &HashMap<String, Tensor>) {
-    // Saves raw math matrices to memory/<app_id>_<model_name>.safetensors
-}
-
-pub fn page_in_kv_cache(app_id: &str, model_name: &str, device: &Device) -> Option<HashMap<String, Tensor>> {
-    // Loads the tensors back directly into the GPU/CPU memory
-}
+pub fn page_out_semantic(pipe_name: &str, chunks: &VecDeque<Arc<MemoryChunk>>)  // → memory/<pipe>.pipe
+pub fn page_in_semantic(pipe_name: &str) -> Option<VecDeque<Arc<MemoryChunk>>>
 ```
 
-This prevents the LLM from having to re-process thousands of tokens to rebuild its internal state when an agent is brought back from disk.
+When an agent's manifest has `semantic_persistence = true`, a background thread serializes the pipe to a Bincode `.pipe` file after each write, and pipes are restored from disk when needed. See [IPC & Semantic Bus](./ipc-and-semantic-bus.md).
 
-### Clear Page
+---
+
+## Clearing Memory
 
 ```rust
-pub fn clear_page(app_id: &str) {
-    let swap_dir = Self::get_swap_dir();
-    let _ = fs::remove_file(swap_dir.join(format!("{}.json", app_id)));
-    let _ = fs::remove_file(swap_dir.join(format!("{}.pipe", app_id)));
-
-    // Sweep for any Model-Specific Safetensor KV-Caches
-    if let Ok(entries) = fs::read_dir(&swap_dir) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            if file_name.starts_with(&format!("{}_", app_id)) && file_name.ends_with(".safetensors") {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
-}
+pub fn clear_page(app_id: &str)       // ore clear / GET /clear/:app_id
+pub fn delete_kv_cache(app_id: &str)  // used by compaction
 ```
 
-Wipes an agent's frozen memory. Called via `ore clear <app_id>` or `GET /clear/:app_id`. Removes `.json` fallback files, `.pipe` semantic memory files, and cleans up any model-specific `.safetensors` KV-Caches.
-
-### Semantic Persistence (Page Out / Page In)
-
-The pager now supports freezing entire `SemanticBus` vector pipelines directly to disk using Bincode serialization.
-
-```rust
-pub fn page_out_semantic(pipe_name: &str, chunks: &VecDeque<Arc<MemoryChunk>>) {
-    // ...
-    if let Ok(data) = bincode::serialize(chunks) {
-        let _ = fs::write(&path, data);
-    }
-}
-
-pub fn page_in_semantic(pipe_name: &str) -> Option<VecDeque<Arc<MemoryChunk>>> {
-    // Reads Bincode binary and restores the VecDeque to RAM
-}
-```
-
-When an agent's manifest has `semantic_persistence = true`, the kernel spawns a background thread to automatically serialize the pipe to a `.pipe` file upon any knowledge ingestion.
+- `clear_page` removes `<app_id>.json`, `<app_id>.pipe`, and every `<app_id>_*.safetensors` and `<app_id>_*.hash` file.
+- `delete_kv_cache` removes only the `.safetensors` / `.hash` files, leaving the JSON history.
 
 ---
 
 ## Swap File Formats
 
-The pager generates three types of files in the `memory/` directory:
+All files live in `memory/` under the Ore base directory:
 
-### 1. JSON History (`<app_id>.json`)
-Stores the raw conversation thread. Human-readable and cross-platform:
+| File | Contents |
+|---|---|
+| `<app_id>.json` | Chat history, human-readable JSON array of `{ role, content }` |
+| `<app_id>_<model>.safetensors` | Flattened KV-cache tensors (`:` in the model name becomes `-`) |
+| `<app_id>_<model>.hash` | SHA-256 fingerprint of the history the cache belongs to |
+| `<pipe_name>.pipe` | Bincode-serialized Semantic Bus pipe |
+
+Example `<app_id>.json`:
 
 ```json
 [
-  {
-    "role": "user",
-    "content": "What is a mutex?"
-  },
-  {
-    "role": "assistant",
-    "content": "A mutex (mutual exclusion) is a synchronization primitive..."
-  },
-  {
-    "role": "user",
-    "content": "How does it differ from a semaphore?"
-  }
+  { "role": "user", "content": "What is a mutex?" },
+  { "role": "assistant", "content": "A mutex (mutual exclusion) is a synchronization primitive..." },
+  { "role": "user", "content": "How does it differ from a semaphore?" }
 ]
 ```
-
-### 2. Semantic Pipes (`<pipe_name>.pipe`)
-Binary bincode representations of an agent's `SemanticBus` vectors.
-
-### 3. Safetensors KV-Cache (`<app_id>_<model>.safetensors`)
-Physical snapshot of the AI model's internal memory state (`HashMap<String, Tensor>`). Used to skip prompt re-processing upon wake-up.
 
 ---
 
 ## Manifest Opt-In
 
-Agents must explicitly enable SSD paging in their manifest:
-
 ```toml
 [resources]
-json_history = true
-stateful_paging = true
+json_history = true        # default
+stateful_paging = true     # default: false
+
+[memory_limits]
+max_json_tokens = 8192
+max_kv_cache_mb = 1024
+auto_summarize_on_cap = true
 ```
 
-When `stateful_paging = false` (default), the handler skips the page-in/page-out calls - the agent starts every request with a clean context. Note that `stateful_paging` requires `json_history = true` to prevent KV-cache corruption during memory compaction.
+With `stateful_paging = false`, the KV cache is cleared at the start of every request, and only the JSON history carries context. `stateful_paging = true` requires `json_history = true`: the fingerprint and compaction both depend on the JSON history.
 
 ---
 
 ## Design Decisions
 
-- **JSON, not binary (for chat history)** - Swap files are human-readable on purpose. This makes debugging agent memory trivial (`cat memory/openclaw.json`) and keeps the format cross-platform.
-- **Bincode for Semantic Pipes** - Semantic memory vectors are written as `.pipe` files using Bincode, as Bincode freezes the RAM structure into pure 1s and 0s instantly, allowing high-performance mapping.
-- **Synchronous I/O** - The pager uses `std::fs` (sync) rather than `tokio::fs` (async) for history. Swap files are small (kilobytes), and adding async here would complicate the code path for negligible latency savings. (Semantic persistence runs in a background thread).
-- **Eager writes** - History is paged out after every response, not batched. This means agent context survives even if the kernel crashes unexpectedly.
-- **Memory Limits Compaction** - Swap files are kept in check by the `memory_limits` configuration in the `AppManifest` (`max_json_tokens` and `max_kv_cache_mb`), which trigger automatic summarization when boundaries are hit.
+- **JSON for history.** It's human-readable on purpose (`cat memory/openclaw.json`) and cross-platform.
+- **Fingerprinted caches.** A cache is only reused for exactly the conversation it was computed from.
+- **Lazy KV paging.** Writing a cache costs I/O proportional to the context length, so it only happens when another agent or model needs the engine.
+- **Eager history writes.** History is paged out after every response, so context survives a kernel crash.
+- **Synchronous history I/O.** History files are small, so `std::fs` keeps the code path simple. KV-cache writes and semantic persistence run in background tasks.
+- **Bounded memory.** `[memory_limits]` caps both the history and the cache, and compaction keeps them inside those caps.
 
 ---
 

@@ -14,7 +14,7 @@
 | **Use the CLI** | [CLI Reference](./cli-reference.md) |
 | **Hit the HTTP API** | [API Reference](./api-reference.md) |
 | **Write a secure manifest** | [Manifest Reference](./manifest-reference.md) |
-| **Understand the security model** | [Security Model](./security-model.md) |
+| **Understand the security model and its limits** | [Security Model](./security-model.md) |
 | **Build dynamic WASM plugins** | [Building Plugins](./building-plugins.md) |
 | **Add a new driver or model** | [Extending Ore](./extending-ore.md) |
 
@@ -29,7 +29,7 @@ Deep-dives into each subsystem for contributors who want to understand Ore's bra
 | Memory Management | `ore-core/src/memory.rs` | [Deep Dive](./kernel-internals/memory-management.md) |
 | IPC & Semantic Bus | `ore-core/src/ipc.rs` | [Deep Dive](./kernel-internals/ipc-and-semantic-bus.md) |
 | Hardware Abstraction Layer | `ore-core/src/driver.rs` | [Deep Dive](./kernel-internals/hardware-abstraction-layer.md) |
-| Native Candle Engine | `ore-core/src/native/` | [Deep Dive](./kernel-internals/native-candle-engine.md) |
+| Native Candle Engine | `ore-core/src/inference/native/` | [Deep Dive](./kernel-internals/native-candle-engine.md) |
 | Polyglot Memory Fusion | `ore-core/src/linker/` | [Deep Dive](./kernel-internals/polyglot-memory-fusion.md) |
 | Zero-Trust WASM Sandbox | `ore-core/src/sandbox/` | [Deep Dive](./kernel-internals/wasm-sandbox.md) |
 
@@ -44,11 +44,13 @@ ore-system/
 ├── ore-server/     Axum HTTP daemon (routes, auth middleware, state)
 │   ├── execution/  Modular Execution Engine (Tool, Script, Shell dispatch)
 │   └── shims/      Runtime polyfills (CommonJS require bridge, Python WASI bootstrap)
-├── ore-cli/        Interactive CLI tool (ore init, ore mktool, ore run)
-├── ore-sys/        Rust SDK Macros (`ore_bind!`, `ore_export!`, `Plugin`)
-├── tests/          Polyglot Memory Fusion & Security boundary test suites
-├── plugins/        Pre-compiled `.wasi.so` dynamic plugins
-└── tools/          Pre-compiled `.wasm` Host Agents & Nano-Services
+├── ore-cli/        Interactive CLI tool (ore init, ore mktool, ore run) + C/Zig SDK headers
+├── ore-sys/        Rust SDK for ore-ld (`Plugin`, `ore_bind!`, `ore_export!`)
+├── tests/          Tool sources for Memory Fusion, plugin lifecycle & sandbox security tests
+├── examples/       Python agents and test runners (e.g. wasm_agents/run_plugin_lifecycle.py)
+└── manifests/      Agent permission manifests (.toml)
+
+Runtime data lives in the Ore base directory (`$ORE_DIR`, or `~/.ore`): tools/, plugins/, models/, memory/, runtimes/.
 ```
 
 ## Contributing

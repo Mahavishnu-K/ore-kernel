@@ -52,7 +52,9 @@ pub trait GpuMemoryProvider: Send + Sync {
 ```
 
 - **`NvmlGpuMemoryProvider`**: Leverages NVIDIA Management Library (NVML) to query exact hardware VRAM metrics on dedicated GPUs.
-- **`SystemMemoryProvider`**: Universal fallback powered by `sysinfo` for unified memory architectures (Apple Metal, Intel Iris, AMD APUs, and CPU-only hosts).
+- **`SystemMemoryProvider`**: Fallback powered by `sysinfo`, used whenever NVML can't be initialized. It reports **system RAM**, which is right for unified-memory machines (Apple Silicon, integrated GPUs) and CPU-only hosts, but not for discrete AMD or Intel GPUs.
+
+At boot, `ore-server` tries NVML on GPU `ORE_GPU_ID` (default `0`) and falls back to `SystemMemoryProvider` if that fails.
 
 ### `MemoryAccountant`
 
@@ -107,33 +109,36 @@ pub struct LoadedModel {
 pub struct GpuLease {
     _permit: OwnedSemaphorePermit,
     pub model: String,
+    reserved_kv_cache_mb: u64,
     state: Arc<Mutex<GpuState>>,
-    reserved_vram_mb: u64,
 }
 
 impl Drop for GpuLease {
     fn drop(&mut self) {
-        let state = Arc::clone(&self.state);
         let model_id = self.model.clone();
-        let reserved_mb = self.reserved_vram_mb;
+        let state = Arc::clone(&self.state);
+        let reserved_kv_cache = self.reserved_kv_cache_mb;
 
         tokio::spawn(async move {
             let mut state = state.lock().await;
             if let Some(model) = state.registry.models.get_mut(&model_id) {
                 model.active_requests = model.active_requests.saturating_sub(1);
-                model.last_used = Instant::now();
             }
-            state.accountant.release_reservation(reserved_mb);
+            state.accountant.release_reservation(reserved_kv_cache);
         });
     }
 }
 ```
+
+Only the **KV-cache** estimate is reserved in the `MemoryAccountant`. Model weights count toward the admission check on a cold start, and after that they show up in the provider's live free-memory reading. `last_used` is refreshed when a lease is granted.
 
 ---
 
 ## The Physics: Exact KV-Cache Dimensioning
 
 Instead of guessing memory requirements, `GpuScheduler` inspects the GGUF model header directly using `candle_core::quantized::gguf_file`:
+
+The scheduler opens `models/<model>/model.gguf` in the Ore base directory:
 
 1. **Exact Weight Size**: Read from file metadata on disk.
 2. **Architecture Geometry**:
@@ -143,7 +148,9 @@ Instead of guessing memory requirements, `GpuScheduler` inspects the GGUF model 
 3. **Mathematical Formula**:
    $$\text{Bytes per Token} = 2 \times \text{layers} \times \text{kv\_heads} \times \text{head\_dim} \times 2 \text{ (f16 bytes)}$$
    $$\text{Total KV Bytes} = \text{Bytes per Token} \times \text{max\_tokens}$$
-4. **Config Override**: If declared in `SchedulerConfig::model_overrides`, custom allocations take precedence.
+   `max_tokens` is currently a fixed **8,192**.
+4. **Config Override**: a `[models."<name>"] kv_cache_mb_per_1k` entry in `ore.toml` replaces the computed KV size (see [Configuration](../configuration.md)).
+5. **Fallback**: if the GGUF can't be opened, the scheduler assumes **2,048 MB** of weights and **256 MB** of KV cache.
 
 ---
 
@@ -189,6 +196,16 @@ Agent requests model "qwen2.5:0.5b"
 └──────────────────────────────────────────────┘
 ```
 
+### The three admission tiers
+
+Once a request is admitted, the scheduler logs which case applies (the native driver acts on the same distinction; see [Native Candle Engine](./native-candle-engine.md#one-active-model-many-agents)):
+
+| Tier | Condition | Action |
+|---|---|---|
+| **Perfect hit** | Model loaded, same agent as last time | Reuse everything |
+| **Agent swap** | Model loaded, different agent | Keep the weights; the driver swaps the KV cache |
+| **Cold start** | Model not loaded | `driver.preload_model`, then register it as `Loaded` |
+
 ### Safe Lock Dropping during Eviction
 
 Unloading a heavy model from VRAM involves disk I/O and GPU driver calls that can take hundreds of milliseconds. To avoid freezing the entire kernel, the scheduler:
@@ -208,6 +225,16 @@ Unloading a heavy model from VRAM involves disk I/O and GPU driver calls that ca
 | **Pre-Calculated KV Footprint** | Prevents middle-of-generation OOM crashes by guaranteeing KV cache headroom *before* inference starts. |
 | **Safety Margin (512 MB)** | Accommodates GPU driver allocations, display servers, and CUDA context overhead. |
 | **Asynchronous RAII Drop** | Releasing permits and KV reservations happens in a detached task upon lease drop, preventing latency on the request critical path. |
+
+---
+
+## Current Limitations
+
+- **Model-name mismatch disables exact estimates.** `ore pull` stores models under names with `:` replaced by `-` (`models/qwen2.5-0.5b/`), but the scheduler opens `models/<name as requested>/model.gguf` (`models/qwen2.5:0.5b/`). For names containing `:`, the GGUF isn't found and the **2,048 MB / 256 MB fallback** is used instead of the computed size.
+- **Fixed context assumption.** KV estimates assume 8,192 tokens, not the agent's `max_json_tokens`.
+- **No priorities.** `gpu_priority` from the manifest isn't used; leases are granted in the order the 32 permits are acquired.
+- **One model at a time in the native driver.** The registry can track several co-resident models (useful with Ollama), but `NativeDriver` holds a single active model, so switching models on the native engine always reloads.
+- **Discrete non-NVIDIA GPUs** are accounted using system RAM (see `SystemMemoryProvider` above).
 
 ---
 

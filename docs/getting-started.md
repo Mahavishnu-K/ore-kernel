@@ -1,14 +1,15 @@
 # Getting Started
 
-> From zero to local inference in under 5 minutes.
+> From zero to local inference, a registered agent, and a sandboxed tool.
 
 ## Prerequisites
 
 | Requirement | Details |
 |---|---|
 | **Rust toolchain** | `cargo` 1.93+ ([rustup.rs](https://rustup.rs/)) |
-| **For Native engine** | No additional dependencies |
-| **For Ollama engine** | [Ollama](https://ollama.ai/) running as the hardware driver |
+| **For the Native engine** | Nothing else |
+| **For the Ollama engine** | [Ollama](https://ollama.com/) running as the inference backend |
+| **For C, C++, or Zig tools** | [Zig](https://ziglang.org/download/) on your `PATH` (`ore mktool` uses `zig cc` / `zig c++`) |
 
 ## 1. Clone & Build
 
@@ -22,136 +23,135 @@ cargo install --path ore-cli
 
 ## 2. Initialize the System
 
-Run the interactive setup wizard to choose your inference engine and configure memory management:
+Run the interactive setup wizard:
 
 ```bash
 ore init
 ```
 
-```text
-==================================================
- Ore KERNEL :: SYSTEM INITIALIZATION
-==================================================
-> Select your primary AI Execution Engine
-  Ollama (Background daemon, easiest setup)
-  Native (Bare-metal Rust execution, maximum control)
+It asks for:
 
-> Select your Semantic Bus Embedder
-  all-minilm (Fast & Lightweight, 90MB - Best for laptops)
-  system-embedder (Nomic v1.5, High Accuracy, 500MB - Best for desktops)
+- **Execution engine:** `Native` (pure-Rust Candle inference) or `Ollama` (proxy to an Ollama daemon).
+- **Semantic Bus embedder:** `all-minilm` (~90 MB, fast, good for laptops) or `system-embedder` (Nomic v1.5, ~500 MB, more accurate).
+- **Garbage collection:** how many hours embeddings stay cached and semantic-pipe data survives (`0` = forever).
 
->>> CONFIGURING: RAM GARBAGE COLLECTION (GC)
-    (How long should the OS keep idle Agent data in RAM?)
-Mathematical Cache TTL in hours [0 = Infinite]: 24
-Semantic Pipe TTL in hours [0 = Infinite]: 32
-```
-
-This generates your `ore.toml` configuration file. See [Configuration Reference](./configuration.md) for all options.
+This writes `ore.toml` in the Ore base directory. See the [Configuration Reference](./configuration.md) for every option.
 
 ## 3. Boot the Kernel Daemon
 
 ```bash
-# Terminal 1 - start the daemon
-cargo run -p ore-server
+# Terminal 1 - start the daemon (release build: 5–10x faster native inference)
+cargo run --release -p ore-server
 ```
 
-Expected output:
+Expected output (abridged):
 
-```
-=== Ore SYSTEM KERNEL BOOTING ===
+```text
+=== ORE SYSTEM KERNEL BOOTING ===
 -> [SECURITY] Master Token generated and secured to disk.
 -> Sweeping /manifests for installed Apps...
 -> [REGISTRY] Verified & Loaded App: openclaw
--> [REGISTRY] Verified & Loaded App: terminal_user
--> [REGISTRY] Verified & Loaded App: writer_agent
 -> [BOOT] Engaging Native Candle Engine...
-=== Ore KERNEL IS ONLINE ===
+=== ORE KERNEL IS ONLINE ===
 Listening on http://127.0.0.1:6767
 ```
 
-> **⚡ Performance Tip:** Use `cargo run --release -p ore-server` for production workloads. The release profile enables `opt-level = 3`, LTO, and single codegen unit - making Native Candle inference **5–10x faster** than debug builds.
+The kernel writes a session token to `ore-kernel.token`. The CLI reads it automatically; HTTP clients send it as `Authorization: Bearer <token>`.
 
 ## 4. Download Models (Native Engine)
 
 ```bash
-# Pull a GGUF model (streams from HuggingFace)
+# A GGUF chat model (streamed from Hugging Face)
 ore pull qwen2.5:0.5b
-ore pull deepseek-r1:7b
 
-# Pull the system embedder for the Semantic Bus
-ore pull system-embedder
+# The embedder you chose in `ore init` (for the Semantic Bus)
+ore pull all-minilm          # or: ore pull system-embedder
 
-# Pull WASM Runtimes for Autonomous Scripts
+# Optional: runtimes for Python / JavaScript scripts in the sandbox
 ore pull system-py
 ore pull system-js
 ```
 
-For Ollama engine users, pull models via `ollama pull <model>` instead.
+With the Ollama engine, pull models with `ollama pull <model>` instead.
 
 ## 5. Your First Inference
 
 ```bash
-# Streamed inference through the firewall + scheduler
+# Streamed inference through the firewall and scheduler
 ore run qwen2.5:0.5b "Explain what a semaphore is in operating systems"
 
-# Interactive TUI Chat Session (Supports <think> tags for reasoning models)
+# Interactive chat session (renders <think> blocks from reasoning models)
+ore pull deepseek-r1:7b
 ore run deepseek-r1:7b
 ```
 
-## 6. Compile and Run a Python Tool (WASM Sandbox)
+## 6. Register Your First Agent
 
-Ore can natively compile and execute tools written in Python, Rust, C, C++, Zig, JS, and TS within a Zero-Trust WebAssembly sandbox. 
+Every application that talks to Ore needs a manifest. Generate one interactively:
 
-Create a quick Python script `hello.py`:
+```bash
+ore manifest my_agent
+```
+
+The wizard asks which subsystems the agent needs (Privacy, Resources, File System, Network, Execution, IPC) and walks you through each one. It saves `manifests/my_agent.toml`.
+
+For the next step, make sure the **Execution** section allows WASM and lists the tool:
+
+```toml
+[execution]
+can_execute_wasm = true
+allowed_tools = ["hello"]
+```
+
+Restart the kernel after adding or editing a manifest; manifests are loaded at boot. See the [Manifest Reference](./manifest-reference.md) for the full schema.
+
+## 7. Compile and Run a Sandboxed Tool
+
+Ore compiles tools written in Python, Rust, Go, C, C++, Zig, JavaScript, and TypeScript to WebAssembly and runs them in its sandbox.
+
+Create `hello.py`:
+
 ```python
 import sys
 print(f"Hello from the Ore Sandbox! Arguments: {sys.argv[1:]}")
 ```
 
-Compile it into a portable WebAssembly cartridge:
+Compile it (works offline; writes `~/.ore/tools/hello.wasm`):
+
 ```bash
 ore mktool hello.py
 ```
 
-## 7. Register Your First Agent
+Run it as `my_agent`:
 
-Every application that talks to Ore needs a manifest. Generate one interactively:
-
-```text
- ╭─ Secure Manifest Forage ───────────────────────────╮
- │            Target Agent: my_agent                  │
- ╰────────────────────────────────────────────────────╯
- 
- ? Select required sub-systems for this agent:
-   [ ] Privacy      (PII Redaction)
-   [ ] Resources    (GPU Quotas, Models, Paging)
-   [ ] File System  (File System Boundaries)
-   [ ] Network      (Egress Control)
-   [ ] Execution    (WASM/Shell Sandbox)
-   [ ] IPC          (Agent-to-Agent Swarm)
+```bash
+curl -X POST http://127.0.0.1:6767/execute \
+     -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     -H "Content-Type: application/json" \
+     -d '{"app_id": "my_agent", "tool_name": "hello", "args": ["one", "two"]}'
 ```
 
-The wizard walks you through selecting subsystem permissions: privacy, resources, file system, network, execution, and IPC. The generated `.toml` file is saved to `manifests/my_agent.toml`.
-
-See [Manifest Reference](./manifest-reference.md) for the full schema.
+The response is the tool's output. If the tool fails (a trap, a non-zero exit, or running out of CPU fuel), the response ends with a `KERNEL ERROR:` line. See [`POST /execute`](./api-reference.md#post-execute).
 
 ## 8. Verify Everything Works
 
 ```bash
 ore status          # Kernel online?
-ore top             # View kernel telemetry
-ore ps              # Models loaded in VRAM?
+ore top             # Kernel telemetry
+ore ps              # Models loaded in memory?
 ore ls              # Models installed on disk?
-ore ls --agents     # All registered agents + security status
+ore ls --agents     # Registered agents + security status
 ```
 
 ## What's Next?
 
-- **[Architecture](./architecture.md)** - Understand the full request lifecycle and how the subsystems connect
-- **[CLI Reference](./cli-reference.md)** - Every command with examples
-- **[API Reference](./api-reference.md)** - Build your own client against the HTTP API
-- **[Security Model](./security-model.md)** - How Ore protects you from your own agents
-- **[Kernel Internals](./kernel-internals/)** - Deep-dive into each subsystem
+- **[Why Ore?](./why-ore.md)**: The problems Ore solves and the design behind each subsystem
+- **[Architecture](./architecture.md)**: The full request lifecycle and how the subsystems connect
+- **[Building Plugins](./building-plugins.md)**: Zero-copy Memory Fusion plugins with `ore-ld`
+- **[CLI Reference](./cli-reference.md)**: Every command
+- **[API Reference](./api-reference.md)**: Build your own client against the HTTP API
+- **[Security Model](./security-model.md)**: What Ore enforces, and its known limits
+- **[Kernel Internals](./kernel-internals/)**: Deep dives into each subsystem
 
 ---
 

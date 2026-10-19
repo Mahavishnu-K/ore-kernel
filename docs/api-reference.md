@@ -1,10 +1,12 @@
 # API Reference
 
-> All 15 authenticated HTTP routes exposed by the Ore kernel daemon.
+> All 19 authenticated HTTP routes exposed by the Ore kernel daemon.
 
 **Base URL:** `http://127.0.0.1:6767`
 
 **Authentication:** Every request requires a `Authorization: Bearer <token>` header. The token is auto-generated on boot and written to `ore-kernel.token`. Unauthorized requests receive `401 UNAUTHORIZED`.
+
+**Response formats:** `/health`, `/ps`, `/ls`, `/top`, `/agents`, and `/manifests` return **JSON** when the request sends `Accept: application/json`, and a human-readable text table otherwise. The CLI uses the JSON form. Other routes return plain text unless noted.
 
 ---
 
@@ -14,81 +16,91 @@ Source: [`ore-server/src/handlers/system.rs`](../ore-server/src/handlers/system.
 
 ### `GET /health`
 
-Kernel health check. Returns the active engine name.
+Kernel health check.
 
 ```bash
 curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     -H "Accept: application/json" \
      http://127.0.0.1:6767/health
 ```
 
-**Response:**
-```text
-Ore Kernel is ALIVE. Powered by: native
+**JSON response** (`KernelHealthResponse`):
+```json
+{
+  "status": "ONLINE",
+  "version": "0.1.0",
+  "engine": "Native Candle Engine",
+  "device": "Host CPU (SIMD)",
+  "ore_dir": "/home/user/.ore",
+  "loaded_models": 1,
+  "registered_agents": 8,
+  "uptime_seconds": 5321
+}
 ```
+
+Without the `Accept` header, the same information comes back as text starting with `ORE Kernel is ALIVE & HEALTHY (v0.1.0)`.
 
 ---
 
 ### `GET /ps`
 
-List models currently loaded in GPU VRAM.
+List models currently loaded in memory.
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/ps
-```
-
-**Response:**
-```text
-MODEL                     | TOTAL RAM    | GPU VRAM
-----------------------------------------------------------
-qwen2.5:0.5b              | 500       MB | 500       MB
+**JSON response** (`PsResponse`):
+```json
+{
+  "models": [
+    {
+      "model_name": "qwen2.5:0.5b",
+      "engine": "Native Candle Engine",
+      "device": "Host CPU (SIMD)",
+      "status": "IDLE",
+      "active_requests": 0,
+      "host_ram_mb": 500,
+      "gpu_vram_mb": 0,
+      "last_used_secs": 12,
+      "current_app_id": "openclaw"
+    }
+  ],
+  "total_ram_mb": 500,
+  "total_vram_mb": 0
+}
 ```
 
 ---
 
 ### `GET /ls`
 
-List all locally installed models on disk.
+List all models installed on disk.
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/ls
-```
-
-**Response:**
-```text
-REPOSITORY                | SIZE       | UPDATED
-------------------------------------------------------
-qwen2.5:0.5b              | 0.49 GB   | 2026-03-24 14:30:00
+**JSON response** (`LsResponse`):
+```json
+{
+  "models": [
+    {
+      "name": "qwen2.5:0.5b",
+      "format": "GGUF (Quantized)",
+      "size_bytes": 491400032,
+      "modified_at": "2026-03-24 14:30:00",
+      "is_loaded": true
+    }
+  ]
+}
 ```
 
 ---
 
 ### `GET /top`
 
-Get system telemetry and subsystem status.
+System telemetry and subsystem status (what `ore top` displays).
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/top
-```
-
-**Response:**
-```text
-=== Ore Kernel Telemetry ===
-Subsystem            | Status
--------------------  | ------
-Driver (native)      | ACTIVE
-Scheduler (VRAM)     | IDLE (VRAM Empty)
-Context Firewall     | ENFORCING
-Connected Apps       | 3
-```
+**JSON response** (`TopTelemetryResponse`): host telemetry (`host`), the accelerator and its VRAM figures (`accelerator_device`, `vram_total_mb`, `vram_used_mb`, `vram_free_mb`, `vram_reserved_mb`, `vram_safety_margin_mb`), and a status line per subsystem (`engine_name`, `scheduler_summary`, `active_models_count`, `registered_agents_count`, `context_firewall`, `semantic_bus_cache_count`, `wasm_sandbox`). See `ore-common/src/protocol.rs` for the exact schema.
 
 ---
 
 ### `GET /kill/:app_id`
 
-Forcefully kill an agent's context from GPU memory via SIGTERM.
+Emergency stop for an agent's inference state: drops the agent's in-memory KV cache from the engine. Frozen memory on disk is kept (use `/clear` to wipe it).
 
 ```bash
 curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
@@ -104,47 +116,42 @@ SUCCESS: App 'cyber_spider' context wiped from GPU Memory.
 
 ### `GET /agents`
 
-Agent security dashboard - lists all registered agents with security assessment.
+Agent security dashboard: every registered agent with its permissions and a status label.
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/agents
+**JSON response** (`AgentsResponse`):
+```json
+{
+  "agents": [
+    {
+      "app_id": "cyber_spider",
+      "version": "1.0.0",
+      "allowed_models": ["qwen2.5:0.5b"],
+      "priority": "normal",
+      "network_enabled": true,
+      "filesystem_permissions": "Read-Only",
+      "execution_engine": "Shell (Risk)",
+      "pii_enforcement": false,
+      "status": "UNSAFE"
+    }
+  ]
+}
 ```
 
-**Response:**
-```text
-AGENT ID             | VERSION    | ALLOWED MODELS       | PRIORITY   | STATUS
-----------------------------------------------------------------------------------
-openclaw             | 1.0.0      | llama3.2:1b          | NORMAL     | SECURED
-terminal_user        | 1.0.0      | llama3.2:1b          | NORMAL     | SECURED
-cyber_spider         | 1.0.0      | qwen2.5:0.5b         | NORMAL     | UNSAFE
-```
+`status` is `UNSAFE` (shell access), `AIR-GAPPED` (no network), or `SECURED`. `filesystem_permissions` is `Read/Write`, `Read-Only`, `Write-Only`, or `Isolated`; `execution_engine` is `Shell (Risk)`, `WASM Sandbox`, or `Prompt-Only`.
 
 ---
 
 ### `GET /manifests`
 
-Raw permission matrix for all registered manifests.
+Raw permission matrix for every manifest file.
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/manifests
-```
-
-**Response:**
-```text
-MANIFEST FILE        | NETWORK    | FILE I/O      | EXECUTION       | PII SCRUBBING
-------------------------------------------------------------------------------------
-openclaw.toml        | ENABLED    | Read-Only     | WASM Sandbox    | ACTIVE
-terminal_user.toml   | BLOCKED    | Air-gapped    | Disabled        | ACTIVE
-cyber_spider.toml    | ENABLED    | Read-Only     | SHELL (RISK)    | OFF (RISK)
-```
+**JSON response** (`ManifestsResponse`): a `manifests` array of `{ file_name, app_id, network, file_io, execution, pii_scrubbing }` strings.
 
 ---
 
 ### `GET /pull/:model`
 
-Download and install a model (triggers HuggingFace or Ollama pull).
+Install a model through the active driver.
 
 ```bash
 curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
@@ -156,69 +163,39 @@ curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
 SUCCESS: Model 'qwen2.5:0.5b' installed.
 ```
 
+With the **Ollama** engine this runs `ollama pull`. With the **native** engine it does nothing and reports success: use `ore pull <model>`, which downloads from Hugging Face directly.
+
 ---
 
 ### `GET /load/:model`
 
-Pre-load a model into VRAM for zero-latency inference.
+Pre-load a model so the first request doesn't pay the load time.
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/load/qwen2.5:0.5b
-```
-
-**Response:**
-```text
-SUCCESS: Model 'qwen2.5:0.5b' loaded.
-```
+**Response:** `SUCCESS: Model 'qwen2.5:0.5b' loaded.` or `KERNEL ERROR: …`
 
 ---
 
 ### `GET /expel/:model`
 
-Force-evict a model from GPU VRAM.
+Force-evict a model from memory.
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/expel/qwen2.5:0.5b
-```
-
-**Response:**
-```text
-SUCCESS: Model 'qwen2.5:0.5b' has been forcefully evicted from GPU VRAM.
-```
+**Response:** `SUCCESS: Model 'qwen2.5:0.5b' has been forcefully evicted from GPU VRAM.` or `KERNEL ERROR: …`
 
 ---
 
 ### `GET /clear/:app_id`
 
-Wipe an agent's SSD swap memory (frozen context).
+Wipe an agent's frozen memory (chat history and saved KV cache) from SSD and RAM.
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/clear/my_agent
-```
-
-**Response:**
-```text
-SUCCESS: Memory for Agent 'my_agent' has been wiped clean.
-```
+**Response:** `SUCCESS: Memory for Agent 'my_agent' has been wiped clean from SSD and RAM.`
 
 ---
 
 ### `GET /compact/:app_id`
 
-Force a background memory compaction cycle for an agent, summarising chat history and evicting stale physical KV-Cache to save VRAM and SSD space.
+Force a memory compaction cycle for an agent: the model summarizes the chat history into a dense fact list, and the stale physical KV cache is discarded. Requires `json_history = true` in the agent's manifest.
 
-```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/compact/my_agent
-```
-
-**Response:**
-```text
-SUCCESS: Memory for Agent 'my_agent' manually compacted.
-```
+**Response:** `SUCCESS: Memory for Agent 'my_agent' manually compacted.`, or `KERNEL ERROR: …` (unregistered agent, no JSON history) / `ORE KERNEL ALERT: GPU unavailable - …`
 
 ---
 
@@ -229,7 +206,7 @@ Executes a pre-compiled `.wasm` tool (**Tool Mode**), runs an autonomous script 
 Source: [`ore-server/src/execution/mod.rs`](../ore-server/src/execution/mod.rs)
 
 #### 1. Tool Mode ("Console Cartridges")
-Invokes a pre-compiled WASM binary in `tools/`. Requires `can_execute_wasm = true` and the tool listed in `allowed_tools`.
+Invokes a pre-compiled WASM binary, `~/.ore/tools/<tool_name>.wasm`. Requires `can_execute_wasm = true` and the tool listed in `allowed_tools`.
 
 ```bash
 curl -X POST \
@@ -290,7 +267,16 @@ curl -X POST \
 
 > **Mode Selection Rule:** Exactly one mode must be provided per request (`tool_name`, `script`, or `shell_command`). Ambiguous or empty requests return a descriptive error.
 
-**Response:** Captured standard output and standard error from the execution environment.
+**Response:** plain text. The tool's stdout, then `--- STDERR ---` and its stderr if any (each capped at 10 MiB). If the run failed, the output ends with exactly one `KERNEL ERROR:` line:
+
+| Outcome | Last line of the response |
+|---|---|
+| Success (returned, or exited with status 0) | *(nothing extra)* |
+| Exited with a non-zero status (Go panic, uncaught Python exception, `exit(1)`) | `KERNEL ERROR: Guest exited with status N` |
+| Fuel limit reached | `KERNEL ERROR: Sandbox Trap: CPU Fuel Exhausted (Runaway AI or Infinite Loop Detected)` |
+| Any other trap (panic, abort, out-of-bounds access, stale plugin pointer) | `KERNEL ERROR: <trap message>` |
+
+Requests rejected before the tool runs (unregistered agent, tool not in `allowed_tools`, missing `.wasm`, ambiguous mode) return a single error line instead, such as `KERNEL ERROR: Tool 'x' is not whitelisted in manifest. Add it to allowed_tools.` To detect any failure, check whether the response contains `KERNEL ERROR`.
 
 ---
 
@@ -301,7 +287,7 @@ Source: [`ore-server/src/handlers/inference.rs`](../ore-server/src/handlers/infe
 
 ### `GET /ask/:prompt`
 
-Secured inference with full firewall pipeline + SSD paging. Uses `terminal_user` manifest by default.
+Secured inference with full firewall pipeline + SSD paging. Always runs as the **`openclaw`** agent (its manifest and memory), using the first model in its `allowed_models`. Underscores in the prompt are turned into spaces.
 
 ```bash
 curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
@@ -314,7 +300,7 @@ curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
 
 ### `POST /run`
 
-Streamed inference with rate limiting. Returns tokens as a `text/event-stream`.
+Streamed inference with rate limiting, firewall, and scheduler admission.
 
 ```bash
 curl -X POST \
@@ -333,7 +319,11 @@ curl -X POST \
 }
 ```
 
-**Response:** `text/event-stream` - tokens streamed in real-time.
+**Response:** a chunked plain-text stream of tokens, written as they're generated.
+
+**Errors:** `401` for an unregistered `app_id`, `429` when the agent's rate limit is exceeded (each request is charged 1,000 tokens), `403` with `ORE KERNEL ALERT: SECURITY BREACH …` when the firewall blocks the prompt, and `503` when the scheduler can't admit the request.
+
+The `model` field isn't checked against the agent's `allowed_models` yet.
 
 ---
 
@@ -353,8 +343,9 @@ curl -X POST \
        "source_app": "writer_agent",
        "target_pipe": "rust_docs",
        "knowledge_text": "Rust ownership means each value has exactly one owner...",
-       "chunk_size": 50,
-       "chunk_overlap": 10
+       "chunk_size": 100,
+       "chunk_overlap": 20,
+       "chunk_strategy": "sentence_aware"
      }' \
      http://127.0.0.1:6767/ipc/share
 ```
@@ -365,8 +356,9 @@ curl -X POST \
   "source_app": "writer_agent",
   "target_pipe": "rust_docs",
   "knowledge_text": "The text to embed and store",
-  "chunk_size": 50,
-  "chunk_overlap": 10
+  "chunk_size": 100,
+  "chunk_overlap": 20,
+  "chunk_strategy": "sliding_window"
 }
 ```
 
@@ -375,9 +367,11 @@ curl -X POST \
 | `source_app` | string | ✅ | The app writing the knowledge (must have pipe in `allowed_semantic_pipes`) |
 | `target_pipe` | string | ✅ | Named pipe to write to |
 | `knowledge_text` | string | ✅ | Raw text to chunk and embed |
-| `chunk_size` | usize | ❌ | Words per chunk (default: 50) |
-| `chunk_overlap` | usize | ❌ | Overlap words between chunks (default: 10) |
+| `chunk_size` | usize | ❌ | Chunk size (default: 100) |
+| `chunk_overlap` | usize | ❌ | Overlap between chunks (default: 20). If it's ≥ `chunk_size`, `chunk_size / 4` is used instead |
 | `chunk_strategy` | string | ❌ | Strategy to use: `"sliding_window"` (default), `"sentence_aware"`, `"paragraph"`, `"exact_match"` |
+
+**Response:** plain text, `SUCCESS: …` or a `KERNEL ALERT` / `KERNEL ERROR` line (unregistered agent, pipe not in `allowed_semantic_pipes`, embedding failure).
 
 ---
 
@@ -415,7 +409,7 @@ curl -X POST \
 | `target_pipe` | string | ✅ | Named pipe to search |
 | `query` | string | ✅ | Natural-language search query |
 | `filter_app` | string | ❌ | Only return results from this specific app |
-| `top_k` | usize | ❌ | Number of results (default: 3) |
+| `top_k` | usize | ❌ | Number of results (default: 5) |
 
 **Response:** Array of `SearchResult` JSON objects containing the top-K most relevant text chunks, ranked by dot-product match × time-decay factor. Example:
 ```json
@@ -451,18 +445,29 @@ curl -X POST \
 
 The sender must have the target listed in `allowed_agent_targets` in its manifest.
 
+**Response:** `SUCCESS: Message delivered.`, or a `KERNEL ALERT` / `KERNEL ERROR` line. Each agent's inbox holds up to **1,024** pending messages; when it's full, new messages are rejected with `Target agent '…' queue is full (capacity: 1024). Backpressure applied.`
+
 ---
 
 ### `GET /ipc/listen/:app_id`
 
-Poll for incoming agent messages. The agent must first register as a listener.
+Poll for the next incoming message. No registration is needed: an agent's inbox is created the first time a message is sent to it. The `app_id` must be registered.
 
 ```bash
 curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
      http://127.0.0.1:6767/ipc/listen/writer_agent
 ```
 
-**Response:** The next pending `AgentMessage` from the unbounded channel queue, or empty if none.
+**Response:** JSON, either the next pending message or `null` if the inbox is empty (or the `app_id` is unknown):
+
+```json
+{
+  "from_app": "openclaw",
+  "to_app": "writer_agent",
+  "payload": "Please summarize the latest Rust RFC",
+  "timestamp": 1711728200
+}
+```
 
 ---
 
