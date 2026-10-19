@@ -250,9 +250,16 @@ When trade-offs conflict, this is the order we resolve them in:
 
 ---
 
-## Licensing
+### Licensing & Contributor Terms
 
-Ore is licensed under [AGPL-3.0-or-later](LICENSE). By submitting a contribution, you agree that it is licensed under the same terms, and that you have the right to submit it. There is no separate CLA.
+The Ore Kernel (`ore-core`, `ore-server`, `ore-sys` and `ore-cli`) is licensed under the **GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)**. 
+
+To allow Ore to thrive as both an open-source project and a sustainable enterprise platform, we use a streamlined contributor grant instead of a restrictive corporate CLA:
+
+**By submitting a pull request, patch, or contribution to Ore, you agree to the following terms:**
+1. Your contribution is licensed under the repository's open-source license (AGPL-3.0-or-later for the kernel).
+2. You grant the project maintainer (**Mahavishnu-K**), including any future legal successors, entities, or assigns, a perpetual, worldwide, non-exclusive, royalty-free, transferable, and sublicensable right to use, modify, distribute, license, and commercialize your contribution under alternative commercial or proprietary terms without restriction.
+3. You certify that you are the original author of the contribution or have the legal right to submit it under these terms, free of any conflicting third-party intellectual property or patent claims.
 
 ---
 
