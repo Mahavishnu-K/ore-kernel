@@ -426,12 +426,12 @@ async fn main() {
                             }
 
                             println!(
-                                "{} Extracting Standard Library to {}/js_modules...",
+                                "{} Extracting Standard Library to {}/modules...",
                                 "[~]".yellow(),
                                 folder
                             );
 
-                            let modules_dir = target_dir.join("js_modules");
+                            let modules_dir = target_dir.join("modules");
                             if modules_dir.exists() {
                                 fs::remove_dir_all(&modules_dir).unwrap(); // Clear old modules
                             }
