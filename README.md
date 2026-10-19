@@ -322,6 +322,8 @@ Chat with us on [Discord](https://discord.com/channels/1477053099494342755/14770
 
 [AGPL-3.0-or-later](LICENSE). Copyright © 2026 Mahavishnu-K.
 
+---
+
 <div align="center">
 
 Built with 🦀 **Rust** · Designed for the **AI-native era**
