@@ -262,7 +262,7 @@ ore mktool script.py --env data   # Python only: compiles with NumPy, Pandas, et
 
 Supported languages: Rust (`.rs`), Go (`.go`), Python (`.py`), JavaScript (`.js`), TypeScript (`.ts`), Zig (`.zig`), C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`).
 
-**Toolchains:** Rust needs `cargo`/`rustup` (targets are added automatically). C, C++, and Zig are compiled with `zig` (`zig cc` / `zig c++`), which must be on your `PATH`. Python tools use the `system-py` runtimes, which are pulled automatically if missing.
+**Toolchains:** Rust needs `cargo`/`rustup` (targets are added automatically). C, C++, and Zig are compiled with Zig (`zig cc` / `zig c++`). If Zig isn't available, `mktool` **installs it automatically** the first time it's needed: Zig 0.17.0 is downloaded from a randomly chosen community mirror (ziglang.org as the last fallback), its minisign signature is verified against the Zig Software Foundation key (including the signed file name, to block downgrades), and it's unpacked into `<ORE_DIR>/toolchains/zig-0.17.0/`. A `zig` already on your `PATH` is used instead, and `ORE_ZIG` can point at a specific binary. Python tools use the `system-py` runtimes, which are pulled automatically if missing.
 
 **C++ note:** WASI's libc++ has no exception support, so C++ is compiled with `-fno-exceptions`. `try`/`catch` won't compile, and code that would throw (for example an out-of-range `vector::at`) aborts instead, which ends the tool with a trap.
 

@@ -1,6 +1,7 @@
 mod cli;
 mod interactive;
 mod telemetry;
+mod toolchain;
 mod utils;
 
 use clap::Parser;
@@ -1279,11 +1280,12 @@ async fn main() {
                     );
                     println!("{} Initializing Zig WASI compiler...", "[~]".yellow());
 
-                    let build = std::process::Command::new("zig")
+                    let zig = toolchain::ensure_zig().await;
+                    let build = std::process::Command::new(&zig)
                         .current_dir(path)
                         .args(["build", "-Dtarget=wasm32-wasi", "-Doptimize=ReleaseFast"])
                         .output()
-                        .expect("Failed to execute zig build. Is Zig installed?");
+                        .expect("Failed to execute zig build");
 
                     if build.status.success() {
                         // Zig outputs built binaries to zig-out/bin/
@@ -1889,7 +1891,8 @@ async fn main() {
                             println!("{} Temporary Zig SDK written.", "[+]".green());
                         }
 
-                        let mut cmd = std::process::Command::new("zig");
+                        let zig = toolchain::ensure_zig().await;
+                        let mut cmd = std::process::Command::new(&zig);
 
                         if *shared {
                             cmd.args([
@@ -1931,7 +1934,7 @@ async fn main() {
                             ]);
                         }
 
-                        let build = cmd.output().expect("Failed to execute zig. Ensure Zig is installed by running: zig version");
+                        let build = cmd.output().expect("Failed to execute zig");
 
                         if *host {
                             let _ = fs::remove_dir_all(&tmp_zig_dir);
@@ -1966,7 +1969,8 @@ async fn main() {
                             compiler
                         );
 
-                        let mut cmd = std::process::Command::new("zig");
+                        let zig = toolchain::ensure_zig().await;
+                        let mut cmd = std::process::Command::new(&zig);
                         cmd.arg(compiler).arg(filepath);
 
                         // WASI's libc++ ships without exception support (no __cxa_throw), so let
@@ -2040,25 +2044,16 @@ async fn main() {
                                     exit(1);
                                 }
                             }
-                            Err(_) => {
+                            Err(e) => {
                                 println!(
-                                    "{} FATAL: zig '{}' compiler not found in PATH.",
+                                    "{} FATAL: could not start Zig ({}): {}",
                                     "[-]".red().bold(),
-                                    compiler
+                                    zig.display(),
+                                    e
                                 );
                                 println!(
-                                    "    {} ORE uses Zig as an ultra-fast LLVM C/C++ cross-compiler.",
-                                    "[!]".yellow()
-                                );
-                                println!(
-                                    "    {} Download it here: https://ziglang.org/download/\n",
+                                    "    {} Run the command again to reinstall it automatically, or set ORE_ZIG to a working zig binary.",
                                     "[i]".bright_blue()
-                                );
-                                println!(
-                                    "       Just run: zig {} -target wasm32-wasi {} -o {}",
-                                    if is_cpp { "c++" } else { "cc" },
-                                    filepath,
-                                    dest_file.file_name().unwrap().to_str().unwrap()
                                 );
                                 exit(1);
                             }

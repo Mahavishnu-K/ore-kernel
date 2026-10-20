@@ -278,7 +278,7 @@ ore-system/
 └── rust-toolchain.toml      Pinned Rust 1.93.0
 ```
 
-> **Directory resolution:** data directories (`manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`, `plugins/`) and `ore.toml` are resolved relative to the **Ore base directory**, found in this order: 1) the `$ORE_DIR` environment variable, 2) `../` if it contains `ore.toml` (local development), 3) `~/.ore` on Linux/macOS or `%USERPROFILE%\.ore` on Windows.
+> **Directory resolution:** data directories (`manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`, `plugins/`) and `ore.toml` are resolved relative to the **Ore base directory**, found in this order: 1) the `$ORE_DIR` environment variable, 2) `./` if it contains `ore.toml`, 3) `../` if it contains `ore.toml` (both for local development), 4) `~/.ore` on Linux/macOS or `%USERPROFILE%\.ore` on Windows. The auto-installed Zig lives in `toolchains/` under the same directory.
 
 ### Key Dependencies
 

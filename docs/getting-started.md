@@ -9,7 +9,7 @@
 | **Rust toolchain** | `cargo` 1.93+ ([rustup.rs](https://rustup.rs/)) |
 | **For the Native engine** | Nothing else |
 | **For the Ollama engine** | [Ollama](https://ollama.com/) running as the inference backend |
-| **For C, C++, or Zig tools** | [Zig](https://ziglang.org/download/) on your `PATH` (`ore mktool` uses `zig cc` / `zig c++`) |
+| **For C, C++, or Zig tools** | Nothing: `ore mktool` installs a verified Zig 0.17.0 automatically on first use (or uses the `zig` on your `PATH`) |
 
 ## 1. Clone & Build
 

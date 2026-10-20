@@ -23,3 +23,6 @@ toml = "1.0.3"
 walkdir = "2.5.0"
 zip = "8.6.0"
 ore-common = { path = "../ore-common" }
+minisign-verify = "0.2"
+tar = "0.4"
+lzma-rs = "0.3"

@@ -6,8 +6,9 @@
 
 The kernel reads `ore.toml` from the Ore base directory on boot. The base directory is resolved in the following order:
 1. The `$ORE_DIR` environment variable, if set.
-2. The local `../` directory, if `../ore.toml` exists (for local development).
-3. The user's home directory (`~/.ore` on Linux/macOS, or `%USERPROFILE%\.ore` on Windows).
+2. The current directory, if `./ore.toml` exists (local development).
+3. The parent directory, if `../ore.toml` exists (local development, e.g. running from `ore-cli/`).
+4. The user's home directory (`~/.ore` on Linux/macOS, or `%USERPROFILE%\.ore` on Windows).
 
 Generate it via `ore init` or edit manually.
 
@@ -80,6 +81,7 @@ Per-model overrides for the GPU scheduler, keyed by model name.
 | `ORE_DIR` | *(see resolution order above)* | Ore base directory: `ore.toml`, `manifests/`, `models/`, `memory/`, `runtimes/`, `tools/`, `plugins/` |
 | `ORE_GPU_ID` | `0` | NVIDIA GPU index the scheduler reads VRAM from through NVML. If NVML isn't available, the scheduler falls back to system-memory figures |
 | `HF_TOKEN` | - | Hugging Face token for `ore pull` of gated models |
+| `ORE_ZIG` | - | Path to the `zig` binary `ore mktool` should use. Otherwise it uses `zig` on `PATH`, then its managed install in `toolchains/zig-0.17.0/`, installing that automatically if needed |
 
 ---
 
