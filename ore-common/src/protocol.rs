@@ -119,6 +119,21 @@ pub struct ManifestsResponse {
 
 // ─── Execution & IPC Payloads ────────────────────────────────────────────────
 
+#[repr(u8)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryCategory {
+    /// L1: Episodic truths, logs, observations, and context
+    Fact = 0,
+    /// L2: Procedural workflows, code routines, tool usage rules, and SOPs
+    Skill = 1,
+    /// L3: Permanent constraints, persona guidelines, and system directives
+    Directive = 2,
+    /// Default unclassified knowledge
+    #[default]
+    General = 3,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RunRequest {
     pub app_id: String,
@@ -144,6 +159,8 @@ pub struct IpcShareRequest {
     pub chunk_size: Option<usize>,
     pub chunk_overlap: Option<usize>,
     pub chunk_strategy: Option<ChunkStrategy>,
+    #[serde(default)]
+    pub category: Option<MemoryCategory>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -152,7 +169,11 @@ pub struct IpcSearchRequest {
     pub target_pipe: String,
     pub query: String,
     pub filter_app: Option<String>,
+    #[serde(default)]
+    pub filter_category: Option<MemoryCategory>,
     pub top_k: Option<usize>,
+    #[serde(default)]
+    pub enable_hybrid: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -161,6 +182,8 @@ pub struct SearchResult {
     pub score: f32,
     pub source_app: String,
     pub timestamp: u64,
+    #[serde(default)]
+    pub category: MemoryCategory,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

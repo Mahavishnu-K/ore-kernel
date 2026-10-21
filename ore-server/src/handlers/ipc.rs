@@ -103,6 +103,9 @@ pub async fn sys_share_context(
 
     let _embedder_guard = state.embedder_lock.lock().await;
 
+    let category = payload
+        .category
+        .unwrap_or(ore_common::protocol::MemoryCategory::General);
     // Convert text to Math Vectors
     if !chunks_to_embed.is_empty() {
         wake_embedder = true;
@@ -120,6 +123,7 @@ pub async fn sys_share_context(
                         vector,
                         &manifest.app_id,
                         manifest.ipc.semantic_persistence,
+                        category,
                     );
                 }
             }
@@ -134,6 +138,7 @@ pub async fn sys_share_context(
             arc_vector,
             &manifest.app_id,
             manifest.ipc.semantic_persistence,
+            category,
         );
     }
 
@@ -248,18 +253,23 @@ pub async fn sys_search_context(
 
     let k = payload.top_k.unwrap_or(5);
     let filter_ref = payload.filter_app.as_deref();
+    let filter_cat = payload.filter_category;
+    let enable_hybrid = payload.enable_hybrid.unwrap_or(true);
 
     kprintln!(
-        "-> [SEMANTIC BUS] Retrieving the top {} most relevant memory chunks...",
+        "-> [SEMANTIC BUS] Executing Hybrid Search (BM25 + Dense SIMD RRF, top_k={})...",
         k
     );
 
     let top_results = state.semantic_bus.search_pipe(
         &payload.target_pipe,
         &query_vector,
+        &payload.query,
         k,
         filter_ref,
+        filter_cat,
         manifest.ipc.allow_time_decay,
+        enable_hybrid,
     );
 
     let _ = state.driver.unload_model(&state.system_embedder).await;
@@ -271,6 +281,7 @@ pub async fn sys_search_context(
             score,
             source_app: chunk_arc.source_app.clone(),
             timestamp: chunk_arc.timestamp,
+            category: chunk_arc.category,
         })
         .collect();
 

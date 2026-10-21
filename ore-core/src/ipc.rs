@@ -1,10 +1,12 @@
 use dashmap::DashMap;
+use ore_common::protocol::MemoryCategory;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, VecDeque, hash_map::DefaultHasher};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
@@ -84,14 +86,106 @@ impl MessageBus {
     }
 }
 
-// ─── TIER 2: HIGH-PERFORMANCE NATIVE VECTOR DB ────────────────────────────────
+// ─── TIER 2: HIGH-PERFORMANCE BM25 SPARSE INDEX ───────────────────────────────
+
+/// Fast in-memory tokenizer designed for code, hex addresses, identifiers, and natural text.
+pub fn tokenize_bm25(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase())
+        .collect()
+}
+
+/// In-memory BM25 Inverted Index for exact keyword matching (identifiers, error codes, symbols)
+#[derive(Clone, Debug, Default)]
+pub struct Bm25Index {
+    /// term -> list of (chunk_id, term_frequency)
+    pub inverted_index: HashMap<String, Vec<(u64, u32)>>,
+    /// chunk_id -> document token count
+    pub doc_lengths: HashMap<u64, usize>,
+    /// Total tokens across all indexed chunks in this pipe
+    pub total_tokens: usize,
+}
+
+impl Bm25Index {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_chunks(chunks: &VecDeque<Arc<MemoryChunk>>) -> Self {
+        let mut idx = Self::new();
+        for chunk in chunks {
+            idx.add_chunk(chunk.id, &chunk.text);
+        }
+        idx
+    }
+
+    pub fn add_chunk(&mut self, chunk_id: u64, text: &str) {
+        let tokens = tokenize_bm25(text);
+        let doc_len = tokens.len();
+
+        let mut freqs: HashMap<String, u32> = HashMap::new();
+        for token in tokens {
+            *freqs.entry(token).or_insert(0) += 1;
+        }
+
+        for (term, freq) in freqs {
+            self.inverted_index
+                .entry(term)
+                .or_default()
+                .push((chunk_id, freq));
+        }
+
+        self.doc_lengths.insert(chunk_id, doc_len);
+        self.total_tokens += doc_len;
+    }
+
+    pub fn score_query(&self, query_text: &str) -> HashMap<u64, f32> {
+        let tokens = tokenize_bm25(query_text);
+        let mut scores: HashMap<u64, f32> = HashMap::new();
+
+        let n_docs = self.doc_lengths.len();
+        if n_docs == 0 {
+            return scores;
+        }
+
+        let avg_dl = (self.total_tokens as f32 / n_docs as f32).max(1e-5);
+        let k1: f32 = 1.2;
+        let b: f32 = 0.75;
+
+        let unique_terms: HashSet<_> = tokens.into_iter().collect();
+
+        for term in unique_terms {
+            if let Some(postings) = self.inverted_index.get(&term) {
+                let n_t = postings.len() as f32;
+                // Standard BM25 Robertson-Spärck Jones IDF with smoothing
+                let idf = (((n_docs as f32 - n_t + 0.5) / (n_t + 0.5)) + 1.0)
+                    .ln()
+                    .max(0.0);
+
+                for &(chunk_id, tf) in postings {
+                    let doc_len = *self.doc_lengths.get(&chunk_id).unwrap_or(&1) as f32;
+                    let tf_component = (tf as f32 * (k1 + 1.0))
+                        / (tf as f32 + k1 * (1.0 - b + b * (doc_len / avg_dl)));
+                    *scores.entry(chunk_id).or_insert(0.0) += idf * tf_component;
+                }
+            }
+        }
+
+        scores
+    }
+}
+
+// ─── TIER 2: MEMORY CHUNK & COGNITIVE MMU PIPES ───────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MemoryChunk {
+    pub id: u64,
     pub text: Arc<String>,
     pub vector: Arc<Vec<f32>>, // Pre-normalized unit vector
     pub source_app: String,
     pub timestamp: u64,
+    pub category: MemoryCategory,
 }
 
 /// Explicit lifecycle state for Semantic Pipes.
@@ -101,6 +195,7 @@ pub enum PipeState {
     Active {
         is_persistent: bool,
         chunks: VecDeque<Arc<MemoryChunk>>,
+        bm25: Bm25Index,
     },
     PagedToDisk,
 }
@@ -139,6 +234,7 @@ pub struct SemanticBus {
     embedding_cache: DashMap<u64, (Arc<Vec<f32>>, u64)>,
     cache_ttl_secs: u64,
     pipe_ttl_secs: u64,
+    next_chunk_id: AtomicU64,
 }
 
 impl SemanticBus {
@@ -148,6 +244,7 @@ impl SemanticBus {
             embedding_cache: DashMap::new(),
             cache_ttl_secs: cache_ttl_hours * 3600,
             pipe_ttl_secs: pipe_ttl_hours * 3600,
+            next_chunk_id: AtomicU64::new(1),
         }
     }
 
@@ -194,7 +291,7 @@ impl SemanticBus {
     }
 
     /// High-performance 8-lane loop unrolled dot product.
-    /// Breaks instruction dependency chains and vectorizes via AVX2/FMA/NEON.
+    /// Breaks instruction dependency chains and auto vectorizes via AVX2/FMA/NEON.
     #[inline(always)]
     pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
         if a.len() != b.len() {
@@ -240,6 +337,7 @@ impl SemanticBus {
         mut vector: Vec<f32>,
         source_app: &str,
         is_persistent: bool,
+        category: MemoryCategory,
     ) {
         Self::normalize(&mut vector);
         let arc_vector = Arc::new(vector);
@@ -251,11 +349,15 @@ impl SemanticBus {
             .unwrap()
             .as_secs();
 
+        let chunk_id = self.next_chunk_id.fetch_add(1, AtomicOrdering::SeqCst);
+
         let arc_chunk = Arc::new(MemoryChunk {
+            id: chunk_id,
             text: arc_text,
             vector: Arc::clone(&arc_vector),
             source_app: source_app.to_string(),
             timestamp,
+            category,
         });
 
         self.embedding_cache
@@ -271,17 +373,22 @@ impl SemanticBus {
         arc_vector: Arc<Vec<f32>>,
         source_app: &str,
         is_persistent: bool,
+        category: MemoryCategory,
     ) {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
+        let chunk_id = self.next_chunk_id.fetch_add(1, AtomicOrdering::SeqCst);
+
         let arc_chunk = Arc::new(MemoryChunk {
+            id: chunk_id,
             text: Arc::new(text),
             vector: arc_vector,
             source_app: source_app.to_string(),
             timestamp,
+            category,
         });
 
         self.insert_chunk_to_pipe(pipe_name, arc_chunk, is_persistent);
@@ -294,16 +401,19 @@ impl SemanticBus {
             .or_insert_with(|| PipeState::Active {
                 is_persistent,
                 chunks: VecDeque::new(),
+                bm25: Bm25Index::new(),
             });
 
         match entry.value_mut() {
             PipeState::Active {
                 is_persistent: p,
                 chunks,
+                bm25,
             } => {
                 if is_persistent {
                     *p = true;
                 }
+                bm25.add_chunk(chunk.id, &chunk.text);
                 chunks.push_back(chunk);
                 if chunks.len() > 10_000 {
                     chunks.pop_front();
@@ -313,6 +423,14 @@ impl SemanticBus {
                 // Page fault recovery: restore existing chunks from SSD before appending
                 let mut restored =
                     crate::memory::Pager::page_in_semantic(pipe_name).unwrap_or_default();
+
+                let max_id = restored.iter().map(|c| c.id).max().unwrap_or(0);
+                self.next_chunk_id
+                    .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
+
+                let mut bm25 = Bm25Index::from_chunks(&restored);
+                bm25.add_chunk(chunk.id, &chunk.text);
+
                 restored.push_back(chunk);
                 if restored.len() > 10_000 {
                     restored.pop_front();
@@ -320,6 +438,7 @@ impl SemanticBus {
                 *state = PipeState::Active {
                     is_persistent: true,
                     chunks: restored,
+                    bm25,
                 };
             }
         }
@@ -332,11 +451,17 @@ impl SemanticBus {
         };
 
         if needs_load && let Some(restored) = crate::memory::Pager::page_in_semantic(pipe_name) {
+            let max_id = restored.iter().map(|c| c.id).max().unwrap_or(0);
+            self.next_chunk_id
+                .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
+            let bm25 = Bm25Index::from_chunks(&restored);
+
             self.memory_pipes.insert(
                 pipe_name.to_string(),
                 PipeState::Active {
                     is_persistent: true,
                     chunks: restored,
+                    bm25,
                 },
             );
         }
@@ -349,19 +474,24 @@ impl SemanticBus {
             })
     }
 
+    /// Dual-Pass Hybrid Search (BM25 Sparse + Dense SIMD fused via Reciprocal Rank Fusion)
+    #[allow(clippy::too_many_arguments)]
     pub fn search_pipe(
         &self,
         pipe_name: &str,
         query_vector: &[f32],
+        query_text: &str,
         top_k: usize,
         filter_app: Option<&str>,
+        filter_category: Option<MemoryCategory>,
         allow_time_decay: bool,
+        enable_hybrid: bool,
     ) -> Vec<(f32, Arc<MemoryChunk>)> {
         if top_k == 0 {
             return vec![];
         }
 
-        // 1. PAGE FAULT RECOVERY: Verify if pipe is unloaded or in PagedToDisk state
+        // PAGE FAULT RECOVERY: Verify if pipe is unloaded or in PagedToDisk state
         let needs_load = match self.memory_pipes.get(pipe_name) {
             None => true,
             Some(entry) => matches!(entry.value(), PipeState::PagedToDisk),
@@ -369,11 +499,17 @@ impl SemanticBus {
 
         if needs_load {
             if let Some(restored) = crate::memory::Pager::page_in_semantic(pipe_name) {
+                let max_id = restored.iter().map(|c| c.id).max().unwrap_or(0);
+                self.next_chunk_id
+                    .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
+                let bm25 = Bm25Index::from_chunks(&restored);
+
                 self.memory_pipes.insert(
                     pipe_name.to_string(),
                     PipeState::Active {
                         is_persistent: true,
                         chunks: restored,
+                        bm25,
                     },
                 );
             } else if !self.memory_pipes.contains_key(pipe_name) {
@@ -386,8 +522,8 @@ impl SemanticBus {
             None => return vec![],
         };
 
-        let chunks = match pipe_guard.value() {
-            PipeState::Active { chunks, .. } => chunks,
+        let (chunks, bm25) = match pipe_guard.value() {
+            PipeState::Active { chunks, bm25, .. } => (chunks, bm25),
             PipeState::PagedToDisk => return vec![],
         };
 
@@ -396,7 +532,15 @@ impl SemanticBus {
             .unwrap()
             .as_secs();
 
-        let mut heap = BinaryHeap::with_capacity(top_k);
+        // ── PASS 1: Dense SIMD Scoring with BinaryHeap ─────────────────────────
+        // For hybrid search, retain a candidate pool of (top_k * 4). For dense-only, retain top_k.
+        let dense_candidate_limit = if enable_hybrid {
+            (top_k * 4).clamp(32, 200)
+        } else {
+            top_k
+        };
+
+        let mut dense_heap = BinaryHeap::with_capacity(dense_candidate_limit);
 
         for chunk in chunks.iter() {
             if let Some(app_id) = filter_app
@@ -405,22 +549,28 @@ impl SemanticBus {
                 continue;
             }
 
+            if let Some(cat) = filter_category
+                && chunk.category != cat
+            {
+                continue;
+            }
+
             // SIMD Dot Product
             let base_score = Self::dot_product(&chunk.vector, query_vector);
-
             let mut final_score = base_score;
+
             if allow_time_decay {
                 let hours_old = (current_time.saturating_sub(chunk.timestamp)) as f32 / 3600.0;
                 let decay_factor = (1.0 - (hours_old * 0.01)).clamp(0.5, 1.0);
                 final_score *= decay_factor;
             }
 
-            if heap.len() < top_k {
-                heap.push(ScoredChunk {
+            if dense_heap.len() < dense_candidate_limit {
+                dense_heap.push(ScoredChunk {
                     score: final_score,
                     chunk: Arc::clone(chunk),
                 });
-            } else if let Some(mut root) = heap.peek_mut()
+            } else if let Some(mut root) = dense_heap.peek_mut()
                 && final_score > root.score
             {
                 *root = ScoredChunk {
@@ -430,7 +580,92 @@ impl SemanticBus {
             }
         }
 
-        let mut results: Vec<_> = heap.into_iter().map(|s| (s.score, s.chunk)).collect();
+        // If hybrid search is disabled, return directly from the heap
+        if !enable_hybrid {
+            let mut results: Vec<_> = dense_heap.into_iter().map(|s| (s.score, s.chunk)).collect();
+            results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+            return results;
+        }
+
+        // Explicit descending sort by score (highest score at index 0)
+        let mut dense_ranked: Vec<ScoredChunk> = dense_heap.into_vec();
+        dense_ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+
+        // ── PASS 2: BM25 Sparse Scoring with BinaryHeap ────────────────────────
+        let bm25_scores = bm25.score_query(query_text);
+        let sparse_candidate_limit = (top_k * 4).clamp(32, 200);
+        let mut sparse_heap = BinaryHeap::with_capacity(sparse_candidate_limit);
+
+        for chunk in chunks.iter() {
+            if let Some(app_id) = filter_app
+                && chunk.source_app != app_id
+            {
+                continue;
+            }
+            if let Some(cat) = filter_category
+                && chunk.category != cat
+            {
+                continue;
+            }
+
+            if let Some(&score) = bm25_scores.get(&chunk.id)
+                && score > 0.0
+            {
+                if sparse_heap.len() < sparse_candidate_limit {
+                    sparse_heap.push(ScoredChunk {
+                        score,
+                        chunk: Arc::clone(chunk),
+                    });
+                } else if let Some(mut root) = sparse_heap.peek_mut()
+                    && score > root.score
+                {
+                    *root = ScoredChunk {
+                        score,
+                        chunk: Arc::clone(chunk),
+                    };
+                }
+            }
+        }
+
+        // Explicit descending sort by score (highest score at index 0)
+        let mut sparse_ranked: Vec<ScoredChunk> = sparse_heap.into_vec();
+        sparse_ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+
+        // ── PASS 3: Reciprocal Rank Fusion (RRF) ────────────────────────────────
+        const RRF_K: f32 = 60.0;
+        let mut rrf_scores: HashMap<u64, (f32, Arc<MemoryChunk>)> = HashMap::new();
+
+        // Highest score gets rank 1 (rank_idx = 0 -> rank = 1.0)
+        for (rank_idx, scored) in dense_ranked.into_iter().enumerate() {
+            let rank = (rank_idx + 1) as f32;
+            let entry = rrf_scores
+                .entry(scored.chunk.id)
+                .or_insert((0.0, scored.chunk));
+            entry.0 += 1.0 / (RRF_K + rank);
+        }
+
+        for (rank_idx, scored) in sparse_ranked.into_iter().enumerate() {
+            let rank = (rank_idx + 1) as f32;
+            let entry = rrf_scores
+                .entry(scored.chunk.id)
+                .or_insert((0.0, scored.chunk));
+            entry.0 += 1.0 / (RRF_K + rank);
+        }
+
+        // Final Top-K selection using BinaryHeap
+        let mut final_heap = BinaryHeap::with_capacity(top_k);
+
+        for (_, (score, chunk)) in rrf_scores {
+            if final_heap.len() < top_k {
+                final_heap.push(ScoredChunk { score, chunk });
+            } else if let Some(mut root) = final_heap.peek_mut()
+                && score > root.score
+            {
+                *root = ScoredChunk { score, chunk };
+            }
+        }
+
+        let mut results: Vec<_> = final_heap.into_iter().map(|s| (s.score, s.chunk)).collect();
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
         results
     }
@@ -629,6 +864,7 @@ impl SemanticBus {
                     PipeState::Active {
                         is_persistent,
                         chunks,
+                        ..
                     } => {
                         if *is_persistent {
                             if !chunks.is_empty() {
@@ -659,6 +895,7 @@ impl SemanticBus {
                 PipeState::Active {
                     is_persistent,
                     chunks,
+                    ..
                 } => *is_persistent || !chunks.is_empty(),
                 PipeState::PagedToDisk => true,
             });
@@ -762,5 +999,55 @@ mod tests {
         let chunks = SemanticBus::chunk_text(text, "sentence_aware", 8, 2);
         assert!(!chunks.is_empty());
         assert!(chunks.iter().any(|c| c.contains("Hello world!")));
+    }
+
+    #[test]
+    fn test_bm25_exact_keyword_matching() {
+        let mut bm25 = Bm25Index::new();
+        bm25.add_chunk(1, "Kernel panic: SIGSEGV memory corruption at 0xDEADBEEF");
+        bm25.add_chunk(2, "Normal user login success on port 8080");
+
+        let scores = bm25.score_query("0xDEADBEEF");
+        assert!(scores.get(&1).unwrap() > &0.0);
+        assert!(!scores.contains_key(&2));
+    }
+
+    #[test]
+    fn test_cognitive_tier_filtering_in_search() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![1.0; 8];
+
+        bus.write_chunk(
+            "test_pipe",
+            "This is a verified fact".to_string(),
+            vec.clone(),
+            "agent_a",
+            false,
+            MemoryCategory::Fact,
+        );
+
+        bus.write_chunk(
+            "test_pipe",
+            "This is a procedural rule".to_string(),
+            vec.clone(),
+            "agent_a",
+            false,
+            MemoryCategory::Directive,
+        );
+
+        let results = bus.search_pipe(
+            "test_pipe",
+            &vec,
+            "procedural rule",
+            10,
+            None,
+            Some(MemoryCategory::Directive),
+            false,
+            true,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.category, MemoryCategory::Directive);
+        assert!(results[0].1.text.contains("procedural rule"));
     }
 }
