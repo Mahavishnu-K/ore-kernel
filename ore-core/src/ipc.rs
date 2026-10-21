@@ -199,13 +199,18 @@ pub struct MemoryChunk {
     pub category: MemoryCategory,
 }
 
-/// Explicit lifecycle state for Semantic Pipes.
+/// Explicit lifecycle state supporting Copy-on-Write (CoW) memory branching
 /// Eliminates the GC ghost-pipe bug where paged pipes were permanently silenced.
 #[derive(Clone, Debug)]
 pub enum PipeState {
     Active {
         is_persistent: bool,
         chunks: VecDeque<Arc<MemoryChunk>>,
+        bm25: Bm25Index,
+    },
+    Branched {
+        base_pipe: String,
+        delta_chunks: VecDeque<Arc<MemoryChunk>>,
         bm25: Bm25Index,
     },
     PagedToDisk,
@@ -450,6 +455,16 @@ impl SemanticBus {
                     chunks.pop_front();
                 }
             }
+            PipeState::Branched {
+                delta_chunks, bm25, ..
+            } => {
+                // Isolated write strictly into the branch delta! Base pipe remains untouched.
+                bm25.add_chunk(chunk.id, &chunk.text);
+                delta_chunks.push_back(chunk);
+                if delta_chunks.len() > 10_000 {
+                    delta_chunks.pop_front();
+                }
+            }
             state @ PipeState::PagedToDisk => {
                 // Page fault recovery: restore existing chunks from SSD before appending
                 let mut restored =
@@ -475,32 +490,219 @@ impl SemanticBus {
         }
     }
 
-    pub fn get_pipe_contents(&self, pipe_name: &str) -> Option<VecDeque<Arc<MemoryChunk>>> {
+    // ─── CoW BRANCHING, DIFFING & MERGING OPERATIONS ─────────────────────────
+
+    /// Creates an isolated Copy-on-Write memory branch from a base pipe (Zero-RAM overhead)
+    pub fn branch_pipe(&self, base_pipe: &str, branch_pipe: &str) -> Result<(), String> {
+        if base_pipe == branch_pipe {
+            return Err("Cannot branch a pipe to itself.".to_string());
+        }
+        if self.memory_pipes.contains_key(branch_pipe) {
+            return Err(format!("Branch pipe '{}' already exists.", branch_pipe));
+        }
+
+        // Ensure base pipe is loaded if currently paged to disk
+        self.ensure_pipe_loaded(base_pipe)?;
+
+        let base_guard = self
+            .memory_pipes
+            .get(base_pipe)
+            .ok_or_else(|| format!("Base pipe '{}' not found.", base_pipe))?;
+
+        let base_bm25 = match base_guard.value() {
+            PipeState::Active { bm25, .. } => bm25.clone(),
+            PipeState::Branched { bm25, .. } => bm25.clone(),
+            PipeState::PagedToDisk => {
+                return Err("Base pipe failed to page in from SSD.".to_string());
+            }
+        };
+
+        drop(base_guard);
+
+        self.memory_pipes.insert(
+            branch_pipe.to_string(),
+            PipeState::Branched {
+                base_pipe: base_pipe.to_string(),
+                delta_chunks: VecDeque::new(),
+                bm25: base_bm25,
+            },
+        );
+
+        crate::kprintln!(
+            "-> [CoW BRANCH] Forked '{}' from '{}' (Zero-copy Arc references).",
+            branch_pipe,
+            base_pipe
+        );
+
+        Ok(())
+    }
+
+    /// Returns the staged delta chunks that have not yet been merged into the base pipe
+    pub fn diff_pipe(
+        &self,
+        base_pipe: &str,
+        branch_pipe: &str,
+    ) -> Result<Vec<Arc<MemoryChunk>>, String> {
+        let branch_guard = self
+            .memory_pipes
+            .get(branch_pipe)
+            .ok_or_else(|| format!("Branch pipe '{}' not found.", branch_pipe))?;
+
+        match branch_guard.value() {
+            PipeState::Branched {
+                base_pipe: parent,
+                delta_chunks,
+                ..
+            } => {
+                if parent != base_pipe {
+                    return Err(format!(
+                        "Branch '{}' is forked from '{}', not requested base '{}'.",
+                        branch_pipe, parent, base_pipe
+                    ));
+                }
+                Ok(delta_chunks.iter().cloned().collect())
+            }
+            _ => Err(format!("Pipe '{}' is not a branched pipe.", branch_pipe)),
+        }
+    }
+
+    /// Atomically merges branch delta chunks into the base pipe and commits to SSD
+    pub fn merge_pipe(
+        &self,
+        base_pipe: &str,
+        branch_pipe: &str,
+        delete_branch: bool,
+    ) -> Result<usize, String> {
+        let (parent_pipe, deltas) = {
+            let branch_guard = self
+                .memory_pipes
+                .get(branch_pipe)
+                .ok_or_else(|| format!("Branch pipe '{}' not found.", branch_pipe))?;
+
+            match branch_guard.value() {
+                PipeState::Branched {
+                    base_pipe: parent,
+                    delta_chunks,
+                    ..
+                } => (parent.clone(), delta_chunks.clone()),
+                _ => return Err(format!("Pipe '{}' is not a branched pipe.", branch_pipe)),
+            }
+        };
+
+        if parent_pipe != base_pipe {
+            return Err(format!(
+                "Cannot merge: Branch '{}' belongs to base '{}', not requested base '{}'.",
+                branch_pipe, parent_pipe, base_pipe
+            ));
+        }
+
+        let delta_count = deltas.len();
+        if delta_count == 0 {
+            if delete_branch {
+                self.memory_pipes.remove(branch_pipe);
+            }
+            return Ok(0);
+        }
+
+        self.ensure_pipe_loaded(base_pipe)?;
+
+        let mut base_entry = self
+            .memory_pipes
+            .get_mut(base_pipe)
+            .ok_or_else(|| format!("Base pipe '{}' not found.", base_pipe))?;
+
+        let should_persist = match base_entry.value_mut() {
+            PipeState::Active {
+                is_persistent,
+                chunks,
+                bm25,
+            } => {
+                for chunk in &deltas {
+                    bm25.add_chunk(chunk.id, &chunk.text);
+                    chunks.push_back(Arc::clone(chunk));
+                    if chunks.len() > 10_000 {
+                        chunks.pop_front();
+                    }
+                }
+                *is_persistent
+            }
+            _ => {
+                return Err(format!(
+                    "Base pipe '{}' is not in an active state.",
+                    base_pipe
+                ));
+            }
+        };
+
+        if should_persist && let PipeState::Active { chunks, .. } = base_entry.value() {
+            crate::memory::Pager::page_out_semantic(base_pipe, chunks);
+        }
+
+        drop(base_entry);
+
+        if delete_branch {
+            self.memory_pipes.remove(branch_pipe);
+            crate::kprintln!(
+                "-> [CoW MERGE] Merged {} chunks from '{}' into '{}' and removed branch.",
+                delta_count,
+                branch_pipe,
+                base_pipe
+            );
+        } else {
+            crate::kprintln!(
+                "-> [CoW MERGE] Merged {} chunks from '{}' into '{}'.",
+                delta_count,
+                branch_pipe,
+                base_pipe
+            );
+        }
+
+        Ok(delta_count)
+    }
+
+    fn ensure_pipe_loaded(&self, pipe_name: &str) -> Result<(), String> {
         let needs_load = match self.memory_pipes.get(pipe_name) {
             None => true,
             Some(entry) => matches!(entry.value(), PipeState::PagedToDisk),
         };
 
-        if needs_load && let Some(restored) = crate::memory::Pager::page_in_semantic(pipe_name) {
-            let max_id = restored.iter().map(|c| c.id).max().unwrap_or(0);
-            self.next_chunk_id
-                .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
-            let bm25 = Bm25Index::from_chunks(&restored);
-
-            self.memory_pipes.insert(
-                pipe_name.to_string(),
-                PipeState::Active {
-                    is_persistent: true,
-                    chunks: restored,
-                    bm25,
-                },
-            );
+        if needs_load {
+            if let Some(restored) = crate::memory::Pager::page_in_semantic(pipe_name) {
+                let max_id = restored.iter().map(|c| c.id).max().unwrap_or(0);
+                self.next_chunk_id
+                    .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
+                let bm25 = Bm25Index::from_chunks(&restored);
+                self.memory_pipes.insert(
+                    pipe_name.to_string(),
+                    PipeState::Active {
+                        is_persistent: true,
+                        chunks: restored,
+                        bm25,
+                    },
+                );
+            } else if !self.memory_pipes.contains_key(pipe_name) {
+                return Err(format!("Pipe '{}' does not exist.", pipe_name));
+            }
         }
+        Ok(())
+    }
+
+    pub fn get_pipe_contents(&self, pipe_name: &str) -> Option<VecDeque<Arc<MemoryChunk>>> {
+        let _ = self.ensure_pipe_loaded(pipe_name);
 
         self.memory_pipes
             .get(pipe_name)
             .and_then(|pipe| match pipe.value() {
                 PipeState::Active { chunks, .. } => Some(chunks.clone()),
+                PipeState::Branched {
+                    base_pipe,
+                    delta_chunks,
+                    ..
+                } => {
+                    let mut unified = self.get_pipe_contents(base_pipe).unwrap_or_default();
+                    unified.extend(delta_chunks.iter().cloned());
+                    Some(unified)
+                }
                 PipeState::PagedToDisk => None,
             })
     }
@@ -523,40 +725,28 @@ impl SemanticBus {
         }
 
         // PAGE FAULT RECOVERY: Verify if pipe is unloaded or in PagedToDisk state
-        let needs_load = match self.memory_pipes.get(pipe_name) {
-            None => true,
-            Some(entry) => matches!(entry.value(), PipeState::PagedToDisk),
-        };
-
-        if needs_load {
-            if let Some(restored) = crate::memory::Pager::page_in_semantic(pipe_name) {
-                let max_id = restored.iter().map(|c| c.id).max().unwrap_or(0);
-                self.next_chunk_id
-                    .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
-                let bm25 = Bm25Index::from_chunks(&restored);
-
-                self.memory_pipes.insert(
-                    pipe_name.to_string(),
-                    PipeState::Active {
-                        is_persistent: true,
-                        chunks: restored,
-                        bm25,
-                    },
-                );
-            } else if !self.memory_pipes.contains_key(pipe_name) {
-                return vec![];
-            }
-        }
+        let _ = self.ensure_pipe_loaded(pipe_name);
 
         let pipe_guard = match self.memory_pipes.get(pipe_name) {
             Some(g) => g,
             None => return vec![],
         };
 
-        let (chunks, bm25) = match pipe_guard.value() {
-            PipeState::Active { chunks, bm25, .. } => (chunks, bm25),
+        let (unified_chunks, bm25) = match pipe_guard.value() {
+            PipeState::Active { chunks, bm25, .. } => (chunks.clone(), bm25.clone()),
+            PipeState::Branched {
+                base_pipe,
+                delta_chunks,
+                bm25,
+            } => {
+                let mut combined = self.get_pipe_contents(base_pipe).unwrap_or_default();
+                combined.extend(delta_chunks.iter().cloned());
+                (combined, bm25.clone())
+            }
             PipeState::PagedToDisk => return vec![],
         };
+
+        drop(pipe_guard);
 
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -573,7 +763,7 @@ impl SemanticBus {
 
         let mut dense_heap = BinaryHeap::with_capacity(dense_candidate_limit);
 
-        for chunk in chunks.iter() {
+        for chunk in unified_chunks.iter() {
             if let Some(app_id) = filter_app
                 && chunk.source_app != app_id
             {
@@ -627,7 +817,7 @@ impl SemanticBus {
         let sparse_candidate_limit = (top_k * 4).clamp(32, 200);
         let mut sparse_heap = BinaryHeap::with_capacity(sparse_candidate_limit);
 
-        for chunk in chunks.iter() {
+        for chunk in unified_chunks.iter() {
             if let Some(app_id) = filter_app
                 && chunk.source_app != app_id
             {
@@ -1034,6 +1224,18 @@ impl SemanticBus {
                             }
                         }
                     }
+
+                    PipeState::Branched { delta_chunks, .. } => {
+                        let initial = delta_chunks.len();
+                        delta_chunks.retain(|chunk| {
+                            current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
+                        });
+                        let removed = initial - delta_chunks.len();
+                        if removed > 0 {
+                            chunks_swept += removed;
+                        }
+                    }
+
                     PipeState::PagedToDisk => {}
                 }
                 if evict_to_disk {
@@ -1048,6 +1250,7 @@ impl SemanticBus {
                     chunks,
                     ..
                 } => *is_persistent || !chunks.is_empty(),
+                PipeState::Branched { delta_chunks, .. } => !delta_chunks.is_empty(),
                 PipeState::PagedToDisk => true,
             });
 
@@ -1240,5 +1443,112 @@ mod tests {
         // Context payload includes surrounding sentences
         assert!(chunks[1].context_payload.contains("First sentence"));
         assert!(chunks[1].context_payload.contains("Third sentence"));
+    }
+
+    #[test]
+    fn test_cow_pipe_branching_and_isolation() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![1.0; 8];
+
+        bus.write_chunk(
+            "production_kb",
+            "Production fact A".to_string(),
+            "Production fact A context".to_string(),
+            vec.clone(),
+            "admin",
+            false,
+            MemoryCategory::Fact,
+        );
+
+        // Fork to branch
+        assert!(
+            bus.branch_pipe("production_kb", "production_kb:branch/alpha")
+                .is_ok()
+        );
+
+        // Write isolated chunk only to branch
+        bus.write_chunk(
+            "production_kb:branch/alpha",
+            "Experimental patch proposal".to_string(),
+            "Experimental patch proposal context".to_string(),
+            vec.clone(),
+            "agent_alpha",
+            false,
+            MemoryCategory::Skill,
+        );
+
+        // Base pipe remains unpolluted (finds only 1 chunk)
+        let base_results = bus.search_pipe(
+            "production_kb",
+            &vec,
+            "Production",
+            10,
+            None,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(base_results.len(), 1);
+        assert_eq!(base_results[0].1.text.as_str(), "Production fact A");
+
+        // Branch pipe sees both base + delta (finds 2 chunks)
+        let branch_results = bus.search_pipe(
+            "production_kb:branch/alpha",
+            &vec,
+            "Production",
+            10,
+            None,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(branch_results.len(), 2);
+    }
+
+    #[test]
+    fn test_cow_pipe_diff_and_merge() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![1.0; 8];
+
+        bus.write_chunk(
+            "base_doc",
+            "Initial base doc".to_string(),
+            "Initial base doc context".to_string(),
+            vec.clone(),
+            "admin",
+            false,
+            MemoryCategory::Fact,
+        );
+
+        assert!(bus.branch_pipe("base_doc", "base_doc:branch/task").is_ok());
+
+        bus.write_chunk(
+            "base_doc:branch/task",
+            "Verified bugfix".to_string(),
+            "Verified bugfix context".to_string(),
+            vec.clone(),
+            "worker",
+            false,
+            MemoryCategory::Skill,
+        );
+
+        // Inspect diff
+        let diff = bus.diff_pipe("base_doc", "base_doc:branch/task").unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].text.as_str(), "Verified bugfix");
+
+        // Atomic Merge into base and delete branch
+        let merged_count = bus
+            .merge_pipe("base_doc", "base_doc:branch/task", true)
+            .unwrap();
+        assert_eq!(merged_count, 1);
+
+        // Base now has 2 chunks!
+        let base_results =
+            bus.search_pipe("base_doc", &vec, "bugfix", 10, None, None, false, false);
+        assert_eq!(base_results.len(), 2);
+
+        // Branch was cleaned up
+        assert!(bus.diff_pipe("base_doc", "base_doc:branch/task").is_err());
     }
 }

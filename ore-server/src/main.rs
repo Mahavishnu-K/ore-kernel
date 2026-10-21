@@ -131,6 +131,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/ipc/search", post(handlers::ipc::sys_search_context))
         .route("/ipc/send", post(handlers::ipc::ipc_send))
         .route("/ipc/listen/:app_id", get(handlers::ipc::ipc_listen))
+        .route("/ipc/pipe/branch", post(handlers::ipc::sys_branch_pipe))
+        .route("/ipc/pipe/diff", post(handlers::ipc::sys_diff_pipe))
+        .route("/ipc/pipe/merge", post(handlers::ipc::sys_merge_pipe))
         .route("/execute", post(handlers::system::execute_tool))
         .layer(axum_middleware::from_fn_with_state(
             shared_state.clone(),

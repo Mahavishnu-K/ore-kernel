@@ -1,5 +1,8 @@
 use crate::payloads::ChunkStrategy;
-use crate::payloads::{IpcSearchRequest, IpcShareRequest, SearchResult};
+use crate::payloads::{
+    IpcSearchRequest, IpcShareRequest, PipeBranchRequest, PipeDiffRequest, PipeDiffResponse,
+    PipeMergeRequest, SearchResult,
+};
 use crate::state::KernelState;
 use axum::{
     extract::{Json, Path, State},
@@ -10,6 +13,179 @@ use ore_core::ipc::{AgentMessage, SemanticBus};
 use ore_core::kprintln;
 use ore_core::memory::Pager;
 use std::sync::Arc;
+
+/// Validates pipe access including wildcard branch patterns (e.g., "incident_409:branch/*" or "*")
+pub fn is_pipe_permitted(allowed_pipes: &[String], target_pipe: &str) -> bool {
+    for pattern in allowed_pipes {
+        if pattern == "*" || pattern == target_pipe {
+            return true;
+        }
+        if let Some(prefix) = pattern.strip_suffix("/*") {
+            if target_pipe.starts_with(prefix) && target_pipe[prefix.len()..].starts_with('/') {
+                return true;
+            }
+        } else if let Some(prefix) = pattern.strip_suffix('*')
+            && target_pipe.starts_with(prefix)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// POST /ipc/pipe/branch - Fork a base pipe into an isolated Copy-on-Write memory branch
+pub async fn sys_branch_pipe(
+    State(state): State<Arc<KernelState>>,
+    Json(payload): Json<PipeBranchRequest>,
+) -> impl IntoResponse {
+    let manifest = match state.registry.get_app(&payload.app_id) {
+        Some(m) => m,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                format!("KERNEL ALERT: Unregistered Agent '{}'.", payload.app_id),
+            )
+                .into_response();
+        }
+    };
+
+    if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.base_pipe) {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "Permission Denied: Base pipe '{}' is restricted.",
+                payload.base_pipe
+            ),
+        )
+            .into_response();
+    }
+
+    if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.branch_pipe) {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "Permission Denied: Target branch pipe '{}' is restricted.",
+                payload.branch_pipe
+            ),
+        )
+            .into_response();
+    }
+
+    match state
+        .semantic_bus
+        .branch_pipe(&payload.base_pipe, &payload.branch_pipe)
+    {
+        Ok(_) => (
+            StatusCode::OK,
+            format!(
+                "SUCCESS: Forked branch '{}' from base '{}' (Zero-copy CoW).",
+                payload.branch_pipe, payload.base_pipe
+            ),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("KERNEL ERROR: {}", e)).into_response(),
+    }
+}
+
+/// POST /ipc/pipe/diff - View unmerged staged chunks in a memory branch
+pub async fn sys_diff_pipe(
+    State(state): State<Arc<KernelState>>,
+    Json(payload): Json<PipeDiffRequest>,
+) -> impl IntoResponse {
+    let manifest = match state.registry.get_app(&payload.app_id) {
+        Some(m) => m,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                format!("KERNEL ALERT: Unregistered Agent '{}'.", payload.app_id),
+            )
+                .into_response();
+        }
+    };
+
+    if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.branch_pipe) {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "Permission Denied: Branch '{}' is locked.",
+                payload.branch_pipe
+            ),
+        )
+            .into_response();
+    }
+
+    match state
+        .semantic_bus
+        .diff_pipe(&payload.base_pipe, &payload.branch_pipe)
+    {
+        Ok(chunks) => {
+            let staged_chunks: Vec<SearchResult> = chunks
+                .into_iter()
+                .map(|c| SearchResult {
+                    text: c.text.to_string(),
+                    context_payload: c.context_payload.to_string(),
+                    score: 1.0,
+                    source_app: c.source_app.clone(),
+                    timestamp: c.timestamp,
+                    category: c.category,
+                })
+                .collect();
+
+            let resp = PipeDiffResponse {
+                base_pipe: payload.base_pipe,
+                branch_pipe: payload.branch_pipe,
+                delta_count: staged_chunks.len(),
+                staged_chunks,
+            };
+            JsonResponse(resp).into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, format!("KERNEL ERROR: {}", e)).into_response(),
+    }
+}
+
+/// POST /ipc/pipe/merge - Atomically commit branch chunks into base pipe and flush to SSD
+pub async fn sys_merge_pipe(
+    State(state): State<Arc<KernelState>>,
+    Json(payload): Json<PipeMergeRequest>,
+) -> impl IntoResponse {
+    let manifest = match state.registry.get_app(&payload.app_id) {
+        Some(m) => m,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                format!("KERNEL ALERT: Unregistered Agent '{}'.", payload.app_id),
+            )
+                .into_response();
+        }
+    };
+
+    if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.base_pipe) {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "Permission Denied: Target base pipe '{}' is locked.",
+                payload.base_pipe
+            ),
+        )
+            .into_response();
+    }
+
+    match state.semantic_bus.merge_pipe(
+        &payload.base_pipe,
+        &payload.branch_pipe,
+        payload.delete_branch_after_merge,
+    ) {
+        Ok(count) => (
+            StatusCode::OK,
+            format!(
+                "SUCCESS: Merged {} chunks from '{}' into '{}' (Crash-consistent SSD commit).",
+                count, payload.branch_pipe, payload.base_pipe
+            ),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("KERNEL ERROR: {}", e)).into_response(),
+    }
+}
 
 pub async fn sys_share_context(
     State(state): State<Arc<KernelState>>,
@@ -29,11 +205,7 @@ pub async fn sys_share_context(
         }
     };
 
-    if !manifest
-        .ipc
-        .allowed_semantic_pipes
-        .contains(&payload.target_pipe)
-    {
+    if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.target_pipe) {
         kprintln!(
             "-> [BLOCKED] Agent '{}' tried to write to restricted pipe '{}'.",
             payload.source_app,
@@ -200,12 +372,8 @@ pub async fn sys_search_context(
         }
     };
 
-    // 2. PERMISSION CHECK
-    if !manifest
-        .ipc
-        .allowed_semantic_pipes
-        .contains(&payload.target_pipe)
-    {
+    // PERMISSION CHECK
+    if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.target_pipe) {
         kprintln!(
             "-> [BLOCKED] Agent '{}' tried to read restricted pipe '{}'.",
             payload.source_app,

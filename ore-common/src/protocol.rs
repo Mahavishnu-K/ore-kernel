@@ -188,6 +188,39 @@ pub struct SearchResult {
     pub category: MemoryCategory,
 }
 
+// ─── CoW Branching DTOs ──────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PipeBranchRequest {
+    pub app_id: String,
+    pub base_pipe: String,
+    pub branch_pipe: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PipeDiffRequest {
+    pub app_id: String,
+    pub base_pipe: String,
+    pub branch_pipe: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PipeDiffResponse {
+    pub base_pipe: String,
+    pub branch_pipe: String,
+    pub delta_count: usize,
+    pub staged_chunks: Vec<SearchResult>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PipeMergeRequest {
+    pub app_id: String,
+    pub base_pipe: String,
+    pub branch_pipe: String,
+    #[serde(default)]
+    pub delete_branch_after_merge: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExecuteRequest {
     pub app_id: String,
