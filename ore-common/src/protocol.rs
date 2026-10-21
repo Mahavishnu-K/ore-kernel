@@ -147,6 +147,7 @@ pub enum ChunkStrategy {
     #[default]
     SlidingWindow,
     SentenceAware,
+    SentenceWindow,
     Paragraph,
     ExactMatch,
 }
@@ -179,6 +180,7 @@ pub struct IpcSearchRequest {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SearchResult {
     pub text: String,
+    pub context_payload: String,
     pub score: f32,
     pub source_app: String,
     pub timestamp: u64,

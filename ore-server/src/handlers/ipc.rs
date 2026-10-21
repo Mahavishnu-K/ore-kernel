@@ -65,6 +65,7 @@ pub async fn sys_share_context(
     let strategy_str = match payload.chunk_strategy.unwrap_or_default() {
         ChunkStrategy::SlidingWindow => "sliding_window",
         ChunkStrategy::SentenceAware => "sentence_aware",
+        ChunkStrategy::SentenceWindow => "sentence_window",
         ChunkStrategy::Paragraph => "paragraph",
         ChunkStrategy::ExactMatch => "exact_match",
     };
@@ -80,19 +81,21 @@ pub async fn sys_share_context(
     }
 
     kprintln!(
-        "-> [SEMANTIC BUS] Text split into {} overlapping windows.",
-        total_blocks
-    );
-    kprintln!(
         "-> [SEMANTIC BUS] Ready to process {} blocks. Waking up CPU Embedder...",
         total_blocks
+    );
+
+    kprintln!(
+        "-> [SEMANTIC BUS] Decoupled representation prepared: {} chunks (Strategy: '{}').",
+        total_blocks,
+        strategy_str
     );
 
     let mut chunks_to_embed = Vec::new();
     let mut cached_chunks = Vec::new();
 
     for chunk in chunks.clone() {
-        if let Some(cached_vector) = state.semantic_bus.get_cached_embedding(&chunk) {
+        if let Some(cached_vector) = state.semantic_bus.get_cached_embedding(&chunk.probe_text) {
             cached_chunks.push((chunk, cached_vector));
         } else {
             chunks_to_embed.push(chunk);
@@ -101,25 +104,32 @@ pub async fn sys_share_context(
 
     let mut wake_embedder = false;
 
-    let _embedder_guard = state.embedder_lock.lock().await;
-
     let category = payload
         .category
         .unwrap_or(ore_common::protocol::MemoryCategory::General);
+
+    let _embedder_guard = state.embedder_lock.lock().await;
+
     // Convert text to Math Vectors
     if !chunks_to_embed.is_empty() {
         wake_embedder = true;
+        let probe_texts: Vec<String> = chunks_to_embed
+            .iter()
+            .map(|c| c.probe_text.clone())
+            .collect();
 
         match state
             .driver
-            .generate_embeddings(&state.system_embedder, chunks_to_embed.clone())
+            .generate_embeddings(&state.system_embedder, probe_texts)
             .await
         {
             Ok(vectors) => {
-                for (chunk, vector) in chunks_to_embed.into_iter().zip(vectors.into_iter()) {
+                for (chunk_payload, vector) in chunks_to_embed.into_iter().zip(vectors.into_iter())
+                {
                     state.semantic_bus.write_chunk(
                         &payload.target_pipe,
-                        chunk,
+                        chunk_payload.probe_text,
+                        chunk_payload.context_payload,
                         vector,
                         &manifest.app_id,
                         manifest.ipc.semantic_persistence,
@@ -131,10 +141,11 @@ pub async fn sys_share_context(
         }
     }
 
-    for (chunk, arc_vector) in cached_chunks {
+    for (chunk_payload, arc_vector) in cached_chunks {
         state.semantic_bus.write_cached_chunk(
             &payload.target_pipe,
-            chunk,
+            chunk_payload.probe_text,
+            chunk_payload.context_payload,
             arc_vector,
             &manifest.app_id,
             manifest.ipc.semantic_persistence,
@@ -278,6 +289,7 @@ pub async fn sys_search_context(
         .into_iter()
         .map(|(score, chunk_arc)| SearchResult {
             text: chunk_arc.text.to_string(), // Deref Arc to String
+            context_payload: chunk_arc.context_payload.to_string(),
             score,
             source_app: chunk_arc.source_app.clone(),
             timestamp: chunk_arc.timestamp,

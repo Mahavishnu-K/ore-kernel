@@ -176,13 +176,24 @@ impl Bm25Index {
     }
 }
 
-// ─── TIER 2: MEMORY CHUNK & COGNITIVE MMU PIPES ───────────────────────────────
+// ─── TIER 2: DECOUPLED MEMORY CHUNK & COGNITIVE MMU PIPES ───────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChunkPayload {
+    /// The tight sentence/probe text embedded into vector space and indexed by BM25
+    pub probe_text: String,
+    /// The surrounding context window payload injected into LLM prompts
+    pub context_payload: String,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MemoryChunk {
     pub id: u64,
     pub text: Arc<String>,
-    pub vector: Arc<Vec<f32>>, // Pre-normalized unit vector
+    /// Decoupled parent/window context payload
+    pub context_payload: Arc<String>,
+    /// Pre-normalized unit vector (generated from `text`)
+    pub vector: Arc<Vec<f32>>,
     pub source_app: String,
     pub timestamp: u64,
     pub category: MemoryCategory,
@@ -330,10 +341,12 @@ impl SemanticBus {
         total
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn write_chunk(
         &self,
         pipe_name: &str,
         text: String,
+        context_payload: String,
         mut vector: Vec<f32>,
         source_app: &str,
         is_persistent: bool,
@@ -342,6 +355,13 @@ impl SemanticBus {
         Self::normalize(&mut vector);
         let arc_vector = Arc::new(vector);
         let arc_text = Arc::new(text);
+
+        // Zero-copy optimization: If context is identical to text, share the same Arc pointer
+        let arc_context = if arc_text.as_str() == context_payload.as_str() {
+            Arc::clone(&arc_text)
+        } else {
+            Arc::new(context_payload)
+        };
 
         let hash = Self::hash_text(&arc_text);
         let timestamp = SystemTime::now()
@@ -354,6 +374,7 @@ impl SemanticBus {
         let arc_chunk = Arc::new(MemoryChunk {
             id: chunk_id,
             text: arc_text,
+            context_payload: arc_context,
             vector: Arc::clone(&arc_vector),
             source_app: source_app.to_string(),
             timestamp,
@@ -366,10 +387,12 @@ impl SemanticBus {
         self.insert_chunk_to_pipe(pipe_name, arc_chunk, is_persistent);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn write_cached_chunk(
         &self,
         pipe_name: &str,
         text: String,
+        context_payload: String,
         arc_vector: Arc<Vec<f32>>,
         source_app: &str,
         is_persistent: bool,
@@ -382,9 +405,17 @@ impl SemanticBus {
 
         let chunk_id = self.next_chunk_id.fetch_add(1, AtomicOrdering::SeqCst);
 
+        let arc_text = Arc::new(text);
+        let arc_context = if arc_text.as_str() == context_payload.as_str() {
+            Arc::clone(&arc_text)
+        } else {
+            Arc::new(context_payload)
+        };
+
         let arc_chunk = Arc::new(MemoryChunk {
             id: chunk_id,
-            text: Arc::new(text),
+            text: arc_text,
+            context_payload: arc_context,
             vector: arc_vector,
             source_app: source_app.to_string(),
             timestamp,
@@ -672,7 +703,7 @@ impl SemanticBus {
 
     // ─── CHUNKING ENGINE ─────────────────────────────────────────────────────────
 
-    fn create_sliding_windows(text: &str, window_size: usize, overlap: usize) -> Vec<String> {
+    fn create_sliding_windows(text: &str, window_size: usize, overlap: usize) -> Vec<ChunkPayload> {
         let words: Vec<&str> = text.split_whitespace().collect();
         let mut chunks = Vec::new();
         let mut i = 0;
@@ -680,7 +711,13 @@ impl SemanticBus {
 
         while i < words.len() {
             let end = std::cmp::min(i + window_size, words.len());
-            chunks.push(words[i..end].join(" "));
+
+            let chunk_str = words[i..end].join(" ");
+            chunks.push(ChunkPayload {
+                probe_text: chunk_str.clone(),
+                context_payload: chunk_str,
+            });
+
             if end == words.len() {
                 break;
             }
@@ -694,7 +731,7 @@ impl SemanticBus {
         text: &str,
         target_words: usize,
         overlap_words: usize,
-    ) -> Vec<String> {
+    ) -> Vec<ChunkPayload> {
         let mut sentences = Vec::new();
         let mut current_sentence = String::new();
         let mut chars = text.chars().peekable();
@@ -732,7 +769,11 @@ impl SemanticBus {
             // If a single sentence exceeds target words, fallback to sliding window for that sentence
             if s_words >= target_words {
                 if !current_chunk_sentences.is_empty() {
-                    chunks.push(current_chunk_sentences.join(" "));
+                    let full = current_chunk_sentences.join(" ");
+                    chunks.push(ChunkPayload {
+                        probe_text: full.clone(),
+                        context_payload: full,
+                    });
                     current_chunk_sentences.clear();
                     current_word_count = 0;
                 }
@@ -745,7 +786,11 @@ impl SemanticBus {
             }
 
             if current_word_count + s_words > target_words && !current_chunk_sentences.is_empty() {
-                chunks.push(current_chunk_sentences.join(" "));
+                let full = current_chunk_sentences.join(" ");
+                chunks.push(ChunkPayload {
+                    probe_text: full.clone(),
+                    context_payload: full,
+                });
 
                 // Keep overlapping tail sentences
                 let mut kept_sentences = Vec::new();
@@ -768,14 +813,99 @@ impl SemanticBus {
         }
 
         if !current_chunk_sentences.is_empty() {
-            chunks.push(current_chunk_sentences.join(" "));
+            let full = current_chunk_sentences.join(" ");
+            chunks.push(ChunkPayload {
+                probe_text: full.clone(),
+                context_payload: full,
+            });
+        }
+
+        chunks
+    }
+
+    /// Decoupled Sentence-Window Chunking:
+    /// Embeds the isolated, high-precision focal sentence as the probe vector,
+    /// but expands the surrounding context up to `target_window_words` for the LLM context payload.
+    fn create_sentence_window_chunks(text: &str, target_window_words: usize) -> Vec<ChunkPayload> {
+        let mut sentences = Vec::new();
+        let mut current_sentence = String::new();
+        let mut chars = text.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            current_sentence.push(c);
+            if matches!(c, '.' | '!' | '?')
+                && let Some(&next) = chars.peek()
+                && next.is_whitespace()
+            {
+                let trimmed = current_sentence.trim();
+                if !trimmed.is_empty() {
+                    sentences.push(trimmed.to_string());
+                }
+                current_sentence.clear();
+            }
+        }
+        let tail = current_sentence.trim();
+        if !tail.is_empty() {
+            sentences.push(tail.to_string());
+        }
+
+        if sentences.is_empty() {
+            return Self::create_sliding_windows(
+                text,
+                target_window_words,
+                target_window_words / 5,
+            );
+        }
+
+        let num_sentences = sentences.len();
+        let sentence_word_counts: Vec<usize> = sentences
+            .iter()
+            .map(|s| s.split_whitespace().count())
+            .collect();
+
+        let mut chunks = Vec::with_capacity(num_sentences);
+
+        for i in 0..num_sentences {
+            let probe_text = sentences[i].clone();
+
+            // Centered window expansion: Expand backward and forward until target_window_words
+            let mut start_idx = i;
+            let mut end_idx = i;
+            let mut total_words = sentence_word_counts[i];
+
+            let mut expanded = true;
+            while expanded && total_words < target_window_words {
+                expanded = false;
+
+                // Expand backward
+                if start_idx > 0 {
+                    let prev = start_idx - 1;
+                    start_idx = prev;
+                    total_words += sentence_word_counts[prev];
+                    expanded = true;
+                }
+
+                // Expand forward
+                if total_words < target_window_words && end_idx + 1 < num_sentences {
+                    let next = end_idx + 1;
+                    end_idx = next;
+                    total_words += sentence_word_counts[next];
+                    expanded = true;
+                }
+            }
+
+            let context_payload = sentences[start_idx..=end_idx].join(" ");
+            chunks.push(ChunkPayload {
+                probe_text,
+                context_payload,
+            });
         }
 
         chunks
     }
 
     /// Splits by double-newlines (\n\n) preserving whole thoughts and paragraphs
-    fn create_paragraph_chunks(text: &str, max_words: usize) -> Vec<String> {
+    fn create_paragraph_chunks(text: &str, max_words: usize) -> Vec<ChunkPayload> {
         let paragraphs: Vec<&str> = text
             .split("\n\n")
             .map(|p| p.trim())
@@ -795,7 +925,11 @@ impl SemanticBus {
 
             if p_words > max_words {
                 if !current_buffer.is_empty() {
-                    chunks.push(current_buffer.join("\n\n"));
+                    let full = current_buffer.join("\n\n");
+                    chunks.push(ChunkPayload {
+                        probe_text: full.clone(),
+                        context_payload: full,
+                    });
                     current_buffer.clear();
                     current_count = 0;
                 }
@@ -804,7 +938,11 @@ impl SemanticBus {
             }
 
             if current_count + p_words > max_words && !current_buffer.is_empty() {
-                chunks.push(current_buffer.join("\n\n"));
+                let full = current_buffer.join("\n\n");
+                chunks.push(ChunkPayload {
+                    probe_text: full.clone(),
+                    context_payload: full,
+                });
                 current_buffer.clear();
                 current_count = 0;
             }
@@ -814,18 +952,31 @@ impl SemanticBus {
         }
 
         if !current_buffer.is_empty() {
-            chunks.push(current_buffer.join("\n\n"));
+            let full = current_buffer.join("\n\n");
+            chunks.push(ChunkPayload {
+                probe_text: full.clone(),
+                context_payload: full,
+            });
         }
 
         chunks
     }
 
-    pub fn chunk_text(text: &str, strategy: &str, size: usize, overlap: usize) -> Vec<String> {
+    pub fn chunk_text(
+        text: &str,
+        strategy: &str,
+        size: usize,
+        overlap: usize,
+    ) -> Vec<ChunkPayload> {
         match strategy {
             "sliding_window" => Self::create_sliding_windows(text, size, overlap),
             "sentence_aware" => Self::create_sentence_aware_chunks(text, size, overlap),
+            "sentence_window" => Self::create_sentence_window_chunks(text, size),
             "paragraph" => Self::create_paragraph_chunks(text, size),
-            "exact_match" => vec![text.to_string()],
+            "exact_match" => vec![ChunkPayload {
+                probe_text: text.to_string(),
+                context_payload: text.to_string(),
+            }],
             _ => Self::create_sliding_windows(text, size, overlap),
         }
     }
@@ -997,8 +1148,30 @@ mod tests {
     fn test_sentence_aware_chunking() {
         let text = "Hello world! This is a test of the sentence chunker. It preserves boundaries properly? Absolutely.";
         let chunks = SemanticBus::chunk_text(text, "sentence_aware", 8, 2);
+
+        // chunk_text returns one ChunkPayload per chunk; the text lives in its fields.
         assert!(!chunks.is_empty());
-        assert!(chunks.iter().any(|c| c.contains("Hello world!")));
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.context_payload.contains("Hello world!"))
+        );
+
+        // Sentence boundaries are preserved: no chunk is empty or ends mid-sentence.
+        for c in &chunks {
+            assert!(!c.probe_text.trim().is_empty());
+            assert!(
+                c.context_payload.trim_end().ends_with(['.', '!', '?']),
+                "chunk ends mid-sentence: {:?}",
+                c.context_payload
+            );
+        }
+
+        // Short sentences are packed together, never split.
+        assert!(chunks.iter().any(|c| {
+            c.context_payload
+                .contains("It preserves boundaries properly? Absolutely.")
+        }));
     }
 
     #[test]
@@ -1020,6 +1193,7 @@ mod tests {
         bus.write_chunk(
             "test_pipe",
             "This is a verified fact".to_string(),
+            "This is a verified fact".to_string(),
             vec.clone(),
             "agent_a",
             false,
@@ -1028,6 +1202,7 @@ mod tests {
 
         bus.write_chunk(
             "test_pipe",
+            "This is a procedural rule".to_string(),
             "This is a procedural rule".to_string(),
             vec.clone(),
             "agent_a",
@@ -1049,5 +1224,21 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1.category, MemoryCategory::Directive);
         assert!(results[0].1.text.contains("procedural rule"));
+    }
+
+    #[test]
+    fn test_sentence_window_decoupled_chunking() {
+        let text = "First sentence of the log. Second sentence with the critical error. Third sentence has recovery.";
+        let chunks = SemanticBus::chunk_text(text, "sentence_window", 100, 20);
+
+        assert_eq!(chunks.len(), 3);
+        // Probe text is the isolated sentence
+        assert_eq!(
+            chunks[1].probe_text,
+            "Second sentence with the critical error."
+        );
+        // Context payload includes surrounding sentences
+        assert!(chunks[1].context_payload.contains("First sentence"));
+        assert!(chunks[1].context_payload.contains("Third sentence"));
     }
 }
