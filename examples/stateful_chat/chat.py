@@ -1,7 +1,7 @@
 """
 stateful_chat/chat.py - Multi-turn conversations with memory.
 
-Unlike the Simple Bot, this chat uses ORE's /ask route which
+Unlike the Simple Bot, this chat uses ORE's /infer route which
 automatically pages conversation history to/from the SSD.
 Your conversation survives kernel restarts.
 
@@ -60,7 +60,7 @@ def main():
             print("  Conversation history wiped.\n")
             continue
 
-        # The /ask route automatically handles:
+        # The /infer route automatically handles:
         #   1. Page-in previous history from memory/openclaw.json
         #   2. Run through the Context Firewall
         #   3. Append this message to history

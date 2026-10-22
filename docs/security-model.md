@@ -58,11 +58,11 @@ Handlers look up the caller's manifest in the `AppRegistry` (loaded from `manife
 |---|---|
 | Unregistered `app_id` → rejected | `/run` (`401`), `/ipc/*`, `/execute` (error text) |
 | `allowed_models` (`403`; `"*"` allows every model) | `/run` |
-| `max_tokens_per_minute` rate limit (`429`) | `/run` |
+| `max_tokens_per_minute` rate limit | `/run` (`429`), `/ask` |
 | `allowed_agent_targets` for agent-to-agent messages | `/ipc/send` |
 | `allowed_semantic_pipes` for reading and writing shared memory | `/ipc/share`, `/ipc/search` |
 | `can_execute_wasm`, `allowed_tools`, `allowed_language_runtimes`, `can_execute_shell` | `/execute` |
-| `allowed_models` (first concrete entry picks the model) | `/ask`, `/compact` |
+| `allowed_models` (first concrete entry picks the model) | `/infer`, `/compact` |
 
 Manifests are read once at boot. Restart the kernel after editing them. A manifest that fails to parse or validate is skipped with a `[SECURITY ALERT]` log; the kernel still boots without that agent.
 
@@ -125,6 +125,16 @@ Runs only if `privacy.enforce_pii_redaction = true`:
 | **Network** | Internal IPs (`10.x`, `192.168.x`, `172.16–31.x`) | `[INTERNAL IP REDACTED]` |
 
 Each matching category is logged as `[FIREWALL: DLP_TRIGGER]`, followed by a `DLP_SUMMARY` count.
+
+#### Retrieved Context (Auto-RAG / CRAG)
+
+Context retrieved from a Semantic Bus pipe can be written by other agents or fetched from the web by a CRAG fallback tool, so it isn't trusted either. Before injection, every retrieved chunk passes `ContextFirewall::secure_retrieved_context` under the **reading** agent's manifest:
+
+- A chunk that trips the injection rules is **dropped** (logged as `[FIREWALL: RAG_CHUNK_DROPPED]`). The request itself still runs with the remaining chunks.
+- Surviving chunks are PII-redacted when `enforce_pii_redaction = true`.
+- The injected block is labelled as reference data that the model must not take instructions from.
+
+These are the same regex heuristics as for prompts: they stop literal planted instructions, not paraphrased ones.
 
 ---
 

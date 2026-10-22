@@ -124,8 +124,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/pull/:model", get(handlers::system::pull_model))
         .route("/load/:model", get(handlers::system::load_model))
         .route("/clear/:app_id", get(handlers::system::clear_memory))
-        .route("/ask/:prompt", get(handlers::inference::ask_ai))
-        .route("/run", post(handlers::inference::run_process))
+        .route(
+            "/infer/:prompt",
+            get(handlers::inference::run_agent_inference),
+        )
+        .route("/run", post(handlers::inference::run_user_inference))
         .route("/compact/:app_id", get(handlers::system::compact_memory))
         .route("/ipc/share", post(handlers::ipc::sys_share_context))
         .route("/ipc/search", post(handlers::ipc::sys_search_context))

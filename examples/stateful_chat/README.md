@@ -4,7 +4,7 @@
 
 ## What It Does
 
-A conversational chatbot that maintains history across multiple exchanges. Unlike the Simple Bot (which is stateless), this example uses ORE's `GET /ask` route which automatically:
+A conversational chatbot that maintains history across multiple exchanges. Unlike the Simple Bot (which is stateless), this example uses ORE's `GET /infer` route which automatically:
 
 1. **Pages in** the agent's previous chat history from SSD
 2. **Appends** the new message
@@ -28,7 +28,7 @@ python chat.py
 
 ```
 Turn 1:
-  chat.py  ──▶  GET /ask/hello  ──▶  Kernel
+  chat.py  ──▶  GET /infer/hello  ──▶  Kernel
                                       │
                                       ├── page_in("openclaw")  → [] (empty)
                                       ├── firewall(prompt)
@@ -37,7 +37,7 @@ Turn 1:
                                       └── page_out("openclaw") → memory/openclaw.json
 
 Turn 2:
-  chat.py  ──▶  GET /ask/what_did_i_say  ──▶  Kernel
+  chat.py  ──▶  GET /infer/what_did_i_say  ──▶  Kernel
                                                │
                                                ├── page_in("openclaw")  → [{user: "hello"}, {bot: "..."}]
                                                ├── firewall(prompt)
@@ -49,13 +49,13 @@ Turn 2:
 
 | File | Purpose |
 |---|---|
-| `chat.py` | Multi-turn chat using the `/ask` route |
+| `chat.py` | Multi-turn chat using the `/infer` route |
 
-> **Note:** The `/ask` route uses the `openclaw` manifest identity, which has `stateful_paging = true`. This is already configured in `manifests/openclaw.toml`.
+> **Note:** The `/infer` route uses the `openclaw` manifest identity, which has `stateful_paging = true`. This is already configured in `manifests/openclaw.toml`.
 
 ## Key Difference from Simple Bot
 
-| | Simple Bot (`/run`) | Stateful Chat (`/ask`) |
+| | Simple Bot (`/run`) | Stateful Chat (`/infer`) |
 |---|---|---|
 | **History** | None - each prompt is independent | Full conversation history from SSD |
 | **Manifest** | `terminal_user` | `openclaw` |

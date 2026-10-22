@@ -1,7 +1,7 @@
 use crate::payloads::ChunkStrategy;
 use crate::payloads::{
-    IpcSearchRequest, IpcShareRequest, PipeBranchRequest, PipeDiffRequest, PipeDiffResponse,
-    PipeMergeRequest, SearchResult,
+    ExecuteRequest, IpcSearchRequest, IpcShareRequest, PipeBranchRequest, PipeDiffRequest,
+    PipeDiffResponse, PipeMergeRequest, SearchResult, StagedChunk,
 };
 use crate::state::KernelState;
 use axum::{
@@ -119,12 +119,12 @@ pub async fn sys_diff_pipe(
         .diff_pipe(&payload.base_pipe, &payload.branch_pipe)
     {
         Ok(chunks) => {
-            let staged_chunks: Vec<SearchResult> = chunks
+            let staged_chunks: Vec<StagedChunk> = chunks
                 .into_iter()
-                .map(|c| SearchResult {
+                .map(|c| StagedChunk {
+                    id: c.id,
                     text: c.text.to_string(),
                     context_payload: c.context_payload.to_string(),
-                    score: 1.0,
                     source_app: c.source_app.clone(),
                     timestamp: c.timestamp,
                     category: c.category,
@@ -395,10 +395,53 @@ pub async fn sys_search_context(
         payload.target_pipe
     );
 
-    // 3. GENERATE EMBEDDINGS
-    // We wrap the single query in a Vec for the batch-processing driver
+    // AUTONOMOUS HyDE (Hypothetical Document Embeddings) PRE-PASS
+    let enable_hyde = payload.enable_hyde.unwrap_or(manifest.rag.enable_hyde);
+
+    let dense_query_text = if enable_hyde {
+        kprintln!(
+            "-> [HyDE] Synthesizing hypothetical document for query: '{}'...",
+            payload.query
+        );
+        let hyde_prompt = format!(
+            "Write a factual, one-sentence direct answer excerpt to this question. Output ONLY the answer excerpt, no chat:\nQuestion: {}\nHypothetical Excerpt:",
+            payload.query
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let driver = Arc::clone(&state.driver);
+        let target_model = manifest
+            .resources
+            .allowed_models
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("llama3.2:1b")
+            .to_string();
+        let app_id = manifest.app_id.clone();
+
+        tokio::spawn(async move {
+            let _ = driver
+                .generate_text(&target_model, &app_id, false, &hyde_prompt, None, tx, "")
+                .await;
+        });
+
+        let mut hypo = String::new();
+        while let Some(word) = rx.recv().await {
+            hypo.push_str(&word);
+        }
+        let trimmed = hypo.trim().to_string();
+        if trimmed.is_empty() {
+            payload.query.clone()
+        } else {
+            kprintln!("-> [HyDE] Synthesized Excerpt: '{}'", trimmed);
+            trimmed
+        }
+    } else {
+        payload.query.clone()
+    };
+
+    // Generate Embeddings (computed on HyDE text for dense search)
     let query_vector =
-        if let Some(cached_vec) = state.semantic_bus.get_cached_embedding(&payload.query) {
+        if let Some(cached_vec) = state.semantic_bus.get_cached_embedding(&dense_query_text) {
             kprintln!("-> [SEMANTIC BUS] Query found in System Cache. Zero compute used.");
             cached_vec
         } else {
@@ -406,7 +449,7 @@ pub async fn sys_search_context(
 
             match state
                 .driver
-                .generate_embeddings(&state.system_embedder, vec![payload.query.clone()])
+                .generate_embeddings(&state.system_embedder, vec![dense_query_text.clone()])
                 .await
             {
                 Ok(v) => {
@@ -416,14 +459,14 @@ pub async fn sys_search_context(
                     // This stores the math for the Kernel's eyes only.
                     state
                         .semantic_bus
-                        .cache_only(&payload.query, Arc::clone(&arc_vec));
+                        .cache_only(&dense_query_text, Arc::clone(&arc_vec));
 
                     arc_vec
                 }
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("KERNEL ERROR: {}", e),
+                        format!("KERNEL ERROR: Failed to generate query embedding: {}", e),
                     )
                         .into_response();
                 }
@@ -433,14 +476,21 @@ pub async fn sys_search_context(
     let k = payload.top_k.unwrap_or(5);
     let filter_ref = payload.filter_app.as_deref();
     let filter_cat = payload.filter_category;
-    let enable_hybrid = payload.enable_hybrid.unwrap_or(true);
+    let enable_hybrid = payload.enable_hybrid.unwrap_or(manifest.rag.enable_hybrid);
+    let confidence_threshold = payload
+        .confidence_threshold
+        .unwrap_or(manifest.rag.confidence_threshold);
+    let crag_fallback_tool = payload
+        .crag_fallback_tool
+        .clone()
+        .or_else(|| manifest.rag.crag_fallback_tool.clone());
 
     kprintln!(
         "-> [SEMANTIC BUS] Executing Hybrid Search (BM25 + Dense SIMD RRF, top_k={})...",
         k
     );
 
-    let top_results = state.semantic_bus.search_pipe(
+    let mut outcome = state.semantic_bus.search_pipe(
         &payload.target_pipe,
         &query_vector,
         &payload.query,
@@ -451,17 +501,107 @@ pub async fn sys_search_context(
         enable_hybrid,
     );
 
+    // CRAG CONFIDENCE GATE & FALLBACK EXECUTION
+    let mut crag_rescued = false;
+    if outcome.top_dense_score < confidence_threshold
+        && let Some(tool_name) = crag_fallback_tool.as_ref()
+    {
+        kprintln!(
+            "-> [CRAG] Low confidence retrieval ({:.2} < {:.2}). Auto-invoking fallback WASM tool '{}'...",
+            outcome.top_dense_score,
+            confidence_threshold,
+            tool_name
+        );
+
+        let exec_req = ExecuteRequest {
+            app_id: manifest.app_id.clone(),
+            tool_name: Some(tool_name.clone()),
+            // prepare_tool already sets argv[0] to the tool name; the query is argv[1].
+            args: Some(vec![payload.query.clone()]),
+            input_data: Some(payload.query.clone()),
+            language: None,
+            script: None,
+            dependencies: None,
+            shell_command: None,
+        };
+
+        match crate::execution::execute_request(state.clone(), exec_req).await {
+            Err(e) => kprintln!(
+                "-> [CRAG] Fallback tool '{}' was rejected: {}",
+                tool_name,
+                e
+            ),
+            // A trap, non-zero exit, or fuel exhaustion ends the output with a KERNEL ERROR
+            // line. Never ingest that as knowledge.
+            Ok(output) if output.contains("KERNEL ERROR") => kprintln!(
+                "-> [CRAG] Fallback tool '{}' failed; nothing ingested.",
+                tool_name
+            ),
+            Ok(live_output) => {
+                let trimmed = live_output.trim();
+                if !trimmed.is_empty() {
+                    kprintln!(
+                        "-> [CRAG] Fallback tool returned findings. Ingesting live context into pipe..."
+                    );
+
+                    let _embedder_guard = state.embedder_lock.lock().await;
+                    if let Ok(vecs) = state
+                        .driver
+                        .generate_embeddings(&state.system_embedder, vec![trimmed.to_string()])
+                        .await
+                        && let Some(live_vec) = vecs.into_iter().next()
+                    {
+                        state.semantic_bus.write_chunk(
+                            &payload.target_pipe,
+                            trimmed.to_string(),
+                            trimmed.to_string(),
+                            live_vec,
+                            tool_name,
+                            manifest.ipc.semantic_persistence,
+                            ore_common::protocol::MemoryCategory::Fact,
+                        );
+
+                        // Re-run search to surface the live finding
+                        outcome = state.semantic_bus.search_pipe(
+                            &payload.target_pipe,
+                            &query_vector,
+                            &payload.query,
+                            k,
+                            filter_ref,
+                            filter_cat,
+                            manifest.ipc.allow_time_decay,
+                            enable_hybrid,
+                        );
+                        crag_rescued = true;
+                    }
+                }
+            }
+        }
+    }
+
     let _ = state.driver.unload_model(&state.system_embedder).await;
 
-    let results: Vec<SearchResult> = top_results
+    let fallback_tool_name = crag_fallback_tool;
+
+    let results: Vec<SearchResult> = outcome
+        .results
         .into_iter()
-        .map(|(score, chunk_arc)| SearchResult {
-            text: chunk_arc.text.to_string(), // Deref Arc to String
-            context_payload: chunk_arc.context_payload.to_string(),
-            score,
-            source_app: chunk_arc.source_app.clone(),
-            timestamp: chunk_arc.timestamp,
-            category: chunk_arc.category,
+        .map(|(score, chunk_arc)| {
+            let is_from_fallback = crag_rescued
+                && (fallback_tool_name
+                    .as_deref()
+                    .is_some_and(|name| chunk_arc.source_app == name)
+                    || chunk_arc.source_app.ends_with(".wasm"));
+
+            SearchResult {
+                text: chunk_arc.text.to_string(), // Deref Arc to String
+                context_payload: chunk_arc.context_payload.to_string(),
+                score,
+                source_app: chunk_arc.source_app.clone(),
+                timestamp: chunk_arc.timestamp,
+                category: chunk_arc.category,
+                is_crag_fallback: is_from_fallback,
+            }
         })
         .collect();
 

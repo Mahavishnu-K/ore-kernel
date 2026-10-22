@@ -56,7 +56,7 @@ def main():
     # TEST 1: TIER 3 - COLD START (MASSIVE PREFILL)
     # ---------------------------------------------------------
     print("[*] TEST 1: Cold Start (Heavy Context Injection)")
-    print("    Agent: OpenClaw (/ask) | Model: llama3.2:1b")
+    print("    Agent: OpenClaw (/infer) | Model: llama3.2:1b")
     print("    Task: Injecting a massive system manual into the agent's brain...")
     
     start_time = time.time()
@@ -70,7 +70,7 @@ def main():
     # TEST 2: TIER 1 - HOT HIT
     # ---------------------------------------------------------
     print("[*] TEST 2: Hot Hit (Follow-up Question)")
-    print("    Agent: OpenClaw (/ask) | Model: llama3.2:1b")
+    print("    Agent: OpenClaw (/infer) | Model: llama3.2:1b")
     print("    Prompt: 'What is the launch code?'")
     print("    If stateful=true, this will skip the massive prefill!")
     
@@ -100,7 +100,7 @@ def main():
     # TEST 4: MEMORY ISOLATION & PAGE-IN
     # ---------------------------------------------------------
     print("[*] TEST 4: Swap Back & Page-In (Memory Recovery)")
-    print("    Agent: OpenClaw (/ask) | Model: llama3.2:1b")
+    print("    Agent: OpenClaw (/infer) | Model: llama3.2:1b")
     print("    Prompt: 'What is the lead architect's favorite beverage?'")
     print("    If stateful=true, ORE reads the heavy brain from SSD instead of doing math!")
     

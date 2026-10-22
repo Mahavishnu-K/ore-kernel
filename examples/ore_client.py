@@ -47,6 +47,7 @@ class OreClient:
         self.token = self._read_token()
         self.headers = {
             "Authorization": f"Bearer {self.token}",
+            
             "Content-Type": "application/json",
         }
 
@@ -97,10 +98,10 @@ class OreClient:
         return full_text
 
     def ask(self, prompt: str) -> str:
-        """GET /ask/:prompt - Secured inference with firewall + SSD paging."""
+        """GET /infer/:prompt - Secured inference with firewall + SSD paging."""
         safe = prompt.replace(" ", "_")
         r = requests.get(
-            f"{self.base_url}/ask/{safe}",
+            f"{self.base_url}/infer/{safe}",
             headers=self.headers,
         )
         r.raise_for_status()

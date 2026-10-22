@@ -98,7 +98,7 @@ Applications never talk to the GPU or host operating system directly. They talk 
 
 ## Request Lifecycles
 
-### 1. Inference Lifecycle (`/ask`, `/run`)
+### 1. Inference Lifecycle (`/infer`, `/run`)
 
 ```text
 Client (curl / CLI / App)
@@ -252,7 +252,7 @@ ore-system/
 │   │   └── python/          WASI asyncio event loop, requests/httpx shims
 │   └── handlers/            Route handlers
 │       ├── system.rs        Health, ps, ls, agents, manifests, pull, load, expel
-│       ├── inference.rs     ask_ai (secured + paged), run_process (streamed)
+│       ├── inference.rs     run_agent_inference (secured + paged), run_user_inference (streamed)
 │       └── ipc.rs           Semantic bus share/search, agent messaging
 ├── ore-cli/                 Interactive CLI tool (clap + dialoguer)
 │   ├── main.rs              Command dispatch + package downloads

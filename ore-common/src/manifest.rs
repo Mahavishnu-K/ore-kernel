@@ -7,7 +7,7 @@ use crate::constants::{
 use serde::{Deserialize, Serialize};
 
 /// Master Agent Manifest schema representing zero-trust capability permissions.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct AppManifest {
     pub app_id: String,
     pub description: String,
@@ -27,6 +27,8 @@ pub struct AppManifest {
     pub execution: Execution,
     #[serde(default)]
     pub ipc: Ipc,
+    #[serde(default)]
+    pub rag: Rag,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -168,6 +170,36 @@ impl Default for Ipc {
             allow_time_decay: false,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Rag {
+    #[serde(default = "default_true")]
+    pub enable_hybrid: bool,
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f32,
+    #[serde(default)]
+    pub crag_fallback_tool: Option<String>,
+    #[serde(default)]
+    pub enable_hyde: bool,
+    #[serde(default)]
+    pub auto_rag: bool,
+}
+
+impl Default for Rag {
+    fn default() -> Self {
+        Self {
+            enable_hybrid: true,
+            confidence_threshold: 0.70,
+            crag_fallback_tool: None,
+            enable_hyde: false,
+            auto_rag: false,
+        }
+    }
+}
+
+fn default_confidence_threshold() -> f32 {
+    0.70
 }
 
 impl AppManifest {

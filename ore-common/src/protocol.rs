@@ -175,6 +175,12 @@ pub struct IpcSearchRequest {
     pub top_k: Option<usize>,
     #[serde(default)]
     pub enable_hybrid: Option<bool>,
+    #[serde(default)]
+    pub confidence_threshold: Option<f32>,
+    #[serde(default)]
+    pub crag_fallback_tool: Option<String>,
+    #[serde(default)]
+    pub enable_hyde: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -186,9 +192,21 @@ pub struct SearchResult {
     pub timestamp: u64,
     #[serde(default)]
     pub category: MemoryCategory,
+    #[serde(default)]
+    pub is_crag_fallback: bool,
 }
 
 // ─── CoW Branching DTOs ──────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StagedChunk {
+    pub id: u64,
+    pub text: String,
+    pub context_payload: String,
+    pub source_app: String,
+    pub timestamp: u64,
+    pub category: MemoryCategory,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PipeBranchRequest {
@@ -209,7 +227,7 @@ pub struct PipeDiffResponse {
     pub base_pipe: String,
     pub branch_pipe: String,
     pub delta_count: usize,
-    pub staged_chunks: Vec<SearchResult>,
+    pub staged_chunks: Vec<StagedChunk>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

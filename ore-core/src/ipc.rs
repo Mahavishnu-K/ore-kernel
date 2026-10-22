@@ -245,6 +245,12 @@ impl PartialOrd for ScoredChunk {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct SearchOutcome {
+    pub results: Vec<(f32, Arc<MemoryChunk>)>,
+    pub top_dense_score: f32,
+}
+
 pub struct SemanticBus {
     memory_pipes: DashMap<String, PipeState>,
     embedding_cache: DashMap<u64, (Arc<Vec<f32>>, u64)>,
@@ -690,21 +696,63 @@ impl SemanticBus {
     pub fn get_pipe_contents(&self, pipe_name: &str) -> Option<VecDeque<Arc<MemoryChunk>>> {
         let _ = self.ensure_pipe_loaded(pipe_name);
 
-        self.memory_pipes
-            .get(pipe_name)
-            .and_then(|pipe| match pipe.value() {
-                PipeState::Active { chunks, .. } => Some(chunks.clone()),
+        // Copy out under the shard guard, then release it before resolving a branch's
+        // base pipe: paging the base in is a write, which would deadlock if both keys
+        // live in the same DashMap shard while this read guard is held.
+        let (own_chunks, base_pipe) = {
+            let pipe = self.memory_pipes.get(pipe_name)?;
+            match pipe.value() {
+                PipeState::Active { chunks, .. } => (chunks.clone(), None),
                 PipeState::Branched {
                     base_pipe,
                     delta_chunks,
                     ..
-                } => {
-                    let mut unified = self.get_pipe_contents(base_pipe).unwrap_or_default();
-                    unified.extend(delta_chunks.iter().cloned());
-                    Some(unified)
-                }
-                PipeState::PagedToDisk => None,
-            })
+                } => (delta_chunks.clone(), Some(base_pipe.clone())),
+                PipeState::PagedToDisk => return None,
+            }
+        };
+
+        match base_pipe {
+            None => Some(own_chunks),
+            Some(base) => {
+                let mut unified = self.get_pipe_contents(&base).unwrap_or_default();
+                unified.extend(own_chunks);
+                Some(unified)
+            }
+        }
+    }
+
+    /// Keeps the `limit` highest-scoring chunks in a min-heap (root = current lowest).
+    fn keep_top(
+        heap: &mut BinaryHeap<ScoredChunk>,
+        limit: usize,
+        score: f32,
+        chunk: &Arc<MemoryChunk>,
+    ) {
+        if heap.len() < limit {
+            heap.push(ScoredChunk {
+                score,
+                chunk: Arc::clone(chunk),
+            });
+        } else if let Some(mut root) = heap.peek_mut()
+            && score > root.score
+        {
+            *root = ScoredChunk {
+                score,
+                chunk: Arc::clone(chunk),
+            };
+        }
+    }
+
+    /// Highest score first; equal scores are ordered by chunk id so results are deterministic.
+    fn into_ranked(heap: BinaryHeap<ScoredChunk>) -> Vec<(f32, Arc<MemoryChunk>)> {
+        let mut ranked: Vec<_> = heap.into_iter().map(|s| (s.score, s.chunk)).collect();
+        ranked.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        ranked
     }
 
     /// Dual-Pass Hybrid Search (BM25 Sparse + Dense SIMD fused via Reciprocal Rank Fusion)
@@ -719,176 +767,140 @@ impl SemanticBus {
         filter_category: Option<MemoryCategory>,
         allow_time_decay: bool,
         enable_hybrid: bool,
-    ) -> Vec<(f32, Arc<MemoryChunk>)> {
+    ) -> SearchOutcome {
+        let empty = || SearchOutcome {
+            results: Vec::new(),
+            top_dense_score: 0.0,
+        };
+
         if top_k == 0 {
-            return vec![];
+            return empty();
         }
 
-        // PAGE FAULT RECOVERY: Verify if pipe is unloaded or in PagedToDisk state
-        let _ = self.ensure_pipe_loaded(pipe_name);
+        // PAGE FAULT RECOVERY: restore the pipe from SSD if it was paged out
+        if self.ensure_pipe_loaded(pipe_name).is_err() {
+            return empty();
+        }
 
-        let pipe_guard = match self.memory_pipes.get(pipe_name) {
-            Some(g) => g,
-            None => return vec![],
-        };
-
-        let (unified_chunks, bm25) = match pipe_guard.value() {
-            PipeState::Active { chunks, bm25, .. } => (chunks.clone(), bm25.clone()),
-            PipeState::Branched {
-                base_pipe,
-                delta_chunks,
-                bm25,
-            } => {
-                let mut combined = self.get_pipe_contents(base_pipe).unwrap_or_default();
-                combined.extend(delta_chunks.iter().cloned());
-                (combined, bm25.clone())
+        // Snapshot the chunk list (Arc clones) and score BM25 while holding the guard,
+        // instead of cloning the whole inverted index. The guard is released before a
+        // branch's base pipe is resolved (see get_pipe_contents for why).
+        let (own_chunks, base_pipe, bm25_scores) = {
+            let Some(pipe) = self.memory_pipes.get(pipe_name) else {
+                return empty();
+            };
+            match pipe.value() {
+                PipeState::Active { chunks, bm25, .. } => (
+                    chunks.clone(),
+                    None,
+                    enable_hybrid.then(|| bm25.score_query(query_text)),
+                ),
+                PipeState::Branched {
+                    base_pipe,
+                    delta_chunks,
+                    bm25,
+                } => (
+                    delta_chunks.clone(),
+                    Some(base_pipe.clone()),
+                    enable_hybrid.then(|| bm25.score_query(query_text)),
+                ),
+                PipeState::PagedToDisk => return empty(),
             }
-            PipeState::PagedToDisk => return vec![],
         };
 
-        drop(pipe_guard);
+        let unified_chunks = match base_pipe {
+            None => own_chunks,
+            Some(base) => {
+                let mut combined = self.get_pipe_contents(&base).unwrap_or_default();
+                combined.extend(own_chunks);
+                combined
+            }
+        };
+
+        let passes_filters = |chunk: &MemoryChunk| {
+            filter_app.is_none_or(|app| chunk.source_app == app)
+                && filter_category.is_none_or(|cat| chunk.category == cat)
+        };
 
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
-        // ── PASS 1: Dense SIMD Scoring with BinaryHeap ─────────────────────────
-        // For hybrid search, retain a candidate pool of (top_k * 4). For dense-only, retain top_k.
-        let dense_candidate_limit = if enable_hybrid {
-            (top_k * 4).clamp(32, 200)
+        // Hybrid search fuses two candidate pools; each must hold at least top_k.
+        let candidate_limit = if enable_hybrid {
+            (top_k * 4).clamp(32, 200).max(top_k)
         } else {
             top_k
         };
 
-        let mut dense_heap = BinaryHeap::with_capacity(dense_candidate_limit);
+        // ── PASS 1: Dense SIMD Scoring ──────────────────────────────────────────
+        let mut dense_heap = BinaryHeap::with_capacity(candidate_limit);
 
-        for chunk in unified_chunks.iter() {
-            if let Some(app_id) = filter_app
-                && chunk.source_app != app_id
-            {
-                continue;
-            }
-
-            if let Some(cat) = filter_category
-                && chunk.category != cat
-            {
-                continue;
-            }
-
-            // SIMD Dot Product
-            let base_score = Self::dot_product(&chunk.vector, query_vector);
-            let mut final_score = base_score;
+        for chunk in unified_chunks.iter().filter(|c| passes_filters(c)) {
+            let mut score = Self::dot_product(&chunk.vector, query_vector);
 
             if allow_time_decay {
-                let hours_old = (current_time.saturating_sub(chunk.timestamp)) as f32 / 3600.0;
-                let decay_factor = (1.0 - (hours_old * 0.01)).clamp(0.5, 1.0);
-                final_score *= decay_factor;
+                let hours_old = current_time.saturating_sub(chunk.timestamp) as f32 / 3600.0;
+                score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
             }
 
-            if dense_heap.len() < dense_candidate_limit {
-                dense_heap.push(ScoredChunk {
-                    score: final_score,
-                    chunk: Arc::clone(chunk),
-                });
-            } else if let Some(mut root) = dense_heap.peek_mut()
-                && final_score > root.score
-            {
-                *root = ScoredChunk {
-                    score: final_score,
-                    chunk: Arc::clone(chunk),
-                };
+            // NaN/inf (e.g. a corrupt vector) would poison the ordering
+            if score.is_finite() {
+                Self::keep_top(&mut dense_heap, candidate_limit, score, chunk);
             }
         }
 
-        // If hybrid search is disabled, return directly from the heap
-        if !enable_hybrid {
-            let mut results: Vec<_> = dense_heap.into_iter().map(|s| (s.score, s.chunk)).collect();
-            results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
-            return results;
-        }
+        let dense_ranked = Self::into_ranked(dense_heap);
+        let top_dense_score = dense_ranked.first().map_or(0.0, |(score, _)| *score);
 
-        // Explicit descending sort by score (highest score at index 0)
-        let mut dense_ranked: Vec<ScoredChunk> = dense_heap.into_vec();
-        dense_ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        let Some(bm25_scores) = bm25_scores else {
+            // Dense-only search: the dense ranking is the answer.
+            return SearchOutcome {
+                results: dense_ranked,
+                top_dense_score,
+            };
+        };
 
-        // ── PASS 2: BM25 Sparse Scoring with BinaryHeap ────────────────────────
-        let bm25_scores = bm25.score_query(query_text);
-        let sparse_candidate_limit = (top_k * 4).clamp(32, 200);
-        let mut sparse_heap = BinaryHeap::with_capacity(sparse_candidate_limit);
+        // ── PASS 2: BM25 Sparse Scoring ─────────────────────────────────────────
+        let mut sparse_heap = BinaryHeap::with_capacity(candidate_limit);
 
-        for chunk in unified_chunks.iter() {
-            if let Some(app_id) = filter_app
-                && chunk.source_app != app_id
-            {
-                continue;
-            }
-            if let Some(cat) = filter_category
-                && chunk.category != cat
-            {
-                continue;
-            }
-
+        for chunk in unified_chunks.iter().filter(|c| passes_filters(c)) {
             if let Some(&score) = bm25_scores.get(&chunk.id)
                 && score > 0.0
+                && score.is_finite()
             {
-                if sparse_heap.len() < sparse_candidate_limit {
-                    sparse_heap.push(ScoredChunk {
-                        score,
-                        chunk: Arc::clone(chunk),
-                    });
-                } else if let Some(mut root) = sparse_heap.peek_mut()
-                    && score > root.score
-                {
-                    *root = ScoredChunk {
-                        score,
-                        chunk: Arc::clone(chunk),
-                    };
-                }
+                Self::keep_top(&mut sparse_heap, candidate_limit, score, chunk);
             }
         }
 
-        // Explicit descending sort by score (highest score at index 0)
-        let mut sparse_ranked: Vec<ScoredChunk> = sparse_heap.into_vec();
-        sparse_ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        let sparse_ranked = Self::into_ranked(sparse_heap);
 
         // ── PASS 3: Reciprocal Rank Fusion (RRF) ────────────────────────────────
+        // score = Σ 1 / (k + rank), rank starting at 1 for the best hit in each list.
         const RRF_K: f32 = 60.0;
-        let mut rrf_scores: HashMap<u64, (f32, Arc<MemoryChunk>)> = HashMap::new();
+        let mut fused: HashMap<u64, (f32, Arc<MemoryChunk>)> = HashMap::new();
 
-        // Highest score gets rank 1 (rank_idx = 0 -> rank = 1.0)
-        for (rank_idx, scored) in dense_ranked.into_iter().enumerate() {
-            let rank = (rank_idx + 1) as f32;
-            let entry = rrf_scores
-                .entry(scored.chunk.id)
-                .or_insert((0.0, scored.chunk));
-            entry.0 += 1.0 / (RRF_K + rank);
-        }
-
-        for (rank_idx, scored) in sparse_ranked.into_iter().enumerate() {
-            let rank = (rank_idx + 1) as f32;
-            let entry = rrf_scores
-                .entry(scored.chunk.id)
-                .or_insert((0.0, scored.chunk));
-            entry.0 += 1.0 / (RRF_K + rank);
-        }
-
-        // Final Top-K selection using BinaryHeap
-        let mut final_heap = BinaryHeap::with_capacity(top_k);
-
-        for (_, (score, chunk)) in rrf_scores {
-            if final_heap.len() < top_k {
-                final_heap.push(ScoredChunk { score, chunk });
-            } else if let Some(mut root) = final_heap.peek_mut()
-                && score > root.score
-            {
-                *root = ScoredChunk { score, chunk };
+        for ranked in [dense_ranked, sparse_ranked] {
+            for (rank_idx, (_, chunk)) in ranked.into_iter().enumerate() {
+                let entry = fused.entry(chunk.id).or_insert((0.0, chunk));
+                entry.0 += 1.0 / (RRF_K + (rank_idx + 1) as f32);
             }
         }
 
-        let mut results: Vec<_> = final_heap.into_iter().map(|s| (s.score, s.chunk)).collect();
-        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
-        results
+        // At most 2 × candidate_limit entries, so a full sort is cheap.
+        let mut results: Vec<_> = fused.into_values().collect();
+        results.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        results.truncate(top_k);
+
+        SearchOutcome {
+            results,
+            top_dense_score,
+        }
     }
 
     // ─── CHUNKING ENGINE ─────────────────────────────────────────────────────────
@@ -1413,16 +1425,18 @@ mod tests {
             MemoryCategory::Directive,
         );
 
-        let results = bus.search_pipe(
-            "test_pipe",
-            &vec,
-            "procedural rule",
-            10,
-            None,
-            Some(MemoryCategory::Directive),
-            false,
-            true,
-        );
+        let results = bus
+            .search_pipe(
+                "test_pipe",
+                &vec,
+                "procedural rule",
+                10,
+                None,
+                Some(MemoryCategory::Directive),
+                false,
+                true,
+            )
+            .results;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1.category, MemoryCategory::Directive);
@@ -1478,30 +1492,34 @@ mod tests {
         );
 
         // Base pipe remains unpolluted (finds only 1 chunk)
-        let base_results = bus.search_pipe(
-            "production_kb",
-            &vec,
-            "Production",
-            10,
-            None,
-            None,
-            false,
-            false,
-        );
+        let base_results = bus
+            .search_pipe(
+                "production_kb",
+                &vec,
+                "Production",
+                10,
+                None,
+                None,
+                false,
+                false,
+            )
+            .results;
         assert_eq!(base_results.len(), 1);
         assert_eq!(base_results[0].1.text.as_str(), "Production fact A");
 
         // Branch pipe sees both base + delta (finds 2 chunks)
-        let branch_results = bus.search_pipe(
-            "production_kb:branch/alpha",
-            &vec,
-            "Production",
-            10,
-            None,
-            None,
-            false,
-            false,
-        );
+        let branch_results = bus
+            .search_pipe(
+                "production_kb:branch/alpha",
+                &vec,
+                "Production",
+                10,
+                None,
+                None,
+                false,
+                false,
+            )
+            .results;
         assert_eq!(branch_results.len(), 2);
     }
 
@@ -1544,8 +1562,9 @@ mod tests {
         assert_eq!(merged_count, 1);
 
         // Base now has 2 chunks!
-        let base_results =
-            bus.search_pipe("base_doc", &vec, "bugfix", 10, None, None, false, false);
+        let base_results = bus
+            .search_pipe("base_doc", &vec, "bugfix", 10, None, None, false, false)
+            .results;
         assert_eq!(base_results.len(), 2);
 
         // Branch was cleaned up

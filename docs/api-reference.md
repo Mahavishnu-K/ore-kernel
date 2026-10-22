@@ -285,13 +285,13 @@ Requests rejected before the tool runs (unregistered agent, tool not in `allowed
 
 Source: [`ore-server/src/handlers/inference.rs`](../ore-server/src/handlers/inference.rs)
 
-### `GET /ask/:prompt`
+### `GET /infer/:prompt`
 
 Secured inference with full firewall pipeline + SSD paging. Always runs as the **`openclaw`** agent (its manifest and memory), using the first model in its `allowed_models`. Underscores in the prompt are turned into spaces.
 
 ```bash
 curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/ask/What%20is%20a%20mutex
+     http://127.0.0.1:6767/infer/What%20is%20a%20mutex
 ```
 
 **Pipeline:** Auth → Manifest lookup → Firewall (injection + PII) → Page-in history & KV-Cache → Scheduler → Inference → Page-out history & KV-Cache (with Compaction support)

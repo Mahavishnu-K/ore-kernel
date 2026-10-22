@@ -46,7 +46,7 @@ Written by `ore init` when you choose the native engine.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `default_model` | string | - | Recorded for tooling. The kernel doesn't read it yet: `/ask` uses the first concrete model in the agent's `allowed_models`, and `/run` uses the model in the request |
+| `default_model` | string | - | Recorded for tooling. The kernel doesn't read it yet: `/infer` uses the first concrete model in the agent's `allowed_models`, and `/run` uses the model in the request |
 
 ### `[memory]` Section
 

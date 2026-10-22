@@ -100,7 +100,7 @@ allow_time_decay = false                     # Older memories lose relevance in 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `allowed_models` | string[] | `[]` · required in section | Models this agent may run. `/run` rejects any other model with `403`. `"*"` allows every installed model. `:` and `-` match each other (`qwen2.5:0.5b` = `qwen2.5-0.5b`). `/ask` and `/compact` use the first entry that isn't `"*"` |
+| `allowed_models` | string[] | `[]` · required in section | Models this agent may run. `/run` rejects any other model with `403`. `"*"` allows every installed model. `:` and `-` match each other (`qwen2.5:0.5b` = `qwen2.5-0.5b`). `/infer` and `/compact` use the first entry that isn't `"*"` |
 | `max_tokens_per_minute` | u32 | `10000` · required in section | Rate limit per 60-second window. Must not be `0`. `/run` charges a flat 1,000 tokens per request |
 | `gpu_priority` | string | `"normal"` · required in section | `"low"`, `"normal"`, or `"high"`. Shown in dashboards; not yet used by the scheduler |
 | `json_history` | bool | `true` | Keep chat history as JSON text. Required for paging and compaction |
