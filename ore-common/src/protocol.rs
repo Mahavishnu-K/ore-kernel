@@ -127,8 +127,8 @@ pub enum VectorMode {
     #[default]
     Auto,
     HotSimd,
-    ColdLeann,
-    DiskAnnNvme,
+    PqRecompute,
+    Sq8Nvme,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

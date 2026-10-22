@@ -420,13 +420,13 @@ pub enum PipeState {
         bm25: Bm25Index,
     },
     /// Mode B: LEANN-Style Deep Cold Storage (> 10,000 chunks, on-the-fly candidate recompute)
-    ActiveColdLeann {
+    ActivePqRecompute {
         codebook: Arc<PqCodebook>,
         pq_chunks: VecDeque<Arc<PqChunk>>,
         bm25: Bm25Index,
     },
     /// Mode C: DiskANN Enterprise NVMe (> 50,000 chunks, SQ8 int8 RAM + f32 on SSD)
-    ActiveDiskAnn {
+    ActiveSq8Nvme {
         sq8_chunks: VecDeque<Arc<Sq8Chunk>>,
         bm25: Bm25Index,
         vector_dim: usize,
@@ -695,7 +695,7 @@ impl SemanticBus {
                     chunks.pop_front();
                 }
             }
-            PipeState::ActiveDiskAnn {
+            PipeState::ActiveSq8Nvme {
                 sq8_chunks,
                 bm25,
                 vector_dim,
@@ -720,7 +720,7 @@ impl SemanticBus {
                     sq8_chunks.pop_front();
                 }
             }
-            PipeState::ActiveColdLeann {
+            PipeState::ActivePqRecompute {
                 codebook,
                 pq_chunks,
                 bm25,
@@ -796,8 +796,8 @@ impl SemanticBus {
 
         let base_bm25 = match base_guard.value() {
             PipeState::Active { bm25, .. }
-            | PipeState::ActiveColdLeann { bm25, .. }
-            | PipeState::ActiveDiskAnn { bm25, .. }
+            | PipeState::ActivePqRecompute { bm25, .. }
+            | PipeState::ActiveSq8Nvme { bm25, .. }
             | PipeState::Branched { bm25, .. } => bm25.clone(),
             PipeState::PagedToDisk => {
                 return Err("Base pipe failed to page in from SSD.".to_string());
@@ -989,7 +989,7 @@ impl SemanticBus {
                     delta_chunks,
                     ..
                 } => (delta_chunks.clone(), Some(base_pipe.clone())),
-                PipeState::ActiveDiskAnn { .. } | PipeState::ActiveColdLeann { .. } => {
+                PipeState::ActiveSq8Nvme { .. } | PipeState::ActivePqRecompute { .. } => {
                     let restored =
                         crate::memory::Pager::page_in_semantic(pipe_name).unwrap_or_default();
                     (restored, None)
@@ -1083,12 +1083,12 @@ impl SemanticBus {
                     None,
                     enable_hybrid.then(|| bm25.score_query(query_text)),
                 ),
-                PipeState::ActiveDiskAnn {
+                PipeState::ActiveSq8Nvme {
                     sq8_chunks,
                     bm25,
                     vector_dim,
                 } => (
-                    PipeState::ActiveDiskAnn {
+                    PipeState::ActiveSq8Nvme {
                         sq8_chunks: sq8_chunks.clone(),
                         bm25: Bm25Index::new(),
                         vector_dim: *vector_dim,
@@ -1096,12 +1096,12 @@ impl SemanticBus {
                     None,
                     enable_hybrid.then(|| bm25.score_query(query_text)),
                 ),
-                PipeState::ActiveColdLeann {
+                PipeState::ActivePqRecompute {
                     codebook,
                     pq_chunks,
                     bm25,
                 } => (
-                    PipeState::ActiveColdLeann {
+                    PipeState::ActivePqRecompute {
                         codebook: Arc::clone(codebook),
                         pq_chunks: pq_chunks.clone(),
                         bm25: Bm25Index::new(),
@@ -1143,7 +1143,7 @@ impl SemanticBus {
         };
 
         // Mode C (DiskANN) Support: Scans SQ8 in RAM and fetches exact candidates from SSD
-        if let PipeState::ActiveDiskAnn {
+        if let PipeState::ActiveSq8Nvme {
             sq8_chunks,
             vector_dim,
             ..
@@ -1205,7 +1205,7 @@ impl SemanticBus {
         }
 
         // ── MODE B: LEANN PRODUCT QUANTIZATION SEARCH PATH ───────────────────
-        if let PipeState::ActiveColdLeann {
+        if let PipeState::ActivePqRecompute {
             codebook,
             pq_chunks,
             ..
@@ -1793,7 +1793,7 @@ impl SemanticBus {
                         }
                     }
 
-                    PipeState::ActiveDiskAnn { sq8_chunks, .. } => {
+                    PipeState::ActiveSq8Nvme { sq8_chunks, .. } => {
                         let initial = sq8_chunks.len();
                         sq8_chunks.retain(|chunk| {
                             current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
@@ -1804,7 +1804,7 @@ impl SemanticBus {
                         }
                     }
 
-                    PipeState::ActiveColdLeann { pq_chunks, .. } => {
+                    PipeState::ActivePqRecompute { pq_chunks, .. } => {
                         let initial = pq_chunks.len();
                         pq_chunks.retain(|chunk| {
                             current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
@@ -1840,8 +1840,8 @@ impl SemanticBus {
                     chunks,
                     ..
                 } => *is_persistent || !chunks.is_empty(),
-                PipeState::ActiveDiskAnn { sq8_chunks, .. } => !sq8_chunks.is_empty(),
-                PipeState::ActiveColdLeann { pq_chunks, .. } => !pq_chunks.is_empty(),
+                PipeState::ActiveSq8Nvme { sq8_chunks, .. } => !sq8_chunks.is_empty(),
+                PipeState::ActivePqRecompute { pq_chunks, .. } => !pq_chunks.is_empty(),
                 PipeState::Branched { delta_chunks, .. } => !delta_chunks.is_empty(),
                 PipeState::PagedToDisk => true,
             });
