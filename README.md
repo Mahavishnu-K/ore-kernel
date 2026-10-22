@@ -299,6 +299,17 @@ flowchart TB
 | [Building Plugins](docs/building-plugins.md) · [Extending Ore](docs/extending-ore.md) | Writing `ore-ld` plugins, drivers, and model architectures |
 | [Kernel Internals](docs/kernel-internals/) | Subsystem-by-subsystem deep dives |
 
+## Prior Art & Research Inspirations
+
+Ore's Cognitive MMU and retrieval subsystems draw theoretical inspiration from pioneering research across operating systems, information retrieval, and agentic memory architecture. All implementations in Ore are written from scratch in pure Rust:
+
+* **Disk-Backed Vector Search (`Sq8Nvme`)**: Inspired by the disk-layout principles of **DiskANN** (*Subramanya et al., Microsoft Research / NeurIPS 2019*).
+* **On-The-Fly Candidate Recomputation (`PqRecompute`)**: Inspired by the low-storage indexing principles of **LEANN** (*Wang et al., UC Berkeley / MLSys 2026*).
+* **Hierarchical Tree Summarization (`RAPTOR`)**: Inspired by the recursive document clustering architecture in **RAPTOR** (*Sarthi et al., Stanford University / ICLR 2024*).
+* **Hybrid Lexical & Vector Fusion**: Built using Robertson's standard **BM25** formula and **Reciprocal Rank Fusion (RRF)** (*Cormack, Clarke & Büttcher, 2009*).
+* **Memory Branching (Copy-on-Write Pipes)**: Inspired by Git-style multi-agent state coordination introduced in **OmniGraph** (*Modern Relay, 2026*).
+* **Functional Agent Memory Taxonomy**: Structuring memory by responsibilities rather than monolithic databases draws from the conceptual framework articulated by **Shirin Khosravi Jam** (*2024*).
+
 ## Contributing
 
 Ore is early, so design feedback is as valuable as code. Please open an issue to discuss larger changes before sending a PR. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Roadmap](ROADMAP.md).
