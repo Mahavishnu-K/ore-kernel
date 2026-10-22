@@ -134,6 +134,13 @@ pub enum MemoryCategory {
     General = 3,
 }
 
+/// Body of `POST /infer`: one stateful agent turn.
+/// The agent is identified by the `X-App-ID` header, not by the body.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct InferRequest {
+    pub prompt: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RunRequest {
     pub app_id: String,

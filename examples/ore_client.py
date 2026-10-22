@@ -97,12 +97,16 @@ class OreClient:
             
         return full_text
 
-    def ask(self, prompt: str) -> str:
-        """GET /infer/:prompt - Secured inference with firewall + SSD paging."""
-        safe = prompt.replace(" ", "_")
-        r = requests.get(
-            f"{self.base_url}/infer/{safe}",
-            headers=self.headers,
+    def ask(self, prompt: str, app_id: str = "openclaw") -> str:
+        """POST /infer - Stateful agent turn (firewall + Auto-RAG + SSD paging).
+
+        The prompt goes in the JSON body, verbatim: no URL length limit, and
+        underscores in code identifiers are preserved.
+        """
+        r = requests.post(
+            f"{self.base_url}/infer",
+            json={"prompt": prompt},
+            headers={**self.headers, "X-App-ID": app_id},
         )
         r.raise_for_status()
         return r.text

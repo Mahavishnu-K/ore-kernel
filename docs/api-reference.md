@@ -1,6 +1,6 @@
 # API Reference
 
-> All 19 authenticated HTTP routes exposed by the Ore kernel daemon.
+> All authenticated HTTP routes exposed by the Ore kernel daemon.
 
 **Base URL:** `http://127.0.0.1:6767`
 
@@ -285,16 +285,37 @@ Requests rejected before the tool runs (unregistered agent, tool not in `allowed
 
 Source: [`ore-server/src/handlers/inference.rs`](../ore-server/src/handlers/inference.rs)
 
-### `GET /infer/:prompt`
+### `POST /infer`
 
-Secured inference with full firewall pipeline + SSD paging. Always runs as the **`openclaw`** agent (its manifest and memory), using the first model in its `allowed_models`. Underscores in the prompt are turned into spaces.
+A stateful agent turn: the agent's own manifest, conversation history, and KV cache. This is the route for autonomous agents. The agent is named by the `X-App-ID` header (`X-Agent-ID` also works); the model is the first concrete entry in its `allowed_models`.
 
 ```bash
-curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
-     http://127.0.0.1:6767/infer/What%20is%20a%20mutex
+curl -X POST http://127.0.0.1:6767/infer \
+     -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     -H "X-App-ID: forensics_agent" \
+     -H "Content-Type: application/json" \
+     -d '{"prompt": "Here is the crash dump: ..."}'
 ```
 
-**Pipeline:** Auth → Manifest lookup → Firewall (injection + PII) → Page-in history & KV-Cache → Scheduler → Inference → Page-out history & KV-Cache (with Compaction support)
+**Request Body:**
+```json
+{ "prompt": "Text of any length, used verbatim (my_variable_name stays intact)" }
+```
+
+**Response:** the model's full answer as plain text (not streamed; use `POST /run` for streaming).
+
+**Pipeline:** Auth → Identity header → Manifest → Rate limit → Firewall (injection + PII) → Auto-RAG (HyDE, hybrid search, CRAG, screened context) → Scheduler → Inference → Page-out history & KV cache → Compaction if a limit was hit
+
+**Errors:** `400` missing identity header · `401` unregistered agent · `429` rate limit (1,000 tokens charged per request) · `403` firewall block (`ORE KERNEL ALERT: SECURITY BREACH …`) · `503` GPU unavailable. The body is limited to 2 MB (Axum's default), far beyond any model's context window.
+
+### `GET /infer/:prompt` (legacy)
+
+The same agent turn with the prompt in the URL, kept for quick `curl` debugging. Underscores are turned into spaces as a typing shortcut, so it isn't safe for code, and long prompts hit URL length limits. Agents should use `POST /infer`.
+
+```bash
+curl -H "Authorization: Bearer $(cat ore-kernel.token)" -H "X-App-ID: openclaw" \
+     http://127.0.0.1:6767/infer/What_is_a_mutex
+```
 
 ---
 

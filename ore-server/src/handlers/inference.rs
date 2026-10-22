@@ -1,4 +1,4 @@
-use crate::payloads::RunRequest;
+use crate::payloads::{InferRequest, RunRequest};
 use crate::state::KernelState;
 use axum::body::Body;
 use axum::{
@@ -228,7 +228,7 @@ async fn crag_fallback(
     true
 }
 
-/// Auto-RAG pre-pass shared by `/ask` and `/run`:
+/// Auto-RAG pre-pass shared by `/infer` and `/run`:
 /// optional HyDE -> hybrid BM25 + dense retrieval -> optional CRAG fallback ->
 /// firewall-screened context block. Returns the prompt to send to the model: the
 /// secured prompt, prefixed with grounded context when any survived screening.
@@ -314,14 +314,36 @@ async fn ground_prompt(
     }
 }
 
-// inference engine (The Proxy & Firewall)
-pub async fn run_agent_inference(
+/// `POST /infer`: the official stateful agent route.
+/// The agent is named by the `X-App-ID` (or `X-Agent-ID`) header and the prompt travels
+/// in a JSON body, so it has no URL length limit and is used verbatim (code identifiers
+/// like `my_variable_name` stay intact).
+pub async fn infer(
+    State(state): State<Arc<KernelState>>,
+    headers: HeaderMap,
+    Json(payload): Json<InferRequest>,
+) -> Response {
+    agent_turn(state, &headers, payload.prompt).await
+}
+
+/// `GET /infer/:prompt`: legacy alias for quick `curl` debugging only.
+/// The prompt rides in the URL, so `_` is turned into spaces as a typing shortcut.
+/// Agents should use `POST /infer`.
+pub async fn infer_legacy(
     State(state): State<Arc<KernelState>>,
     headers: HeaderMap,
     Path(prompt): Path<String>,
-) -> String {
-    let clean_prompt = prompt.replace("_", " ");
+) -> Response {
+    agent_turn(state, &headers, prompt.replace('_', " ")).await
+}
 
+/// One stateful agent turn: identity -> manifest -> rate limit -> firewall -> Auto-RAG ->
+/// GPU lease -> inference -> history paging and compaction. Returns the full response.
+async fn agent_turn(
+    state: Arc<KernelState>,
+    headers: &HeaderMap,
+    clean_prompt: String,
+) -> Response {
     kprintln!("\n-> Incoming App Request: {}", clean_prompt);
 
     let app_id = match headers
@@ -336,7 +358,11 @@ pub async fn run_agent_inference(
             crate::kprintln!(
                 "-> [SECURITY ALERT] Rejected request with missing agent identity header."
             );
-            return "ORE KERNEL ALERT: Missing caller identity header ('X-App-ID' or 'X-Agent-ID'). Request rejected.".to_string();
+            return (
+                StatusCode::BAD_REQUEST,
+                "ORE KERNEL ALERT: Missing caller identity header ('X-App-ID' or 'X-Agent-ID'). Request rejected.",
+            )
+                .into_response();
         }
     };
 
@@ -347,10 +373,14 @@ pub async fn run_agent_inference(
                 "-> [SECURITY ALERT] Unauthorized access attempt by unregistered agent: '{}'",
                 app_id
             );
-            return format!(
-                "ORE KERNEL ALERT: Unregistered Agent '{}'. Access Denied.",
-                app_id
-            );
+            return (
+                StatusCode::UNAUTHORIZED,
+                format!(
+                    "ORE KERNEL ALERT: Unregistered Agent '{}'. Access Denied.",
+                    app_id
+                ),
+            )
+                .into_response();
         }
     };
 
@@ -358,7 +388,11 @@ pub async fn run_agent_inference(
     let limit = manifest.resources.max_tokens_per_minute;
     if !state.rate_limiter.check_and_add(&app_id, limit, 1000) {
         kprintln!("-> [BLOCKED] Agent '{}' exceeded GPU rate limit.", app_id);
-        return format!("ORE KERNEL ALERT: Rate Limit Exceeded ({} t/min).", limit);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("ORE KERNEL ALERT: Rate Limit Exceeded ({} t/min).", limit),
+        )
+            .into_response();
     }
 
     // CONTEXT FIREWALL (Inspect and sanitize user prompt first)
@@ -373,7 +407,7 @@ pub async fn run_agent_inference(
             }
             Err(e) => {
                 crate::kprintln!("-> [BLOCKED] {}", e);
-                return format!("ORE KERNEL ALERT: {}", e);
+                return (StatusCode::FORBIDDEN, format!("ORE KERNEL ALERT: {}", e)).into_response();
             }
         };
 
@@ -397,7 +431,11 @@ pub async fn run_agent_inference(
         Ok(l) => l,
         Err(e) => {
             crate::kprintln!("-> [SCHEDULER REJECTED] {}", e);
-            return format!("ORE KERNEL ALERT: GPU unavailable - {}", e);
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("ORE KERNEL ALERT: GPU unavailable - {}", e),
+            )
+                .into_response();
         }
     };
     kprintln!(
@@ -664,7 +702,7 @@ pub async fn run_agent_inference(
         drop(lease);
     }
 
-    full_response
+    full_response.into_response()
 }
 
 pub async fn run_user_inference(
