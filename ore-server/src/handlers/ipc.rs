@@ -1,7 +1,8 @@
 use crate::payloads::ChunkStrategy;
 use crate::payloads::{
     ExecuteRequest, IpcSearchRequest, IpcShareRequest, PipeBranchRequest, PipeDiffRequest,
-    PipeDiffResponse, PipeMergeRequest, SearchResult, StagedChunk,
+    PipeDiffResponse, PipeMergeRequest, RaptorBuildRequest, RaptorBuildResponse, SearchResult,
+    StagedChunk,
 };
 use crate::state::KernelState;
 use axum::{
@@ -31,6 +32,87 @@ pub fn is_pipe_permitted(allowed_pipes: &[String], target_pipe: &str) -> bool {
         }
     }
     false
+}
+
+/// POST /ipc/pipe/raptor_build - Build recursive hierarchical summary trees over a pipe
+pub async fn sys_raptor_build(
+    State(state): State<Arc<KernelState>>,
+    Json(payload): Json<RaptorBuildRequest>,
+) -> impl IntoResponse {
+    let manifest = match state.registry.get_app(&payload.app_id) {
+        Some(m) => m,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                format!("KERNEL ALERT: Unregistered Agent '{}'.", payload.app_id),
+            )
+                .into_response();
+        }
+    };
+
+    if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.target_pipe) {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "Permission Denied: Target pipe '{}' is restricted.",
+                payload.target_pipe
+            ),
+        )
+            .into_response();
+    }
+
+    let target_model = manifest
+        .resources
+        .allowed_models
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("llama3.2:1b")
+        .to_string();
+
+    let app_id = payload.app_id.clone();
+    let driver = Arc::clone(&state.driver);
+
+    let cluster_sz = payload.cluster_size.unwrap_or(4);
+    let max_lvls = payload.max_levels.unwrap_or(2);
+
+    let build_result = state
+        .semantic_bus
+        .build_raptor_tree(
+            &payload.target_pipe,
+            cluster_sz,
+            max_lvls,
+            |summary_prompt| {
+                let d = Arc::clone(&driver);
+                let m = target_model.clone();
+                let a = app_id.clone();
+                async move {
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    tokio::spawn(async move {
+                        let _ = d
+                            .generate_text(&m, &a, false, &summary_prompt, None, tx, "")
+                            .await;
+                    });
+                    let mut summary = String::new();
+                    while let Some(chunk) = rx.recv().await {
+                        summary.push_str(&chunk);
+                    }
+                    summary
+                }
+            },
+        )
+        .await;
+
+    match build_result {
+        Ok((summaries, levels)) => {
+            let resp = RaptorBuildResponse {
+                target_pipe: payload.target_pipe,
+                generated_summaries: summaries,
+                tree_levels: levels,
+            };
+            JsonResponse(resp).into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, format!("KERNEL ERROR: {}", e)).into_response(),
+    }
 }
 
 /// POST /ipc/pipe/branch - Fork a base pipe into an isolated Copy-on-Write memory branch

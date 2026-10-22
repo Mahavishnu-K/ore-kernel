@@ -4,6 +4,7 @@ use crate::constants::{
     DEFAULT_FUEL_LIMIT, DEFAULT_MAX_JSON_TOKENS, DEFAULT_MAX_KV_CACHE_MB,
     DEFAULT_MAX_TOKENS_PER_MINUTE,
 };
+use crate::protocol::VectorMode;
 use serde::{Deserialize, Serialize};
 
 /// Master Agent Manifest schema representing zero-trust capability permissions.
@@ -184,6 +185,10 @@ pub struct Rag {
     pub enable_hyde: bool,
     #[serde(default)]
     pub auto_rag: bool,
+    #[serde(default)]
+    pub vector_mode: VectorMode,
+    #[serde(default = "default_max_hot_chunks")]
+    pub max_hot_chunks: usize,
 }
 
 impl Default for Rag {
@@ -194,8 +199,14 @@ impl Default for Rag {
             crag_fallback_tool: None,
             enable_hyde: false,
             auto_rag: false,
+            vector_mode: VectorMode::Auto,
+            max_hot_chunks: 10_000,
         }
     }
+}
+
+fn default_max_hot_chunks() -> usize {
+    10_000
 }
 
 fn default_confidence_threshold() -> f32 {

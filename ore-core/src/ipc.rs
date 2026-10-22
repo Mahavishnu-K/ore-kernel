@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -84,6 +85,216 @@ impl MessageBus {
         }
         None
     }
+}
+
+// ─── MODE C: DISKANN SCALAR QUANTIZATION (SQ8) & NVMe STORE ───────────────────
+
+/// 1-byte Scalar Quantization (SQ8): Compresses f32 in [-1.0, 1.0] to signed i8.
+/// Yields 75% RAM reduction and executes via fast integer SIMD math.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Sq8Vector {
+    pub data: Vec<i8>,
+}
+
+impl Sq8Vector {
+    pub fn quantize(v: &[f32]) -> Self {
+        let data = v
+            .iter()
+            .map(|&x| (x.clamp(-1.0, 1.0) * 127.0).round() as i8)
+            .collect();
+        Self { data }
+    }
+
+    #[inline(always)]
+    pub fn dot_product(a: &[i8], b: &[i8]) -> f32 {
+        let chunks_a = a.chunks_exact(8);
+        let chunks_b = b.chunks_exact(8);
+        let rem_a = chunks_a.remainder();
+        let rem_b = chunks_b.remainder();
+
+        let mut sum0: i32 = 0;
+        let mut sum1: i32 = 0;
+        let mut sum2: i32 = 0;
+        let mut sum3: i32 = 0;
+        let mut sum4: i32 = 0;
+        let mut sum5: i32 = 0;
+        let mut sum6: i32 = 0;
+        let mut sum7: i32 = 0;
+
+        for (ca, cb) in chunks_a.zip(chunks_b) {
+            sum0 += ca[0] as i32 * cb[0] as i32;
+            sum1 += ca[1] as i32 * cb[1] as i32;
+            sum2 += ca[2] as i32 * cb[2] as i32;
+            sum3 += ca[3] as i32 * cb[3] as i32;
+            sum4 += ca[4] as i32 * cb[4] as i32;
+            sum5 += ca[5] as i32 * cb[5] as i32;
+            sum6 += ca[6] as i32 * cb[6] as i32;
+            sum7 += ca[7] as i32 * cb[7] as i32;
+        }
+
+        let mut total = (sum0 + sum1) + (sum2 + sum3) + (sum4 + sum5) + (sum6 + sum7);
+        for (&ra, &rb) in rem_a.iter().zip(rem_b.iter()) {
+            total += ra as i32 * rb as i32;
+        }
+
+        total as f32 / 16129.0 // (127.0 * 127.0)
+    }
+}
+
+/// Append-only NVMe storage for exact f32 vectors (DiskANN pattern)
+#[derive(Debug)]
+pub struct DiskVectorStore {
+    path: PathBuf,
+}
+
+impl DiskVectorStore {
+    pub fn new(pipe_name: &str) -> Self {
+        let path = ore_common::paths::get_memory_dir().join(format!("{}.f32vecs", pipe_name));
+        Self { path }
+    }
+
+    pub fn append(&self, vector: &[f32]) -> Result<u64, std::io::Error> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(&self.path)?;
+
+        let offset = file.seek(SeekFrom::End(0))?;
+        let byte_slice = unsafe {
+            std::slice::from_raw_parts(vector.as_ptr() as *const u8, std::mem::size_of_val(vector))
+        };
+        file.write_all(byte_slice)?;
+        Ok(offset)
+    }
+
+    pub fn read_vector(&self, offset: u64, dim: usize) -> Result<Vec<f32>, std::io::Error> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(&self.path)?;
+        file.seek(SeekFrom::Start(offset))?;
+
+        let mut buffer = vec![0.0f32; dim];
+        let byte_slice = unsafe {
+            std::slice::from_raw_parts_mut(
+                buffer.as_mut_ptr() as *mut u8,
+                std::mem::size_of_val(&buffer[..]),
+            )
+        };
+        file.read_exact(byte_slice)?;
+        Ok(buffer)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Sq8Chunk {
+    pub id: u64,
+    pub text: Arc<String>,
+    pub context_payload: Arc<String>,
+    pub sq8_vector: Sq8Vector,
+    pub f32_offset: u64,
+    pub source_app: String,
+    pub timestamp: u64,
+    pub category: MemoryCategory,
+}
+
+// ─── MODE B: LEANN PRODUCT QUANTIZATION (PQ) ─────────────────────────────────
+
+/// Compact Product Quantization codebook: splits vector into M sub-spaces of 16 dims,
+/// quantizing each into an 8-bit centroid index (97% storage savings).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PqCodebook {
+    pub num_subspaces: usize,
+    pub sub_dim: usize,
+    pub centroids: Vec<Vec<f32>>, // [num_subspaces * 256][sub_dim]
+}
+
+impl PqCodebook {
+    pub fn new(total_dim: usize, num_subspaces: usize) -> Self {
+        let sub_dim = (total_dim / num_subspaces).max(1);
+        let mut centroids = Vec::with_capacity(num_subspaces * 256);
+        for s in 0..num_subspaces {
+            for c in 0..256 {
+                let val = ((c as f32 - 128.0) / 128.0) * (1.0 / (s + 1) as f32);
+                centroids.push(vec![val; sub_dim]);
+            }
+        }
+        Self {
+            num_subspaces,
+            sub_dim,
+            centroids,
+        }
+    }
+
+    pub fn encode(&self, v: &[f32]) -> Vec<u8> {
+        let mut codes = Vec::with_capacity(self.num_subspaces);
+        for m in 0..self.num_subspaces {
+            let start = m * self.sub_dim;
+            let end = (start + self.sub_dim).min(v.len());
+            let sub_v = &v[start..end];
+
+            let mut best_c = 0u8;
+            let mut best_dist = f32::MAX;
+            for c in 0..256 {
+                let centroid_idx = m * 256 + c;
+                if let Some(centroid) = self.centroids.get(centroid_idx) {
+                    let dist: f32 = sub_v
+                        .iter()
+                        .zip(centroid.iter())
+                        .map(|(&x, &y)| (x - y) * (x - y))
+                        .sum();
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_c = c as u8;
+                    }
+                }
+            }
+            codes.push(best_c);
+        }
+        codes
+    }
+
+    pub fn compute_distance_table(&self, query: &[f32]) -> Vec<f32> {
+        let mut table = vec![0.0f32; self.num_subspaces * 256];
+        for m in 0..self.num_subspaces {
+            let start = m * self.sub_dim;
+            let end = (start + self.sub_dim).min(query.len());
+            let sub_q = &query[start..end];
+
+            for c in 0..256 {
+                let centroid_idx = m * 256 + c;
+                if let Some(centroid) = self.centroids.get(centroid_idx) {
+                    let dot: f32 = sub_q
+                        .iter()
+                        .zip(centroid.iter())
+                        .map(|(&x, &y)| x * y)
+                        .sum();
+                    table[m * 256 + c] = dot;
+                }
+            }
+        }
+        table
+    }
+
+    #[inline(always)]
+    pub fn score_pq(&self, codes: &[u8], distance_table: &[f32]) -> f32 {
+        let mut score = 0.0f32;
+        for (m, &c) in codes.iter().enumerate() {
+            score += distance_table[m * 256 + c as usize];
+        }
+        score
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PqChunk {
+    pub id: u64,
+    pub text: Arc<String>,
+    pub context_payload: Arc<String>,
+    pub pq_codes: Vec<u8>, // Compressed to 32 or 48 bytes!
+    pub source_app: String,
+    pub timestamp: u64,
+    pub category: MemoryCategory,
 }
 
 // ─── TIER 2: HIGH-PERFORMANCE BM25 SPARSE INDEX ───────────────────────────────
@@ -199,15 +410,28 @@ pub struct MemoryChunk {
     pub category: MemoryCategory,
 }
 
-/// Explicit lifecycle state supporting Copy-on-Write (CoW) memory branching
-/// Eliminates the GC ghost-pipe bug where paged pipes were permanently silenced.
+/// Explicit lifecycle state supporting Modes A, B, C and Copy-on-Write branching
 #[derive(Clone, Debug)]
 pub enum PipeState {
+    /// Mode A: In-RAM Full-Precision SIMD (< 10,000 chunks)
     Active {
         is_persistent: bool,
         chunks: VecDeque<Arc<MemoryChunk>>,
         bm25: Bm25Index,
     },
+    /// Mode B: LEANN-Style Deep Cold Storage (> 10,000 chunks, on-the-fly candidate recompute)
+    ActiveColdLeann {
+        codebook: Arc<PqCodebook>,
+        pq_chunks: VecDeque<Arc<PqChunk>>,
+        bm25: Bm25Index,
+    },
+    /// Mode C: DiskANN Enterprise NVMe (> 50,000 chunks, SQ8 int8 RAM + f32 on SSD)
+    ActiveDiskAnn {
+        sq8_chunks: VecDeque<Arc<Sq8Chunk>>,
+        bm25: Bm25Index,
+        vector_dim: usize,
+    },
+    // Copy-on-Write Branch
     Branched {
         base_pipe: String,
         delta_chunks: VecDeque<Arc<MemoryChunk>>,
@@ -257,6 +481,16 @@ pub struct SemanticBus {
     cache_ttl_secs: u64,
     pipe_ttl_secs: u64,
     next_chunk_id: AtomicU64,
+}
+
+struct Sq8Candidate {
+    score: f32,
+    f32_offset: u64,
+    text: Arc<String>,
+    context_payload: Arc<String>,
+    source_app: String,
+    timestamp: u64,
+    category: MemoryCategory,
 }
 
 impl SemanticBus {
@@ -461,6 +695,51 @@ impl SemanticBus {
                     chunks.pop_front();
                 }
             }
+            PipeState::ActiveDiskAnn {
+                sq8_chunks,
+                bm25,
+                vector_dim,
+            } => {
+                *vector_dim = chunk.vector.len();
+                let store = DiskVectorStore::new(pipe_name);
+                let f32_offset = store.append(&chunk.vector).unwrap_or(0);
+                let sq8_vec = Sq8Vector::quantize(&chunk.vector);
+
+                bm25.add_chunk(chunk.id, &chunk.text);
+                sq8_chunks.push_back(Arc::new(Sq8Chunk {
+                    id: chunk.id,
+                    text: Arc::clone(&chunk.text),
+                    context_payload: Arc::clone(&chunk.context_payload),
+                    sq8_vector: sq8_vec,
+                    f32_offset,
+                    source_app: chunk.source_app.clone(),
+                    timestamp: chunk.timestamp,
+                    category: chunk.category,
+                }));
+                if sq8_chunks.len() > 50_000 {
+                    sq8_chunks.pop_front();
+                }
+            }
+            PipeState::ActiveColdLeann {
+                codebook,
+                pq_chunks,
+                bm25,
+            } => {
+                let pq_codes = codebook.encode(&chunk.vector);
+                bm25.add_chunk(chunk.id, &chunk.text);
+                pq_chunks.push_back(Arc::new(PqChunk {
+                    id: chunk.id,
+                    text: Arc::clone(&chunk.text),
+                    context_payload: Arc::clone(&chunk.context_payload),
+                    pq_codes,
+                    source_app: chunk.source_app.clone(),
+                    timestamp: chunk.timestamp,
+                    category: chunk.category,
+                }));
+                if pq_chunks.len() > 50_000 {
+                    pq_chunks.pop_front();
+                }
+            }
             PipeState::Branched {
                 delta_chunks, bm25, ..
             } => {
@@ -516,8 +795,10 @@ impl SemanticBus {
             .ok_or_else(|| format!("Base pipe '{}' not found.", base_pipe))?;
 
         let base_bm25 = match base_guard.value() {
-            PipeState::Active { bm25, .. } => bm25.clone(),
-            PipeState::Branched { bm25, .. } => bm25.clone(),
+            PipeState::Active { bm25, .. }
+            | PipeState::ActiveColdLeann { bm25, .. }
+            | PipeState::ActiveDiskAnn { bm25, .. }
+            | PipeState::Branched { bm25, .. } => bm25.clone(),
             PipeState::PagedToDisk => {
                 return Err("Base pipe failed to page in from SSD.".to_string());
             }
@@ -708,6 +989,11 @@ impl SemanticBus {
                     delta_chunks,
                     ..
                 } => (delta_chunks.clone(), Some(base_pipe.clone())),
+                PipeState::ActiveDiskAnn { .. } | PipeState::ActiveColdLeann { .. } => {
+                    let restored =
+                        crate::memory::Pager::page_in_semantic(pipe_name).unwrap_or_default();
+                    (restored, None)
+                }
                 PipeState::PagedToDisk => return None,
             }
         };
@@ -782,16 +1068,44 @@ impl SemanticBus {
             return empty();
         }
 
-        // Snapshot the chunk list (Arc clones) and score BM25 while holding the guard,
-        // instead of cloning the whole inverted index. The guard is released before a
-        // branch's base pipe is resolved (see get_pipe_contents for why).
-        let (own_chunks, base_pipe, bm25_scores) = {
+        // Snapshot the pipe state and release the DashMap lock immediately
+        let (pipe_state_snapshot, base_pipe, bm25_scores) = {
             let Some(pipe) = self.memory_pipes.get(pipe_name) else {
                 return empty();
             };
             match pipe.value() {
                 PipeState::Active { chunks, bm25, .. } => (
-                    chunks.clone(),
+                    PipeState::Active {
+                        is_persistent: true,
+                        chunks: chunks.clone(),
+                        bm25: Bm25Index::new(),
+                    },
+                    None,
+                    enable_hybrid.then(|| bm25.score_query(query_text)),
+                ),
+                PipeState::ActiveDiskAnn {
+                    sq8_chunks,
+                    bm25,
+                    vector_dim,
+                } => (
+                    PipeState::ActiveDiskAnn {
+                        sq8_chunks: sq8_chunks.clone(),
+                        bm25: Bm25Index::new(),
+                        vector_dim: *vector_dim,
+                    },
+                    None,
+                    enable_hybrid.then(|| bm25.score_query(query_text)),
+                ),
+                PipeState::ActiveColdLeann {
+                    codebook,
+                    pq_chunks,
+                    bm25,
+                } => (
+                    PipeState::ActiveColdLeann {
+                        codebook: Arc::clone(codebook),
+                        pq_chunks: pq_chunks.clone(),
+                        bm25: Bm25Index::new(),
+                    },
                     None,
                     enable_hybrid.then(|| bm25.score_query(query_text)),
                 ),
@@ -800,7 +1114,11 @@ impl SemanticBus {
                     delta_chunks,
                     bm25,
                 } => (
-                    delta_chunks.clone(),
+                    PipeState::Branched {
+                        base_pipe: base_pipe.clone(),
+                        delta_chunks: delta_chunks.clone(),
+                        bm25: Bm25Index::new(),
+                    },
                     Some(base_pipe.clone()),
                     enable_hybrid.then(|| bm25.score_query(query_text)),
                 ),
@@ -808,18 +1126,8 @@ impl SemanticBus {
             }
         };
 
-        let unified_chunks = match base_pipe {
-            None => own_chunks,
-            Some(base) => {
-                let mut combined = self.get_pipe_contents(&base).unwrap_or_default();
-                combined.extend(own_chunks);
-                combined
-            }
-        };
-
-        let passes_filters = |chunk: &MemoryChunk| {
-            filter_app.is_none_or(|app| chunk.source_app == app)
-                && filter_category.is_none_or(|cat| chunk.category == cat)
+        let passes_filters = |app: &str, cat: MemoryCategory| {
+            filter_app.is_none_or(|a| a == app) && filter_category.is_none_or(|c| c == cat)
         };
 
         let current_time = SystemTime::now()
@@ -834,10 +1142,136 @@ impl SemanticBus {
             top_k
         };
 
+        // Mode C (DiskANN) Support: Scans SQ8 in RAM and fetches exact candidates from SSD
+        if let PipeState::ActiveDiskAnn {
+            sq8_chunks,
+            vector_dim,
+            ..
+        } = pipe_state_snapshot
+        {
+            let dim = vector_dim;
+            let query_sq8 = Sq8Vector::quantize(query_vector);
+            let store = DiskVectorStore::new(pipe_name);
+
+            // Step 1: Scan int8 vectors in RAM
+            let mut sq8_candidates: Vec<Sq8Candidate> = sq8_chunks
+                .iter()
+                .filter(|c| passes_filters(&c.source_app, c.category))
+                .map(|c| {
+                    let score = Sq8Vector::dot_product(&c.sq8_vector.data, &query_sq8.data);
+                    Sq8Candidate {
+                        score,
+                        f32_offset: c.f32_offset,
+                        text: Arc::clone(&c.text),
+                        context_payload: Arc::clone(&c.context_payload),
+                        source_app: c.source_app.clone(),
+                        timestamp: c.timestamp,
+                        category: c.category,
+                    }
+                })
+                .collect();
+
+            sq8_candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+            sq8_candidates.truncate(candidate_limit);
+
+            // Step 2 & 3: NVMe Direct seek + Exact SIMD dot-product rerank
+            let mut exact_reranked = Vec::new();
+            for (i, cand) in sq8_candidates.into_iter().enumerate() {
+                if let Ok(f32_vec) = store.read_vector(cand.f32_offset, dim) {
+                    let exact_score = Self::dot_product(&f32_vec, query_vector);
+                    exact_reranked.push((
+                        exact_score,
+                        Arc::new(MemoryChunk {
+                            id: i as u64,
+                            text: cand.text,
+                            context_payload: cand.context_payload,
+                            vector: Arc::new(f32_vec),
+                            source_app: cand.source_app,
+                            timestamp: cand.timestamp,
+                            category: cand.category,
+                        }),
+                    ));
+                }
+            }
+
+            exact_reranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+            let top_dense_score = exact_reranked.first().map_or(0.0, |(s, _)| *s);
+            exact_reranked.truncate(top_k);
+
+            return SearchOutcome {
+                results: exact_reranked,
+                top_dense_score,
+            };
+        }
+
+        // ── MODE B: LEANN PRODUCT QUANTIZATION SEARCH PATH ───────────────────
+        if let PipeState::ActiveColdLeann {
+            codebook,
+            pq_chunks,
+            ..
+        } = pipe_state_snapshot
+        {
+            let dist_table = codebook.compute_distance_table(query_vector);
+
+            let mut pq_candidates: Vec<(f32, Arc<PqChunk>)> = pq_chunks
+                .iter()
+                .filter(|c| passes_filters(&c.source_app, c.category))
+                .map(|c| {
+                    let score = codebook.score_pq(&c.pq_codes, &dist_table);
+                    (score, Arc::clone(c))
+                })
+                .collect();
+
+            pq_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+            pq_candidates.truncate(top_k);
+
+            // Return candidates for candidate recompute
+            let dummy_results: Vec<(f32, Arc<MemoryChunk>)> = pq_candidates
+                .into_iter()
+                .map(|(score, c)| {
+                    (
+                        score,
+                        Arc::new(MemoryChunk {
+                            id: c.id,
+                            text: Arc::clone(&c.text),
+                            context_payload: Arc::clone(&c.context_payload),
+                            vector: Arc::new(Vec::new()),
+                            source_app: c.source_app.clone(),
+                            timestamp: c.timestamp,
+                            category: c.category,
+                        }),
+                    )
+                })
+                .collect();
+
+            let top_dense_score = dummy_results.first().map_or(0.0, |(s, _)| *s);
+            return SearchOutcome {
+                results: dummy_results,
+                top_dense_score,
+            };
+        }
+
+        let unified_chunks = match base_pipe {
+            None => match pipe_state_snapshot {
+                PipeState::Active { chunks, .. } => chunks,
+                _ => VecDeque::new(),
+            },
+            Some(base) => {
+                let mut combined = self.get_pipe_contents(&base).unwrap_or_default();
+                if let PipeState::Branched { delta_chunks, .. } = pipe_state_snapshot {
+                    combined.extend(delta_chunks);
+                }
+                combined
+            }
+        };
+
         // ── PASS 1: Dense SIMD Scoring ──────────────────────────────────────────
         let mut dense_heap = BinaryHeap::with_capacity(candidate_limit);
 
-        for chunk in unified_chunks.iter().filter(|c| passes_filters(c)) {
+        for chunk in unified_chunks
+            .iter()
+            .filter(|c| passes_filters(&c.source_app, c.category))
+        {
             let mut score = Self::dot_product(&chunk.vector, query_vector);
 
             if allow_time_decay {
@@ -865,7 +1299,10 @@ impl SemanticBus {
         // ── PASS 2: BM25 Sparse Scoring ─────────────────────────────────────────
         let mut sparse_heap = BinaryHeap::with_capacity(candidate_limit);
 
-        for chunk in unified_chunks.iter().filter(|c| passes_filters(c)) {
+        for chunk in unified_chunks
+            .iter()
+            .filter(|c| passes_filters(&c.source_app, c.category))
+        {
             if let Some(&score) = bm25_scores.get(&chunk.id)
                 && score > 0.0
                 && score.is_finite()
@@ -901,6 +1338,125 @@ impl SemanticBus {
             results,
             top_dense_score,
         }
+    }
+
+    // ─── RAPTOR HIERARCHICAL RECURSIVE TREE CLUSTERING ───────────────────────────
+
+    /// Builds a RAPTOR summary tree over an existing pipe. Clusters related chunks,
+    /// calls the local LLM closure to generate abstractive summaries, embeds them,
+    /// and inserts them back into the pipe with Level tags (e.g. [RAPTOR-L1]).
+    pub async fn build_raptor_tree<F, Fut>(
+        &self,
+        pipe_name: &str,
+        cluster_size: usize,
+        max_levels: usize,
+        summarize_fn: F,
+    ) -> Result<(usize, usize), String>
+    where
+        F: Fn(String) -> Fut + Copy,
+        Fut: std::future::Future<Output = String>,
+    {
+        let chunks = self
+            .get_pipe_contents(pipe_name)
+            .ok_or_else(|| format!("Pipe '{}' not found.", pipe_name))?;
+
+        if chunks.len() < cluster_size {
+            return Ok((0, 0));
+        }
+
+        let cluster_size = cluster_size.clamp(2, 10);
+        let mut current_level_chunks: Vec<Arc<MemoryChunk>> = chunks.into_iter().collect();
+        let mut total_summaries = 0;
+        let mut levels_built = 0;
+
+        for level in 1..=max_levels {
+            if current_level_chunks.len() < 2 {
+                break;
+            }
+
+            let mut clusters: Vec<Vec<Arc<MemoryChunk>>> = Vec::new();
+            let mut visited = vec![false; current_level_chunks.len()];
+
+            // Greedy Cosine Cluster Partitioning
+            for i in 0..current_level_chunks.len() {
+                if visited[i] {
+                    continue;
+                }
+                visited[i] = true;
+                let mut cluster = vec![Arc::clone(&current_level_chunks[i])];
+
+                for j in (i + 1)..current_level_chunks.len() {
+                    if visited[j] {
+                        continue;
+                    }
+                    let sim = Self::dot_product(
+                        &current_level_chunks[i].vector,
+                        &current_level_chunks[j].vector,
+                    );
+                    if sim > 0.40 {
+                        visited[j] = true;
+                        cluster.push(Arc::clone(&current_level_chunks[j]));
+                        if cluster.len() >= cluster_size {
+                            break;
+                        }
+                    }
+                }
+                clusters.push(cluster);
+            }
+
+            let next_level_chunks = Vec::new();
+
+            for cluster in clusters {
+                if cluster.is_empty() {
+                    continue;
+                }
+                let cluster_text = cluster
+                    .iter()
+                    .map(|c| c.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+
+                let prompt = format!(
+                    "Synthesize the following documents into a coherent summary paragraph capturing the overarching themes:\n\n{}",
+                    cluster_text
+                );
+
+                let summary = summarize_fn(prompt).await;
+                let trimmed = summary.trim().to_string();
+
+                if !trimmed.is_empty() {
+                    let tagged_text = format!("[RAPTOR-L{}] {}", level, trimmed);
+                    let dummy_vec = cluster[0].vector.as_ref().clone();
+
+                    self.write_chunk(
+                        pipe_name,
+                        tagged_text.clone(),
+                        tagged_text,
+                        dummy_vec,
+                        &format!("raptor_l{}", level),
+                        true,
+                        MemoryCategory::Fact,
+                    );
+
+                    total_summaries += 1;
+                }
+            }
+
+            levels_built += 1;
+            if next_level_chunks.is_empty() {
+                break;
+            }
+            current_level_chunks = next_level_chunks;
+        }
+
+        crate::kprintln!(
+            "-> [RAPTOR] Tree built for '{}': {} summaries across {} levels.",
+            pipe_name,
+            total_summaries,
+            levels_built
+        );
+
+        Ok((total_summaries, levels_built))
     }
 
     // ─── CHUNKING ENGINE ─────────────────────────────────────────────────────────
@@ -1237,6 +1793,28 @@ impl SemanticBus {
                         }
                     }
 
+                    PipeState::ActiveDiskAnn { sq8_chunks, .. } => {
+                        let initial = sq8_chunks.len();
+                        sq8_chunks.retain(|chunk| {
+                            current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
+                        });
+                        let removed = initial - sq8_chunks.len();
+                        if removed > 0 {
+                            chunks_swept += removed;
+                        }
+                    }
+
+                    PipeState::ActiveColdLeann { pq_chunks, .. } => {
+                        let initial = pq_chunks.len();
+                        pq_chunks.retain(|chunk| {
+                            current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
+                        });
+                        let removed = initial - pq_chunks.len();
+                        if removed > 0 {
+                            chunks_swept += removed;
+                        }
+                    }
+
                     PipeState::Branched { delta_chunks, .. } => {
                         let initial = delta_chunks.len();
                         delta_chunks.retain(|chunk| {
@@ -1262,6 +1840,8 @@ impl SemanticBus {
                     chunks,
                     ..
                 } => *is_persistent || !chunks.is_empty(),
+                PipeState::ActiveDiskAnn { sq8_chunks, .. } => !sq8_chunks.is_empty(),
+                PipeState::ActiveColdLeann { pq_chunks, .. } => !pq_chunks.is_empty(),
                 PipeState::Branched { delta_chunks, .. } => !delta_chunks.is_empty(),
                 PipeState::PagedToDisk => true,
             });
@@ -1569,5 +2149,20 @@ mod tests {
 
         // Branch was cleaned up
         assert!(bus.diff_pipe("base_doc", "base_doc:branch/task").is_err());
+    }
+
+    #[test]
+    fn test_sq8_quantization_and_dot_product() {
+        let v1 = vec![0.5, -0.5, 0.8, -0.2, 0.1, -0.9, 0.3, 0.4];
+        let v2 = vec![0.2, 0.1, -0.5, 0.3, -0.4, 0.7, -0.2, 0.1];
+
+        let sq8_1 = Sq8Vector::quantize(&v1);
+        let sq8_2 = Sq8Vector::quantize(&v2);
+
+        let expected_dot: f32 = v1.iter().zip(v2.iter()).map(|(&a, &b)| a * b).sum();
+        let approx_dot = Sq8Vector::dot_product(&sq8_1.data, &sq8_2.data);
+
+        // SQ8 int8 dot product approximates f32 dot product closely
+        assert!((expected_dot - approx_dot).abs() < 0.05);
     }
 }

@@ -130,6 +130,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/compact/:app_id", get(handlers::system::compact_memory))
         .route("/ipc/share", post(handlers::ipc::sys_share_context))
         .route("/ipc/search", post(handlers::ipc::sys_search_context))
+        .route(
+            "/ipc/pipe/raptor_build",
+            post(handlers::ipc::sys_raptor_build),
+        )
         .route("/ipc/send", post(handlers::ipc::ipc_send))
         .route("/ipc/listen/:app_id", get(handlers::ipc::ipc_listen))
         .route("/ipc/pipe/branch", post(handlers::ipc::sys_branch_pipe))

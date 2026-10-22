@@ -119,6 +119,33 @@ pub struct ManifestsResponse {
 
 // ─── Execution & IPC Payloads ────────────────────────────────────────────────
 
+// ─── Vector Modes & RAPTOR DTOs ─────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorMode {
+    #[default]
+    Auto,
+    HotSimd,
+    ColdLeann,
+    DiskAnnNvme,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RaptorBuildRequest {
+    pub app_id: String,
+    pub target_pipe: String,
+    pub cluster_size: Option<usize>,
+    pub max_levels: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RaptorBuildResponse {
+    pub target_pipe: String,
+    pub generated_summaries: usize,
+    pub tree_levels: usize,
+}
+
 #[repr(u8)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
