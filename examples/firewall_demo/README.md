@@ -4,7 +4,7 @@
 
 ## What It Does
 
-A test harness that fires a series of adversarial and sensitive prompts at the ORE Kernel to demonstrate each layer of the Context Firewall:
+A test harness that fires a series of adversarial and sensitive prompts at the Ore Kernel to demonstrate each layer of the Context Firewall:
 
 1. **Prompt Injection** - Jailbreak attempts, system probes, override commands → **BLOCKED**
 2. **PII Redaction** - Emails and credit cards are scrubbed before the model sees them

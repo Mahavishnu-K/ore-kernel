@@ -4,7 +4,7 @@
 
 ## What It Does
 
-Two Python scripts simulate two agents communicating in real-time through ORE's IPC Message Bus:
+Two Python scripts simulate two agents communicating in real-time through Ore's IPC Message Bus:
 
 1. **`receiver.py`** registers as a listener and polls for incoming messages
 2. **`sender.py`** sends a direct message to the receiver through ORE

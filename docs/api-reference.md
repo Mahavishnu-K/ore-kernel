@@ -38,7 +38,7 @@ curl -H "Authorization: Bearer $(cat ore-kernel.token)" \
 }
 ```
 
-Without the `Accept` header, the same information comes back as text starting with `ORE Kernel is ALIVE & HEALTHY (v0.1.0)`.
+Without the `Accept` header, the same information comes back as text starting with `Ore Kernel is ALIVE & HEALTHY (v0.1.0)`.
 
 ---
 

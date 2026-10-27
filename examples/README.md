@@ -5,7 +5,7 @@
 
 ## Prerequisites
 
-1. **ORE Kernel running** - `cargo run --release -p ore-server` in a separate terminal
+1. **Ore Kernel running** - `cargo run --release -p ore-server` in a separate terminal
 2. **Python 3.8+** with `requests` installed: `pip install requests`
 3. **A model pulled** - `ore pull llama3.2:1b` (or `qwen2.5:0.5b`)
 4. **System embedder** (for IPC examples) - `ore pull system-embedder`

@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ore mktool` compiler flags for Memory Fusion: `--shared` (to compile dynamic plugins) and `--host` (to compile host tools that load plugins).
 - `tests/cross_lang_memory_fusion/` test suite proving zero-copy data sharing between C->Rust, Rust->C++, and Zig->C.
 - Comprehensive SDK documentation for building plugins across Rust, C/C++, and Zig (`docs/building-plugins.md`).
-- **Python Execution Support:** Added capability to execute both single-file Python scripts (`simple_script.py`) and full Python project workspaces natively within the ORE WebAssembly sandbox using the pre-compiled Python WASI runtime.
+- **Python Execution Support:** Added capability to execute both single-file Python scripts (`simple_script.py`) and full Python project workspaces natively within the Ore WebAssembly sandbox using the pre-compiled Python WASI runtime.
 - Updated `.gitignore` to include `/memory/` and `/bin/` directories for cleaner builds.
 - Initial setup for the `ore-kernel` open-source repository.
 - Community standards: `CODE_OF_CONDUCT.md`.
@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Universal Polyglot Toolchain and cross-language orchestration.
 - **AOT (Ahead-Of-Time) Zero-RAM Caching (`.cwasm`)**: WebAssembly modules are now JIT compiled once and serialized to disk. Subsequent runs instantly `mmap` the native machine code from the OS Page Cache directly to the CPU, reducing boot latency from ~600ms to 10ms for massive polyglot swarms.
 - **Node.js Polyfills via QuickJS**: Standard JS/TS modules are now natively mounted into `/modules` (Read-Only) automatically during JS sandbox execution.
-- **Dynamic Filesystem Cache Invalidation**: The ORE Kernel now utilizes raw `std::fs::metadata` timestamps to surgically track `.wasm` updates and overwrite stale `.cwasm` AOT caches automatically, with absolutely zero `DashMap` or in-memory bloat.
+- **Dynamic Filesystem Cache Invalidation**: The Ore Kernel now utilizes raw `std::fs::metadata` timestamps to surgically track `.wasm` updates and overwrite stale `.cwasm` AOT caches automatically, with absolutely zero `DashMap` or in-memory bloat.
 - **Agentic Inception Upgrades**: The Sandbox natively accommodates on-the-fly script materialization for self-improving AI models directly into the Virtual File System.
 - **`ore-common` Workspace Crate**: Introduced a dedicated lightweight shared foundation library across `ore-core`, `ore-server`, and `ore-cli`. Centralizes protocol DTOs (`protocol.rs`), typed AppManifest schemas and validation (`manifest.rs`), system configurations (`config.rs`), canonical paths (`paths.rs`), global constants (`constants.rs`), and ANSI text length utilities (`text.rs`), completely eliminating code duplication and compile-time drift with zero runtime bloat.
 - **Modular Sandbox Subsystem (`ore-core/src/sandbox/`)**: Deconstructed the 1,000+ line monolithic `sandbox.rs` into a clean, production-grade modular subsystem:

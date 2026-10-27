@@ -1,6 +1,6 @@
-# ORE Roadmap
+# Ore Roadmap
 
-ORE is **alpha** (v0.1.0). This page tracks what's built, what's next, and where help is most useful. Items are checked only when they're implemented in the code on `main`/`dev`. See the [CHANGELOG](CHANGELOG.md) for release-by-release detail.
+Ore is **alpha** (v0.1.0). This page tracks what's built, what's next, and where help is most useful. Items are checked only when they're implemented in the code on `main`/`dev`. See the [CHANGELOG](CHANGELOG.md) for release-by-release detail.
 
 **Legend:** ✅ done · 🚧 in progress or partial · ⬜ not started
 
@@ -30,7 +30,7 @@ ORE is **alpha** (v0.1.0). This page tracks what's built, what's next, and where
 
 ## Phase 2: VRAM manager
 
-🚧 Turning ORE from an API proxy into a memory manager for the GPU.
+🚧 Turning Ore from an API proxy into a memory manager for the GPU.
 
 - [x] **KV-cache paging:** physical KV caches are serialized to `.safetensors` on disk and restored on the agent's next turn, with background compaction and JSON-history fallback.
 - [x] **VRAM bin-packing:** `ModelRegistry` + `MemoryAccountant` + NVML readings let multiple models share VRAM, with admission control from GGUF geometry and LRU eviction.
@@ -64,7 +64,7 @@ ORE is **alpha** (v0.1.0). This page tracks what's built, what's next, and where
 
 ## Phase 5: Agent coordination and SDKs
 
-⬜ Making ORE easy to adopt and letting the kernel drive agents.
+⬜ Making Ore easy to adopt and letting the kernel drive agents.
 
 - [ ] **Python and TypeScript SDKs:** publish `ore-sdk` (PyPI) and `@ore/sdk` (npm) wrapping inference, the Message Bus, the Semantic Bus, and sandbox execution. `examples/ore_client.py` is the starting point.
 - [ ] **Event-driven wake-ups:** a manifest field such as `wake_up_on_pipe_update = "pipe_name"`, so the kernel notifies an agent when a pipe it watches changes, instead of agents polling.
