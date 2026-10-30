@@ -3,6 +3,7 @@ use candle_core::{Device, Tensor};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -65,17 +66,27 @@ impl Pager {
 
         match bincode::serialize(chunks) {
             Ok(data) => {
-                if let Err(e) = fs::write(&tmp_path, data) {
-                    kprintln!(
-                        "-> [PAGER] [ERROR] Failed to write temp file for pipe '{}': {}",
-                        pipe_name,
-                        e
-                    );
-                    let _ = fs::remove_file(&tmp_path);
-                    return;
-                }
+                let write_res = (|| -> Result<(), std::io::Error> {
+                    let mut file = fs::File::create(&tmp_path)?;
+                    file.write_all(&data)?;
+                    file.sync_all()?;
+                    drop(file);
 
-                if let Err(e) = fs::rename(&tmp_path, &path) {
+                    fs::rename(&tmp_path, &path)?;
+
+                    // CRASH CONSISTENCY: Sync the parent directory metadata to commit the rename.
+                    #[cfg(unix)]
+                    {
+                        if let Some(parent) = path.parent() {
+                            let dir = fs::File::open(parent)?;
+                            dir.sync_all()?;
+                        }
+                    }
+
+                    Ok(())
+                })();
+
+                if let Err(e) = write_res {
                     kprintln!(
                         "-> [PAGER] [ERROR] Failed to atomically commit pipe '{}': {}",
                         pipe_name,

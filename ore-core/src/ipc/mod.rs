@@ -272,4 +272,96 @@ mod tests {
 
         assert!((expected_dot - approx_dot).abs() < 0.05);
     }
+
+    #[test]
+    fn test_cow_pipe_merge_without_delete_drains_deltas() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![1.0; 8];
+
+        bus.write_chunk(
+            "base_doc_v2",
+            "Initial base doc".to_string(),
+            "Initial base doc context".to_string(),
+            vec.clone(),
+            "admin",
+            false,
+            MemoryCategory::Fact,
+        );
+
+        assert!(
+            bus.branch_pipe("base_doc_v2", "base_doc_v2:branch/task")
+                .is_ok()
+        );
+
+        bus.write_chunk(
+            "base_doc_v2:branch/task",
+            "Delta chunk 1".to_string(),
+            "Delta context 1".to_string(),
+            vec.clone(),
+            "worker",
+            false,
+            MemoryCategory::Skill,
+        );
+
+        // Merge with delete_branch = false
+        let merged_count = bus
+            .merge_pipe("base_doc_v2", "base_doc_v2:branch/task", false)
+            .unwrap();
+        assert_eq!(merged_count, 1);
+
+        // Verify base now has both chunks
+        let base_contents = bus.get_pipe_contents("base_doc_v2").unwrap();
+        assert_eq!(base_contents.len(), 2);
+
+        // Verify the branch DOES NOT duplicate chunks (it sees exactly the base chunks, delta is drained)
+        let branch_contents = bus.get_pipe_contents("base_doc_v2:branch/task").unwrap();
+        assert_eq!(branch_contents.len(), 2);
+
+        // Verify diff is now empty
+        let diff = bus
+            .diff_pipe("base_doc_v2", "base_doc_v2:branch/task")
+            .unwrap();
+        assert_eq!(diff.len(), 0);
+
+        // A second merge operation must merge 0 items (no duplicate appends)
+        let second_merge_count = bus
+            .merge_pipe("base_doc_v2", "base_doc_v2:branch/task", false)
+            .unwrap();
+        assert_eq!(second_merge_count, 0);
+
+        let final_base_contents = bus.get_pipe_contents("base_doc_v2").unwrap();
+        assert_eq!(final_base_contents.len(), 2);
+    }
+
+    #[test]
+    fn test_gc_preserves_idle_fresh_branches() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![1.0; 8];
+
+        bus.write_chunk(
+            "base_gc_pipe",
+            "Base document".to_string(),
+            "Context".to_string(),
+            vec,
+            "admin",
+            false,
+            MemoryCategory::Fact,
+        );
+
+        // Create an empty branch
+        assert!(
+            bus.branch_pipe("base_gc_pipe", "base_gc_pipe:branch/idle")
+                .is_ok()
+        );
+
+        // Run GC immediately
+        bus.run_garbage_collection();
+
+        // Branch must NOT be pruned by GC
+        let diff = bus.diff_pipe("base_gc_pipe", "base_gc_pipe:branch/idle");
+        assert!(
+            diff.is_ok(),
+            "Fresh empty branch must survive GC within its TTL"
+        );
+    }
 }

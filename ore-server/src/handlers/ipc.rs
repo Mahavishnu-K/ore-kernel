@@ -241,12 +241,25 @@ pub async fn sys_merge_pipe(
         }
     };
 
+    // Verify access to base pipe
     if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.base_pipe) {
         return (
             StatusCode::FORBIDDEN,
             format!(
                 "Permission Denied: Target base pipe '{}' is locked.",
                 payload.base_pipe
+            ),
+        )
+            .into_response();
+    }
+
+    // Verify access to branch pipe (prevents unauthorized branch merger / deletion)
+    if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.branch_pipe) {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "Permission Denied: Source branch pipe '{}' is locked.",
+                payload.branch_pipe
             ),
         )
             .into_response();

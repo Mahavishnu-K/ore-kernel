@@ -36,6 +36,7 @@ pub enum PipeState {
         base_pipe: String,
         delta_chunks: VecDeque<Arc<MemoryChunk>>,
         bm25: Bm25Index,
+        created_at: u64,
     },
     PagedToDisk,
 }
@@ -410,12 +411,18 @@ impl SemanticBus {
 
         drop(base_guard);
 
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
         self.memory_pipes.insert(
             branch_pipe.to_string(),
             PipeState::Branched {
                 base_pipe: base_pipe.to_string(),
                 delta_chunks: VecDeque::new(),
                 bm25: base_bm25,
+                created_at,
             },
         );
 
@@ -464,21 +471,33 @@ impl SemanticBus {
         branch_pipe: &str,
         delete_branch: bool,
     ) -> Result<usize, String> {
+        if base_pipe == branch_pipe {
+            return Err("Cannot merge a pipe into itself.".to_string());
+        }
+
+        // Verify branch, validate parent relationship, and drain deltas.
+        // We acquire the branch lock, drain, and immediately drop to prevent cross-shard deadlock.
         let (parent_pipe, deltas) = {
-            let branch_guard = self
+            let mut branch_guard = self
                 .memory_pipes
-                .get(branch_pipe)
+                .get_mut(branch_pipe)
                 .ok_or_else(|| format!("Branch pipe '{}' not found.", branch_pipe))?;
 
-            match branch_guard.value() {
+            match branch_guard.value_mut() {
                 PipeState::Branched {
                     base_pipe: parent,
                     delta_chunks,
                     ..
-                } => (parent.clone(), delta_chunks.clone()),
+                } => {
+                    let parent = parent.clone();
+
+                    // DRAIN deltas to prevent dual-view memory duplication
+                    let deltas: Vec<Arc<MemoryChunk>> = delta_chunks.drain(..).collect();
+                    (parent, deltas)
+                }
                 _ => return Err(format!("Pipe '{}' is not a branched pipe.", branch_pipe)),
             }
-        };
+        }; // branch_guard is dropped here
 
         if parent_pipe != base_pipe {
             return Err(format!(
@@ -497,39 +516,42 @@ impl SemanticBus {
 
         self.ensure_pipe_loaded(base_pipe)?;
 
-        let mut base_entry = self
-            .memory_pipes
-            .get_mut(base_pipe)
-            .ok_or_else(|| format!("Base pipe '{}' not found.", base_pipe))?;
+        // Incorporate deltas into the base pipe under write lock
+        let (should_persist, base_chunks_snapshot, base_bm25_snapshot) = {
+            let mut base_entry = self
+                .memory_pipes
+                .get_mut(base_pipe)
+                .ok_or_else(|| format!("Base pipe '{}' not found.", base_pipe))?;
 
-        let should_persist = match base_entry.value_mut() {
-            PipeState::Active {
-                is_persistent,
-                chunks,
-                bm25,
-            } => {
-                for chunk in &deltas {
-                    bm25.add_chunk(chunk.id, &chunk.text);
-                    chunks.push_back(Arc::clone(chunk));
-                    if chunks.len() > 10_000 {
-                        chunks.pop_front();
+            match base_entry.value_mut() {
+                PipeState::Active {
+                    is_persistent,
+                    chunks,
+                    bm25,
+                } => {
+                    for chunk in &deltas {
+                        bm25.add_chunk(chunk.id, &chunk.text);
+                        chunks.push_back(Arc::clone(chunk));
+                        if chunks.len() > 10_000
+                            && let Some(evicted) = chunks.pop_front()
+                        {
+                            bm25.remove_chunk(evicted.id, &evicted.text);
+                        }
                     }
+                    (*is_persistent, chunks.clone(), bm25.clone())
                 }
-                *is_persistent
+                _ => {
+                    return Err(format!(
+                        "Base pipe '{}' is not in an active state.",
+                        base_pipe
+                    ));
+                }
             }
-            _ => {
-                return Err(format!(
-                    "Base pipe '{}' is not in an active state.",
-                    base_pipe
-                ));
-            }
-        };
+        }; // base_entry DashMap write lock is dropped here
 
-        if should_persist && let PipeState::Active { chunks, .. } = base_entry.value() {
-            crate::memory::Pager::page_out_semantic(base_pipe, chunks);
+        if should_persist {
+            crate::memory::Pager::page_out_semantic(base_pipe, &base_chunks_snapshot);
         }
-
-        drop(base_entry);
 
         if delete_branch {
             self.memory_pipes.remove(branch_pipe);
@@ -540,6 +562,13 @@ impl SemanticBus {
                 base_pipe
             );
         } else {
+            // Synchronize the surviving branch's BM25 index to match the new base state
+            if let Some(mut branch_guard) = self.memory_pipes.get_mut(branch_pipe)
+                && let PipeState::Branched { bm25, .. } = branch_guard.value_mut()
+            {
+                *bm25 = base_bm25_snapshot;
+            }
+
             crate::kprintln!(
                 "-> [CoW MERGE] Merged {} chunks from '{}' into '{}'.",
                 delta_count,
@@ -717,11 +746,13 @@ impl SemanticBus {
                     base_pipe,
                     delta_chunks,
                     bm25,
+                    created_at,
                 } => (
                     PipeState::Branched {
                         base_pipe: base_pipe.clone(),
                         delta_chunks: delta_chunks.clone(),
                         bm25: Bm25Index::new(),
+                        created_at: *created_at,
                     },
                     Some(base_pipe.clone()),
                     enable_hybrid.then(|| bm25.score_query(query_text)),
@@ -1097,7 +1128,7 @@ impl SemanticBus {
                     PipeState::Active {
                         is_persistent,
                         chunks,
-                        ..
+                        bm25,
                     } => {
                         if *is_persistent {
                             if !chunks.is_empty() {
@@ -1107,9 +1138,18 @@ impl SemanticBus {
                             evict_to_disk = true;
                         } else {
                             let initial = chunks.len();
+                            let mut expired_chunks = Vec::new();
                             chunks.retain(|chunk| {
-                                current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
+                                let keep = current_time.saturating_sub(chunk.timestamp)
+                                    < self.pipe_ttl_secs;
+                                if !keep {
+                                    expired_chunks.push((chunk.id, chunk.text.clone()));
+                                }
+                                keep
                             });
+                            for (id, text) in expired_chunks {
+                                bm25.remove_chunk(id, &text);
+                            }
                             let removed = initial - chunks.len();
                             if removed > 0 {
                                 chunks_swept += removed;
@@ -1139,11 +1179,22 @@ impl SemanticBus {
                         }
                     }
 
-                    PipeState::Branched { delta_chunks, .. } => {
+                    PipeState::Branched {
+                        delta_chunks, bm25, ..
+                    } => {
                         let initial = delta_chunks.len();
+                        let mut expired_chunks = Vec::new();
                         delta_chunks.retain(|chunk| {
-                            current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
+                            let keep =
+                                current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs;
+                            if !keep {
+                                expired_chunks.push((chunk.id, chunk.text.clone()));
+                            }
+                            keep
                         });
+                        for (id, text) in expired_chunks {
+                            bm25.remove_chunk(id, &text);
+                        }
                         let removed = initial - delta_chunks.len();
                         if removed > 0 {
                             chunks_swept += removed;
@@ -1157,7 +1208,8 @@ impl SemanticBus {
                 }
             }
 
-            // Retain active non-empty ephemeral pipes and all persistent pipes
+            // Retain active non-empty ephemeral pipes, all persistent pipes,
+            // and idle CoW branches that are still within their valid TTL window.
             self.memory_pipes.retain(|_, state| match state {
                 PipeState::Active {
                     is_persistent,
@@ -1166,7 +1218,15 @@ impl SemanticBus {
                 } => *is_persistent || !chunks.is_empty(),
                 PipeState::ActiveSq8Nvme { sq8_chunks, .. } => !sq8_chunks.is_empty(),
                 PipeState::ActivePqRecompute { pq_chunks, .. } => !pq_chunks.is_empty(),
-                PipeState::Branched { delta_chunks, .. } => !delta_chunks.is_empty(),
+                PipeState::Branched {
+                    delta_chunks,
+                    created_at,
+                    ..
+                } => {
+                    !delta_chunks.is_empty()
+                        || self.pipe_ttl_secs == 0
+                        || current_time.saturating_sub(*created_at) < self.pipe_ttl_secs
+                }
                 PipeState::PagedToDisk => true,
             });
 
