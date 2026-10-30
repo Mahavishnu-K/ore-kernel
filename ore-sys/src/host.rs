@@ -76,7 +76,7 @@ impl Drop for Plugin {
     }
 }
 
-/// The ORE Bind Macro
+/// The Ore Bind Macro
 /// Automatically extracts a C-ABI function pointer from a loaded plugin,
 /// casts it safely, and binds it to a local variable of the same name
 #[macro_export]
