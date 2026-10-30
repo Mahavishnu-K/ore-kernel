@@ -10,7 +10,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json as JsonResponse},
 };
-use ore_core::ipc::{AgentMessage, SemanticBus};
+use ore_core::ipc::{AgentMessage, chunking};
 use ore_core::kprintln;
 use ore_core::memory::Pager;
 use std::sync::Arc;
@@ -324,8 +324,7 @@ pub async fn sys_share_context(
         ChunkStrategy::ExactMatch => "exact_match",
     };
 
-    let chunks =
-        SemanticBus::chunk_text(&payload.knowledge_text, strategy_str, c_size, safe_overlap);
+    let chunks = chunking::chunk_text(&payload.knowledge_text, strategy_str, c_size, safe_overlap);
 
     let total_blocks = chunks.len();
 
