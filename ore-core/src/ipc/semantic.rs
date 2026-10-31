@@ -70,14 +70,69 @@ impl PartialOrd for ScoredChunk {
     }
 }
 
+pub struct HybridFusion;
+
+impl HybridFusion {
+    /// Fuses dense and sparse rankings using Reciprocal Rank Fusion (RRF)
+    /// and normalizes the resulting scores to [0.0, 1.0].
+    ///
+    /// The maximum possible RRF score (S_max) is dynamically calibrated to the number
+    /// of active ranking lists so that queries matching only one modality (e.g., pure
+    /// semantic matches with no exact keyword overlap) are not penalized below confidence gates.
+    pub fn compute_rrf_and_normalize(
+        dense_ranked: Vec<(f32, Arc<MemoryChunk>)>,
+        sparse_ranked: Vec<(f32, Arc<MemoryChunk>)>,
+        rrf_k: f32,
+        top_k: usize,
+    ) -> (Vec<(f32, Arc<MemoryChunk>)>, f32) {
+        if top_k == 0 {
+            return (Vec::new(), 0.0);
+        }
+
+        let num_lists = (!dense_ranked.is_empty() as u32) + (!sparse_ranked.is_empty() as u32);
+        if num_lists == 0 {
+            return (Vec::new(), 0.0);
+        }
+
+        // S_max is the highest possible raw RRF score (rank 1 across all active lists)
+        let max_possible_rrf = (num_lists as f32) / (rrf_k + 1.0);
+
+        let mut fused: HashMap<u64, (f32, Arc<MemoryChunk>)> = HashMap::new();
+
+        for ranked in [dense_ranked, sparse_ranked] {
+            for (rank_idx, (_, chunk)) in ranked.into_iter().enumerate() {
+                let entry = fused.entry(chunk.id).or_insert((0.0, chunk));
+                entry.0 += 1.0 / (rrf_k + (rank_idx + 1) as f32);
+            }
+        }
+
+        let mut results: Vec<_> = fused.into_values().collect();
+        results.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        results.truncate(top_k);
+
+        // Normalize to [0.0, 1.0] for stable threshold checks (e.g. CRAG gates)
+        for (score, _) in &mut results {
+            *score = (*score / max_possible_rrf).clamp(0.0, 1.0);
+        }
+
+        let top_fused_score = results.first().map(|(s, _)| *s).unwrap_or(0.0);
+        (results, top_fused_score)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchOutcome {
     pub results: Vec<(f32, Arc<MemoryChunk>)>,
     pub top_dense_score: f32,
+    pub top_fused_score: f32,
 }
 
 pub struct SemanticBus {
-    memory_pipes: DashMap<String, PipeState>,
+    pub(crate) memory_pipes: DashMap<String, PipeState>,
     embedding_cache: DashMap<u64, (Arc<Vec<f32>>, u64)>,
     cache_ttl_secs: u64,
     pipe_ttl_secs: u64,
@@ -319,8 +374,11 @@ impl SemanticBus {
                     timestamp: chunk.timestamp,
                     category: chunk.category,
                 }));
-                if sq8_chunks.len() > 50_000 {
-                    sq8_chunks.pop_front();
+                // COUPLED BM25 EVICTION
+                if sq8_chunks.len() > 50_000
+                    && let Some(evicted) = sq8_chunks.pop_front()
+                {
+                    bm25.remove_chunk(evicted.id, &evicted.text);
                 }
             }
             PipeState::ActivePqRecompute {
@@ -339,8 +397,11 @@ impl SemanticBus {
                     timestamp: chunk.timestamp,
                     category: chunk.category,
                 }));
-                if pq_chunks.len() > 50_000 {
-                    pq_chunks.pop_front();
+                // COUPLED BM25 EVICTION
+                if pq_chunks.len() > 50_000
+                    && let Some(evicted) = pq_chunks.pop_front()
+                {
+                    bm25.remove_chunk(evicted.id, &evicted.text);
                 }
             }
             PipeState::Branched {
@@ -368,8 +429,11 @@ impl SemanticBus {
                 bm25.add_chunk(chunk.id, &chunk.text);
 
                 restored.push_back(chunk);
-                if restored.len() > 10_000 {
-                    restored.pop_front();
+                // COUPLED BM25 EVICTION ON RESTORE
+                if restored.len() > 10_000
+                    && let Some(evicted) = restored.pop_front()
+                {
+                    bm25.remove_chunk(evicted.id, &evicted.text);
                 }
                 *state = PipeState::Active {
                     is_persistent: true,
@@ -690,6 +754,7 @@ impl SemanticBus {
         let empty = || SearchOutcome {
             results: Vec::new(),
             top_dense_score: 0.0,
+            top_fused_score: 0.0,
         };
 
         if top_k == 0 {
@@ -836,6 +901,7 @@ impl SemanticBus {
             return SearchOutcome {
                 results: exact_reranked,
                 top_dense_score,
+                top_fused_score: top_dense_score,
             };
         }
 
@@ -883,6 +949,7 @@ impl SemanticBus {
             return SearchOutcome {
                 results: dummy_results,
                 top_dense_score,
+                top_fused_score: top_dense_score,
             };
         }
 
@@ -924,10 +991,16 @@ impl SemanticBus {
         let top_dense_score = dense_ranked.first().map_or(0.0, |(score, _)| *score);
 
         let Some(bm25_scores) = bm25_scores else {
-            // Dense-only search: the dense ranking is the answer.
+            // Dense-only search: dense scores are already in [-1.0, 1.0] (clamped to [0.0, 1.0])
+            let normalized_dense: Vec<_> = dense_ranked
+                .into_iter()
+                .map(|(s, c)| (s.clamp(0.0, 1.0), c))
+                .collect();
+            let top_dense = normalized_dense.first().map_or(0.0, |(s, _)| *s);
             return SearchOutcome {
-                results: dense_ranked,
-                top_dense_score,
+                results: normalized_dense,
+                top_dense_score: top_dense,
+                top_fused_score: top_dense,
             };
         };
 
@@ -951,27 +1024,13 @@ impl SemanticBus {
         // ── PASS 3: Reciprocal Rank Fusion (RRF) ────────────────────────────────
         // score = Σ 1 / (k + rank), rank starting at 1 for the best hit in each list.
         const RRF_K: f32 = 60.0;
-        let mut fused: HashMap<u64, (f32, Arc<MemoryChunk>)> = HashMap::new();
-
-        for ranked in [dense_ranked, sparse_ranked] {
-            for (rank_idx, (_, chunk)) in ranked.into_iter().enumerate() {
-                let entry = fused.entry(chunk.id).or_insert((0.0, chunk));
-                entry.0 += 1.0 / (RRF_K + (rank_idx + 1) as f32);
-            }
-        }
-
-        // At most 2 × candidate_limit entries, so a full sort is cheap.
-        let mut results: Vec<_> = fused.into_values().collect();
-        results.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.1.id.cmp(&b.1.id))
-        });
-        results.truncate(top_k);
+        let (results, top_fused_score) =
+            HybridFusion::compute_rrf_and_normalize(dense_ranked, sparse_ranked, RRF_K, top_k);
 
         SearchOutcome {
             results,
             top_dense_score,
+            top_fused_score,
         }
     }
 
@@ -1157,22 +1216,49 @@ impl SemanticBus {
                         }
                     }
 
-                    PipeState::ActiveSq8Nvme { sq8_chunks, .. } => {
+                    PipeState::ActiveSq8Nvme {
+                        sq8_chunks, bm25, ..
+                    } => {
                         let initial = sq8_chunks.len();
+                        let mut expired = Vec::new();
                         sq8_chunks.retain(|chunk| {
-                            current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
+                            let keep =
+                                current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs;
+                            if !keep {
+                                expired.push((chunk.id, chunk.text.clone()));
+                            }
+                            keep
                         });
+
+                        for (id, text) in expired {
+                            bm25.remove_chunk(id, &text);
+                        }
+
                         let removed = initial - sq8_chunks.len();
                         if removed > 0 {
                             chunks_swept += removed;
                         }
                     }
 
-                    PipeState::ActivePqRecompute { pq_chunks, .. } => {
+                    PipeState::ActivePqRecompute {
+                        pq_chunks, bm25, ..
+                    } => {
                         let initial = pq_chunks.len();
+                        let mut expired = Vec::new();
+
                         pq_chunks.retain(|chunk| {
-                            current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs
+                            let keep =
+                                current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs;
+                            if !keep {
+                                expired.push((chunk.id, chunk.text.clone()));
+                            }
+                            keep
                         });
+
+                        for (id, text) in expired {
+                            bm25.remove_chunk(id, &text);
+                        }
+
                         let removed = initial - pq_chunks.len();
                         if removed > 0 {
                             chunks_swept += removed;

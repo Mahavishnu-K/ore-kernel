@@ -112,4 +112,11 @@ impl Bm25Index {
 
         scores
     }
+
+    /// Resets the inverted index, document statistics, and token counts.
+    pub fn clear(&mut self) {
+        self.inverted_index.clear();
+        self.doc_lengths.clear();
+        self.total_tokens = 0;
+    }
 }

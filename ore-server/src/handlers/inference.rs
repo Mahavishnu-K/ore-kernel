@@ -82,17 +82,12 @@ fn build_context_block(
     Some((block, safe_chunks.len()))
 }
 
-/// Embeds one text with the system embedder, then unloads it (0 MB idle).
-/// The embedder lock ensures only one embedder is ever loaded at a time.
+/// Embeds one text with the system embedder via scoped lease (0 MB idle).
 async fn embed_text(state: &Arc<KernelState>, text: &str) -> Option<Vec<f32>> {
-    let _embedder_guard = state.embedder_lock.lock().await;
-    let result = state
-        .driver
-        .generate_embeddings(&state.system_embedder, vec![text.to_string()])
-        .await;
-    let _ = state.driver.unload_model(&state.system_embedder).await;
-
-    match result {
+    match state
+        .generate_embeddings_scoped(vec![text.to_string()])
+        .await
+    {
         Ok(vecs) => vecs.into_iter().next(),
         Err(e) => {
             kprintln!("-> [AUTO-RAG WARN] Failed to generate embedding: {}", e);
@@ -286,13 +281,14 @@ async fn ground_prompt(
     };
     let mut outcome = search();
 
-    // D. CRAG: low confidence -> fetch live knowledge, then search again
-    if outcome.top_dense_score < manifest.rag.confidence_threshold
+    // D. CRAG: calibirated confidence gate check, low confidence -> fetch live knowledge, then search again
+    let confidence = outcome.top_fused_score.max(outcome.top_dense_score);
+    if confidence < manifest.rag.confidence_threshold
         && let Some(tool) = &manifest.rag.crag_fallback_tool
     {
         kprintln!(
             "-> [CRAG] Low confidence ({:.2} < {:.2}). Auto-invoking fallback WASM tool '{}'...",
-            outcome.top_dense_score,
+            confidence,
             manifest.rag.confidence_threshold,
             tool
         );

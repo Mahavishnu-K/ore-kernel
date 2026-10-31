@@ -10,12 +10,15 @@ pub use chunking::{ChunkPayload, MemoryChunk, chunk_text};
 pub use message_bus::{AgentMessage, DEFAULT_MESSAGE_BACKLOG, MessageBus};
 pub use quant::{DiskVectorStore, PqChunk, PqCodebook, Sq8Chunk, Sq8Vector};
 pub use rate_limiter::RateLimiter;
-pub use semantic::{PipeState, ScoredChunk, SearchOutcome, SemanticBus, Sq8Candidate};
+pub use semantic::{
+    HybridFusion, PipeState, ScoredChunk, SearchOutcome, SemanticBus, Sq8Candidate,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ore_common::protocol::MemoryCategory;
+    use std::sync::Arc;
 
     #[test]
     fn test_fast_dot_product_unrolled() {
@@ -363,5 +366,106 @@ mod tests {
             diff.is_ok(),
             "Fresh empty branch must survive GC within its TTL"
         );
+    }
+
+    #[test]
+    fn test_bm25_coupled_eviction_under_capacity_cap() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![1.0; 8];
+
+        // Write initial chunk with a unique signature keyword
+        bus.write_chunk(
+            "test_cap_pipe",
+            "UniqueMarkerAlpha keyword inside chunk 1".to_string(),
+            "Context 1".to_string(),
+            vec.clone(),
+            "agent",
+            false,
+            MemoryCategory::Fact,
+        );
+
+        // Verify BM25 index contains the document
+        let outcome1 = bus.search_pipe(
+            "test_cap_pipe",
+            &vec,
+            "UniqueMarkerAlpha",
+            5,
+            None,
+            None,
+            false,
+            true,
+        );
+        assert!(!outcome1.results.is_empty());
+        assert!(outcome1.results[0].1.text.contains("UniqueMarkerAlpha"));
+
+        // Simulate reaching capacity and popping the first chunk
+        if let Some(mut pipe_guard) = bus.memory_pipes.get_mut("test_cap_pipe") {
+            if let PipeState::Active { chunks, bm25, .. } = pipe_guard.value_mut() {
+                if let Some(evicted) = chunks.pop_front() {
+                    bm25.remove_chunk(evicted.id, &evicted.text);
+                }
+            }
+        }
+
+        // Querying for the evicted term must yield 0 results in BM25
+        let outcome2 = bus.search_pipe(
+            "test_cap_pipe",
+            &vec,
+            "UniqueMarkerAlpha",
+            5,
+            None,
+            None,
+            false,
+            true,
+        );
+        assert!(
+            outcome2.results.is_empty(),
+            "Evicted document must not appear in BM25 results"
+        );
+    }
+
+    #[test]
+    fn test_hybrid_rrf_normalization_scale() {
+        let chunk1 = Arc::new(MemoryChunk {
+            id: 1,
+            text: Arc::new("Doc 1".to_string()),
+            context_payload: Arc::new("Context 1".to_string()),
+            vector: Arc::new(vec![1.0; 8]),
+            source_app: "app".to_string(),
+            timestamp: 1000,
+            category: MemoryCategory::Fact,
+        });
+
+        let chunk2 = Arc::new(MemoryChunk {
+            id: 2,
+            text: Arc::new("Doc 2".to_string()),
+            context_payload: Arc::new("Context 2".to_string()),
+            vector: Arc::new(vec![0.5; 8]),
+            source_app: "app".to_string(),
+            timestamp: 1000,
+            category: MemoryCategory::Fact,
+        });
+
+        // Case 1: Ranked #1 in both Dense and Sparse
+        let dense_ranked = vec![(0.95, Arc::clone(&chunk1)), (0.70, Arc::clone(&chunk2))];
+        let sparse_ranked = vec![(12.5, Arc::clone(&chunk1)), (4.2, Arc::clone(&chunk2))];
+
+        let (results, top_score) =
+            HybridFusion::compute_rrf_and_normalize(dense_ranked, sparse_ranked, 60.0, 5);
+
+        assert_eq!(results.len(), 2);
+        // Perfect dual #1 rank must normalize exactly to 1.0
+        assert!((top_score - 1.0).abs() < 1e-5);
+        assert!((results[0].0 - 1.0).abs() < 1e-5);
+        assert!(results[1].0 < 1.0 && results[1].0 > 0.0);
+
+        // Case 2: Present only in Dense (no lexical hits in sparse)
+        let single_dense = vec![(0.95, Arc::clone(&chunk1))];
+        let (single_results, single_top) =
+            HybridFusion::compute_rrf_and_normalize(single_dense, vec![], 60.0, 5);
+
+        // Single list rank 1 must also calibrate cleanly to 1.0 rather than being penalized to 0.5
+        assert_eq!(single_results.len(), 1);
+        assert!((single_top - 1.0).abs() < 1e-5);
     }
 }

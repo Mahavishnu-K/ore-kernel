@@ -368,27 +368,20 @@ pub async fn sys_share_context(
         }
     }
 
-    let mut wake_embedder = false;
-
     let category = payload
         .category
         .unwrap_or(ore_common::protocol::MemoryCategory::General);
 
     let _embedder_guard = state.embedder_lock.lock().await;
 
-    // Convert text to Math Vectors
+    // Convert text to Math Vectors via Scoped Embedder Lease
     if !chunks_to_embed.is_empty() {
-        wake_embedder = true;
         let probe_texts: Vec<String> = chunks_to_embed
             .iter()
             .map(|c| c.probe_text.clone())
             .collect();
 
-        match state
-            .driver
-            .generate_embeddings(&state.system_embedder, probe_texts)
-            .await
-        {
+        match state.generate_embeddings_scoped(probe_texts).await {
             Ok(vectors) => {
                 for (chunk_payload, vector) in chunks_to_embed.into_iter().zip(vectors.into_iter())
                 {
@@ -402,9 +395,12 @@ pub async fn sys_share_context(
                         category,
                     );
                 }
+                kprintln!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
             }
             Err(e) => return format!("KERNEL ERROR: Failed to embed knowledge. {}", e),
         }
+    } else {
+        kprintln!("-> [SEMANTIC BUS] Knowledge embedded entirely from Cache. Zero compute used.");
     }
 
     for (chunk_payload, arc_vector) in cached_chunks {
@@ -417,14 +413,6 @@ pub async fn sys_share_context(
             manifest.ipc.semantic_persistence,
             category,
         );
-    }
-
-    // ZERO-RAM ARCHITECTURE: kill the Nomic model to free memory
-    if wake_embedder {
-        let _ = state.driver.unload_model(&state.system_embedder).await;
-        kprintln!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
-    } else {
-        kprintln!("-> [SEMANTIC BUS] Knowledge embedded entirely from Cache. Zero compute used.");
     }
 
     if manifest.ipc.semantic_persistence {
@@ -533,29 +521,30 @@ pub async fn sys_search_context(
         payload.query.clone()
     };
 
-    // Generate Embeddings (computed on HyDE text for dense search)
+    // Generate Embeddings (computed on HyDE text for dense search) via Scoped Lease
     let query_vector =
         if let Some(cached_vec) = state.semantic_bus.get_cached_embedding(&dense_query_text) {
             kprintln!("-> [SEMANTIC BUS] Query found in System Cache. Zero compute used.");
             cached_vec
         } else {
-            let _embedder_guard = state.embedder_lock.lock().await;
-
             match state
-                .driver
-                .generate_embeddings(&state.system_embedder, vec![dense_query_text.clone()])
+                .generate_embeddings_scoped(vec![dense_query_text.clone()])
                 .await
             {
                 Ok(v) => {
-                    let arc_vec = std::sync::Arc::new(v[0].clone());
-
-                    // Use cache_only instead of write_chunk!
-                    // This stores the math for the Kernel's eyes only.
-                    state
-                        .semantic_bus
-                        .cache_only(&dense_query_text, Arc::clone(&arc_vec));
-
-                    arc_vec
+                    if let Some(first_vec) = v.into_iter().next() {
+                        let arc_vec = std::sync::Arc::new(first_vec);
+                        state
+                            .semantic_bus
+                            .cache_only(&dense_query_text, Arc::clone(&arc_vec));
+                        arc_vec
+                    } else {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KERNEL ERROR: No embeddings returned from driver".to_string(),
+                        )
+                            .into_response();
+                    }
                 }
                 Err(e) => {
                     return (
@@ -597,12 +586,13 @@ pub async fn sys_search_context(
 
     // CRAG CONFIDENCE GATE & FALLBACK EXECUTION
     let mut crag_rescued = false;
-    if outcome.top_dense_score < confidence_threshold
+    let confidence = outcome.top_fused_score.max(outcome.top_dense_score);
+    if confidence < confidence_threshold
         && let Some(tool_name) = crag_fallback_tool.as_ref()
     {
         kprintln!(
             "-> [CRAG] Low confidence retrieval ({:.2} < {:.2}). Auto-invoking fallback WASM tool '{}'...",
-            outcome.top_dense_score,
+            confidence,
             confidence_threshold,
             tool_name
         );
@@ -640,8 +630,7 @@ pub async fn sys_search_context(
 
                     let _embedder_guard = state.embedder_lock.lock().await;
                     if let Ok(vecs) = state
-                        .driver
-                        .generate_embeddings(&state.system_embedder, vec![trimmed.to_string()])
+                        .generate_embeddings_scoped(vec![trimmed.to_string()])
                         .await
                         && let Some(live_vec) = vecs.into_iter().next()
                     {
