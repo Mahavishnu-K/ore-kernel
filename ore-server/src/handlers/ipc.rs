@@ -615,16 +615,26 @@ pub async fn sys_search_context(
         k
     );
 
-    let mut outcome = state.semantic_bus.search_pipe(
-        &payload.target_pipe,
-        &query_vector,
-        &payload.query,
-        k,
-        filter_ref,
-        filter_cat,
-        manifest.ipc.allow_time_decay,
-        enable_hybrid,
-    );
+    let state_for_recompute = Arc::clone(&state);
+    let mut outcome = state
+        .semantic_bus
+        .search_pipe_recompute(
+            &payload.target_pipe,
+            &query_vector,
+            &payload.query,
+            k,
+            filter_ref,
+            filter_cat,
+            manifest.ipc.allow_time_decay,
+            enable_hybrid,
+            |texts| async move {
+                state_for_recompute
+                    .generate_embeddings_scoped(texts)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .await;
 
     // CRAG CONFIDENCE GATE & FALLBACK EXECUTION
     let mut crag_rescued = false;

@@ -812,7 +812,6 @@ impl SemanticBus {
         ranked
     }
 
-    /// Dual-Pass Hybrid Search (BM25 Sparse + Tri-Mode Dense SIMD fused via Reciprocal Rank Fusion)
     #[allow(clippy::too_many_arguments)]
     pub fn search_pipe(
         &self,
@@ -825,6 +824,165 @@ impl SemanticBus {
         allow_time_decay: bool,
         enable_hybrid: bool,
     ) -> SearchOutcome {
+        // Runs search without candidate recompute (Pass 1 uses ADC coarse scores if Mode B)
+        self.search_pipe_internal(
+            pipe_name,
+            query_vector,
+            query_text,
+            top_k,
+            filter_app,
+            filter_category,
+            allow_time_decay,
+            enable_hybrid,
+            None,
+        )
+    }
+
+    /// Asynchronous hybrid search supporting Mode B (LEANN On-The-Fly Candidate Recomputation).
+    /// Re-embeds candidate texts via Candle SystemEmbedder in a single batch forward pass.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_pipe_recompute<F, Fut>(
+        &self,
+        pipe_name: &str,
+        query_vector: &[f32],
+        query_text: &str,
+        top_k: usize,
+        filter_app: Option<&str>,
+        filter_category: Option<MemoryCategory>,
+        allow_time_decay: bool,
+        enable_hybrid: bool,
+        recompute_fn: F,
+    ) -> SearchOutcome
+    where
+        F: FnOnce(Vec<String>) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<Vec<f32>>, String>>,
+    {
+        // Check if pipe is in Mode B
+        let is_mode_b = self
+            .memory_pipes
+            .get(pipe_name)
+            .map(|p| matches!(p.value(), PipeState::ActivePqRecompute { .. }))
+            .unwrap_or(false);
+
+        let recomputed_candidates = if is_mode_b {
+            // Collect candidate texts from coarse PQ scan to re-embed
+            let coarse_candidates = self.collect_mode_b_candidates(
+                pipe_name,
+                query_vector,
+                top_k,
+                filter_app,
+                filter_category,
+            );
+
+            if !coarse_candidates.is_empty() {
+                let texts: Vec<String> = coarse_candidates
+                    .iter()
+                    .map(|c| c.text.to_string())
+                    .collect();
+
+                match recompute_fn(texts).await {
+                    Ok(vectors) => {
+                        let mut reranked = Vec::with_capacity(coarse_candidates.len());
+                        for (cand, vec) in coarse_candidates.into_iter().zip(vectors.into_iter()) {
+                            let score = Self::dot_product(&vec, query_vector);
+                            reranked.push((
+                                score,
+                                Arc::new(MemoryChunk {
+                                    id: cand.id,
+                                    text: Arc::clone(&cand.text),
+                                    context_payload: Arc::clone(&cand.context_payload),
+                                    vector: Arc::new(vec), // Real f32 vector restored!
+                                    source_app: cand.source_app.clone(),
+                                    timestamp: cand.timestamp,
+                                    category: cand.category,
+                                }),
+                            ));
+                        }
+                        Some(reranked)
+                    }
+                    Err(e) => {
+                        crate::kprintln!(
+                            "-> [LEANN RECOMPUTE ERROR] Re-embedding failed: {}. Falling back to coarse scores.",
+                            e
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        self.search_pipe_internal(
+            pipe_name,
+            query_vector,
+            query_text,
+            top_k,
+            filter_app,
+            filter_category,
+            allow_time_decay,
+            enable_hybrid,
+            recomputed_candidates,
+        )
+    }
+
+    /// Internal collector to identify Top-P candidates in Mode B for on-the-fly recomputation
+    fn collect_mode_b_candidates(
+        &self,
+        pipe_name: &str,
+        query_vector: &[f32],
+        top_k: usize,
+        filter_app: Option<&str>,
+        filter_category: Option<MemoryCategory>,
+    ) -> Vec<Arc<PqChunk>> {
+        let passes_filters = |app: &str, cat: MemoryCategory| {
+            filter_app.is_none_or(|a| a == app) && filter_category.is_none_or(|c| c == cat)
+        };
+
+        if let Some(pipe) = self.memory_pipes.get(pipe_name)
+            && let PipeState::ActivePqRecompute {
+                codebook,
+                pq_chunks,
+                ..
+            } = pipe.value()
+        {
+            let adc_table = codebook.compute_adc_table(query_vector);
+            let candidate_limit = (top_k * 4).clamp(32, 64);
+
+            let mut candidates: Vec<(f32, Arc<PqChunk>)> = pq_chunks
+                .iter()
+                .filter(|c| passes_filters(&c.source_app, c.category))
+                .map(|c| {
+                    let score = codebook.score_code(&c.pq_codes, &adc_table);
+                    (score, Arc::clone(c))
+                })
+                .collect();
+
+            candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+            candidates.truncate(candidate_limit);
+
+            return candidates.into_iter().map(|(_, c)| c).collect();
+        }
+        Vec::new()
+    }
+
+    /// Dual-Pass Hybrid Search (BM25 Sparse + Tri-Mode Dense SIMD fused via Reciprocal Rank Fusion)
+    /// Unified internal search execution pipeline
+    #[allow(clippy::too_many_arguments)]
+    fn search_pipe_internal(
+        &self,
+        pipe_name: &str,
+        query_vector: &[f32],
+        query_text: &str,
+        top_k: usize,
+        filter_app: Option<&str>,
+        filter_category: Option<MemoryCategory>,
+        allow_time_decay: bool,
+        enable_hybrid: bool,
+        recomputed_mode_b: Option<Vec<(f32, Arc<MemoryChunk>)>>,
+    ) -> SearchOutcome {
         let empty = || SearchOutcome {
             results: Vec::new(),
             top_dense_score: 0.0,
@@ -835,12 +993,10 @@ impl SemanticBus {
             return empty();
         }
 
-        // PAGE FAULT RECOVERY: restore the pipe from SSD if it was paged out
         if self.ensure_pipe_loaded(pipe_name).is_err() {
             return empty();
         }
 
-        // Snapshot the pipe state and release the DashMap lock immediately
         let (pipe_state_snapshot, base_pipe, bm25_scores) = {
             let Some(pipe) = self.memory_pipes.get(pipe_name) else {
                 return empty();
@@ -918,166 +1074,141 @@ impl SemanticBus {
             top_k
         };
 
-        // ── MODE B: LEANN PRODUCT QUANTIZATION SEARCH PATH (Sprint 5) ───────────
-        if let PipeState::ActivePqRecompute {
-            codebook,
-            pq_chunks,
-            ..
-        } = &pipe_state_snapshot
-        {
-            let dist_table = codebook.compute_distance_table(query_vector);
+        // ── HOIST: Resolve unified chunks ONCE for Mode A and CoW Branches ──────
+        let unified_chunks: Option<VecDeque<Arc<MemoryChunk>>> = match &pipe_state_snapshot {
+            PipeState::Active { chunks, .. } => {
+                if base_pipe.is_none() {
+                    Some(chunks.clone())
+                } else {
+                    None
+                }
+            }
+            PipeState::Branched { delta_chunks, .. } => {
+                if let Some(base) = &base_pipe {
+                    let mut combined = self.get_pipe_contents(base).unwrap_or_default();
+                    combined.extend(delta_chunks.clone());
+                    Some(combined)
+                } else {
+                    Some(delta_chunks.clone())
+                }
+            }
+            _ => None, // Mode B and Mode C don't need unified_chunks
+        };
 
-            let mut pq_candidates: Vec<(f32, Arc<PqChunk>)> = pq_chunks
-                .iter()
-                .filter(|c| passes_filters(&c.source_app, c.category))
-                .map(|c| {
-                    let score = codebook.score_pq(&c.pq_codes, &dist_table);
-                    (score, Arc::clone(c))
-                })
-                .collect();
-
-            pq_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
-            pq_candidates.truncate(top_k);
-
-            let dummy_results: Vec<(f32, Arc<MemoryChunk>)> = pq_candidates
-                .into_iter()
-                .map(|(score, c)| {
-                    (
-                        score,
-                        Arc::new(MemoryChunk {
-                            id: c.id,
-                            text: Arc::clone(&c.text),
-                            context_payload: Arc::clone(&c.context_payload),
-                            vector: Arc::new(Vec::new()),
-                            source_app: c.source_app.clone(),
-                            timestamp: c.timestamp,
-                            category: c.category,
-                        }),
-                    )
-                })
-                .collect();
-
-            let top_dense_score = dummy_results.first().map_or(0.0, |(s, _)| *s);
-            return SearchOutcome {
-                results: dummy_results,
-                top_dense_score,
-                top_fused_score: top_dense_score,
-            };
-        }
-
-        // ── PASS 1: Dense Scoring (Mode A / CoW vs Mode C) ─────────────────────
-        let (dense_ranked, top_dense_score) = match &pipe_state_snapshot {
-            PipeState::ActiveSq8Nvme {
-                sq8_chunks,
-                mmap_store,
-                ..
-            } => {
-                let query_sq8 = Sq8Vector::quantize(query_vector);
-
-                // Step 1: In-RAM integer dot product filter
-                let mut sq8_candidates: Vec<Sq8Candidate> = sq8_chunks
-                    .iter()
-                    .filter(|c| passes_filters(&c.source_app, c.category))
-                    .map(|c| {
-                        let mut score = Sq8Vector::dot_product(&c.sq8_vector.data, &query_sq8.data);
-                        if allow_time_decay {
-                            let hours_old =
-                                current_time.saturating_sub(c.timestamp) as f32 / 3600.0;
-                            score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
-                        }
-                        Sq8Candidate {
-                            id: c.id,
-                            score,
-                            f32_offset: c.f32_offset,
-                            text: Arc::clone(&c.text),
-                            context_payload: Arc::clone(&c.context_payload),
-                            source_app: c.source_app.clone(),
-                            timestamp: c.timestamp,
-                            category: c.category,
-                        }
-                    })
-                    .collect();
-
-                sq8_candidates
-                    .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
-                sq8_candidates.truncate(candidate_limit);
-
-                // Step 2: Zero-copy mmap exact SIMD rerank
-                let mut exact_reranked = Vec::with_capacity(sq8_candidates.len());
-                for cand in sq8_candidates {
-                    if let Ok(exact_score_res) =
-                        mmap_store.with_vector(cand.f32_offset, |f32_slice| {
-                            let mut exact_score = Self::dot_product(f32_slice, query_vector);
+        // ── PASS 1: Dense Scoring (Mode A vs Mode B vs Mode C) ───────────────────
+        let (dense_ranked, top_dense_score) = if let Some(mut recomputed) = recomputed_mode_b {
+            // Mode B (LEANN): Real f32 vectors recomputed on the fly
+            if allow_time_decay {
+                for (score, chunk) in &mut recomputed {
+                    let hours_old = current_time.saturating_sub(chunk.timestamp) as f32 / 3600.0;
+                    *score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                }
+            }
+            recomputed.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+            let top_score = recomputed.first().map_or(0.0, |(s, _)| *s);
+            recomputed.truncate(candidate_limit);
+            (recomputed, top_score)
+        } else {
+            match &pipe_state_snapshot {
+                PipeState::ActiveSq8Nvme {
+                    sq8_chunks,
+                    mmap_store,
+                    ..
+                } => {
+                    // Mode C (DiskANN): In-RAM int8 SQ8 scan + mmap exact seek
+                    let query_sq8 = Sq8Vector::quantize(query_vector);
+                    let mut sq8_candidates: Vec<Sq8Candidate> = sq8_chunks
+                        .iter()
+                        .filter(|c| passes_filters(&c.source_app, c.category))
+                        .map(|c| {
+                            let mut score =
+                                Sq8Vector::dot_product(&c.sq8_vector.data, &query_sq8.data);
                             if allow_time_decay {
                                 let hours_old =
-                                    current_time.saturating_sub(cand.timestamp) as f32 / 3600.0;
-                                exact_score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                                    current_time.saturating_sub(c.timestamp) as f32 / 3600.0;
+                                score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
                             }
-                            exact_score
+                            Sq8Candidate {
+                                id: c.id,
+                                score,
+                                f32_offset: c.f32_offset,
+                                text: Arc::clone(&c.text),
+                                context_payload: Arc::clone(&c.context_payload),
+                                source_app: c.source_app.clone(),
+                                timestamp: c.timestamp,
+                                category: c.category,
+                            }
                         })
-                    {
-                        let f32_vec = mmap_store.read_vector(cand.f32_offset).unwrap_or_default();
-                        exact_reranked.push((
-                            exact_score_res,
-                            Arc::new(MemoryChunk {
-                                id: cand.id,
-                                text: cand.text,
-                                context_payload: cand.context_payload,
-                                vector: Arc::new(f32_vec),
-                                source_app: cand.source_app,
-                                timestamp: cand.timestamp,
-                                category: cand.category,
-                            }),
-                        ));
-                    }
-                }
+                        .collect();
 
-                exact_reranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
-                let top_score = exact_reranked.first().map_or(0.0, |(s, _)| *s);
-                exact_reranked.truncate(candidate_limit);
-                (exact_reranked, top_score)
-            }
-            _ => {
-                // Mode A & CoW Branch: Direct in-RAM SIMD sweep
-                let unified_chunks = match &base_pipe {
-                    None => match &pipe_state_snapshot {
-                        PipeState::Active { chunks, .. } => chunks.clone(),
-                        _ => VecDeque::new(),
-                    },
-                    Some(base) => {
-                        let mut combined = self.get_pipe_contents(base).unwrap_or_default();
-                        if let PipeState::Branched { delta_chunks, .. } = &pipe_state_snapshot {
-                            combined.extend(delta_chunks.clone());
+                    sq8_candidates
+                        .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+                    sq8_candidates.truncate(candidate_limit);
+
+                    let mut exact_reranked = Vec::with_capacity(sq8_candidates.len());
+                    for cand in sq8_candidates {
+                        if let Ok(exact_score_res) =
+                            mmap_store.with_vector(cand.f32_offset, |f32_slice| {
+                                let mut exact_score = Self::dot_product(f32_slice, query_vector);
+                                if allow_time_decay {
+                                    let hours_old =
+                                        current_time.saturating_sub(cand.timestamp) as f32 / 3600.0;
+                                    exact_score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                                }
+                                exact_score
+                            })
+                        {
+                            let f32_vec =
+                                mmap_store.read_vector(cand.f32_offset).unwrap_or_default();
+                            exact_reranked.push((
+                                exact_score_res,
+                                Arc::new(MemoryChunk {
+                                    id: cand.id,
+                                    text: cand.text,
+                                    context_payload: cand.context_payload,
+                                    vector: Arc::new(f32_vec),
+                                    source_app: cand.source_app,
+                                    timestamp: cand.timestamp,
+                                    category: cand.category,
+                                }),
+                            ));
                         }
-                        combined
                     }
-                };
 
-                let mut dense_heap = BinaryHeap::with_capacity(candidate_limit);
-                for chunk in unified_chunks
-                    .iter()
-                    .filter(|c| passes_filters(&c.source_app, c.category))
-                {
-                    let mut score = Self::dot_product(&chunk.vector, query_vector);
-                    if allow_time_decay {
-                        let hours_old =
-                            current_time.saturating_sub(chunk.timestamp) as f32 / 3600.0;
-                        score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
-                    }
-                    if score.is_finite() {
-                        Self::keep_top(&mut dense_heap, candidate_limit, score, chunk);
-                    }
+                    exact_reranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+                    let top_score = exact_reranked.first().map_or(0.0, |(s, _)| *s);
+                    exact_reranked.truncate(candidate_limit);
+                    (exact_reranked, top_score)
                 }
+                _ => {
+                    // Mode A & CoW Branch: Uses pre-resolved unified_chunks (Zero Re-allocation)
+                    let chunks_ref = unified_chunks.as_ref().unwrap();
+                    let mut dense_heap = BinaryHeap::with_capacity(candidate_limit);
 
-                let ranked = Self::into_ranked(dense_heap);
-                let top_score = ranked.first().map_or(0.0, |(s, _)| *s);
-                (ranked, top_score)
+                    for chunk in chunks_ref
+                        .iter()
+                        .filter(|c| passes_filters(&c.source_app, c.category))
+                    {
+                        let mut score = Self::dot_product(&chunk.vector, query_vector);
+                        if allow_time_decay {
+                            let hours_old =
+                                current_time.saturating_sub(chunk.timestamp) as f32 / 3600.0;
+                            score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                        }
+                        if score.is_finite() {
+                            Self::keep_top(&mut dense_heap, candidate_limit, score, chunk);
+                        }
+                    }
+
+                    let ranked = Self::into_ranked(dense_heap);
+                    let top_score = ranked.first().map_or(0.0, |(s, _)| *s);
+                    (ranked, top_score)
+                }
             }
         };
 
-        // If BM25 is not requested, return dense results directly
+        // If BM25 is not enabled, return dense results directly
         let Some(bm25_scores) = bm25_scores else {
-            // Dense-only search: dense scores are already in [-1.0, 1.0] (clamped to [0.0, 1.0])
             let normalized_dense: Vec<_> = dense_ranked
                 .into_iter()
                 .map(|(s, c)| (s.clamp(0.0, 1.0), c))
@@ -1122,21 +1253,9 @@ impl SemanticBus {
                 }
             }
             _ => {
-                let unified_chunks = match &base_pipe {
-                    None => match &pipe_state_snapshot {
-                        PipeState::Active { chunks, .. } => chunks.clone(),
-                        _ => VecDeque::new(),
-                    },
-                    Some(base) => {
-                        let mut combined = self.get_pipe_contents(base).unwrap_or_default();
-                        if let PipeState::Branched { delta_chunks, .. } = &pipe_state_snapshot {
-                            combined.extend(delta_chunks.clone());
-                        }
-                        combined
-                    }
-                };
-
-                for chunk in unified_chunks
+                // Reuses the exact same unified_chunks reference from PASS 1
+                let chunks_ref = unified_chunks.as_ref().unwrap();
+                for chunk in chunks_ref
                     .iter()
                     .filter(|c| passes_filters(&c.source_app, c.category))
                 {

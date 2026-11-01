@@ -268,18 +268,35 @@ async fn ground_prompt(
 
     // C. Hybrid retrieval (BM25 uses the user's own words)
     let search = || {
-        state.semantic_bus.search_pipe(
-            pipe_name,
-            &query_vec,
-            safe_user_prompt,
-            3,
-            None,
-            None,
-            manifest.ipc.allow_time_decay,
-            manifest.rag.enable_hybrid,
-        )
+        let state_clone = Arc::clone(state);
+        let q_vec = Arc::clone(&query_vec);
+        let q_text = safe_user_prompt.to_string();
+        let p_name = pipe_name.to_string();
+        async move {
+            state_clone
+                .semantic_bus
+                .search_pipe_recompute(
+                    &p_name,
+                    &q_vec,
+                    &q_text,
+                    3,
+                    None,
+                    None,
+                    manifest.ipc.allow_time_decay,
+                    manifest.rag.enable_hybrid,
+                    |texts| {
+                        let s = Arc::clone(&state_clone);
+                        async move {
+                            s.generate_embeddings_scoped(texts)
+                                .await
+                                .map_err(|e| e.to_string())
+                        }
+                    },
+                )
+                .await
+        }
     };
-    let mut outcome = search();
+    let mut outcome = search().await;
 
     // D. CRAG: calibirated confidence gate check, low confidence -> fetch live knowledge, then search again
     let confidence = outcome.top_fused_score.max(outcome.top_dense_score);
@@ -293,7 +310,7 @@ async fn ground_prompt(
             tool
         );
         if crag_fallback(state, manifest, pipe_name, tool, safe_user_prompt).await {
-            outcome = search();
+            outcome = search().await;
         }
     }
 

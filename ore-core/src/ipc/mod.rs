@@ -692,4 +692,76 @@ mod tests {
         let store_path = ore_common::paths::get_memory_dir().join("auto_migrated_pipe.f32vecs");
         let _ = std::fs::remove_file(store_path);
     }
+
+    #[tokio::test]
+    async fn test_mode_b_leann_codebook_and_recompute() {
+        let bus = SemanticBus::new(24, 24);
+
+        let mut codebook = PqCodebook::new(8, 2); // 8 dims -> 2 subspaces of 4 dims
+        let sample_vectors = vec![
+            vec![1.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5],
+        ];
+
+        // 1. Train codebook via Mini-Batch K-Means
+        codebook.train_mini_batch(&sample_vectors, 5);
+
+        // 2. Initialize Mode B pipe directly
+        let pq_codes_1 = codebook.encode(&sample_vectors[0]);
+        let pq_codes_2 = codebook.encode(&sample_vectors[1]);
+
+        let mut pq_chunks = std::collections::VecDeque::new();
+        pq_chunks.push_back(Arc::new(PqChunk {
+            id: 101,
+            text: Arc::new("LEANN Chunk 1".to_string()),
+            context_payload: Arc::new("LEANN Context 1".to_string()),
+            pq_codes: pq_codes_1,
+            source_app: "test".to_string(),
+            timestamp: 1000,
+            category: MemoryCategory::Fact,
+        }));
+        pq_chunks.push_back(Arc::new(PqChunk {
+            id: 102,
+            text: Arc::new("LEANN Chunk 2".to_string()),
+            context_payload: Arc::new("LEANN Context 2".to_string()),
+            pq_codes: pq_codes_2,
+            source_app: "test".to_string(),
+            timestamp: 1000,
+            category: MemoryCategory::Fact,
+        }));
+
+        bus.memory_pipes.insert(
+            "leann_pipe".to_string(),
+            PipeState::ActivePqRecompute {
+                codebook: Arc::new(codebook),
+                pq_chunks,
+                bm25: Bm25Index::new(),
+            },
+        );
+
+        let query_vec = vec![1.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0];
+
+        // 3. Search Mode B with on-the-fly candidate recomputation
+        let outcome = bus
+            .search_pipe_recompute(
+                "leann_pipe",
+                &query_vec,
+                "LEANN Chunk",
+                2,
+                None,
+                None,
+                false,
+                false,
+                |texts| async move {
+                    // Mock in-kernel batch embedding forward pass
+                    Ok(texts.into_iter().map(|_| vec![1.0; 8]).collect())
+                },
+            )
+            .await;
+
+        assert_eq!(outcome.results.len(), 2);
+        // Verify real f32 vectors are restored and not empty!
+        assert_eq!(outcome.results[0].1.vector.len(), 8);
+        assert!(outcome.top_dense_score > 0.0);
+    }
 }
