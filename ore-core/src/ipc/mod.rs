@@ -8,7 +8,7 @@ pub mod semantic;
 pub use bm25::{Bm25Index, tokenize_bm25};
 pub use chunking::{ChunkPayload, MemoryChunk, chunk_text};
 pub use message_bus::{AgentMessage, DEFAULT_MESSAGE_BACKLOG, MessageBus};
-pub use quant::{DiskVectorStore, PqChunk, PqCodebook, Sq8Chunk, Sq8Vector};
+pub use quant::{MmapVectorStore, PqChunk, PqCodebook, Sq8Chunk, Sq8Vector};
 pub use rate_limiter::RateLimiter;
 pub use semantic::{
     HybridFusion, PipeState, ScoredChunk, SearchOutcome, SemanticBus, Sq8Candidate,
@@ -556,5 +556,140 @@ mod tests {
             rerun_summaries, 2,
             "Re-run must cluster only raw leaves, ignoring prior summaries"
         );
+    }
+
+    #[test]
+    fn test_mmap_vector_store_append_and_zero_copy_read() {
+        let tmp_dir = std::env::temp_dir().join(format!("ore_mmap_test_{}", std::process::id()));
+        let store_path = tmp_dir.join("test.f32vecs");
+
+        let store = MmapVectorStore::new(store_path.clone(), 4).unwrap();
+
+        let v1 = vec![1.0, 2.0, 3.0, 4.0];
+        let v2 = vec![5.0, 6.0, 7.0, 8.0];
+
+        let offset1 = store.append(&v1).unwrap();
+        let offset2 = store.append(&v2).unwrap();
+
+        assert_eq!(offset1, 0);
+        assert_eq!(offset2, 16); // 4 floats * 4 bytes
+
+        // Zero-copy read test
+        store
+            .with_vector(offset1, |slice| {
+                assert_eq!(slice, &[1.0, 2.0, 3.0, 4.0]);
+            })
+            .unwrap();
+
+        store
+            .with_vector(offset2, |slice| {
+                assert_eq!(slice, &[5.0, 6.0, 7.0, 8.0]);
+            })
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_mode_c_diskann_preserves_chunk_id_and_bm25_hybrid() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![1.0; 8];
+
+        let tmp_file = ore_common::paths::get_memory_dir().join("diskann_pipe.f32vecs");
+        let mmap_store = Arc::new(MmapVectorStore::new(tmp_file.clone(), 8).unwrap());
+
+        let mut sq8_chunks = std::collections::VecDeque::new();
+        let mut bm25 = Bm25Index::new();
+
+        // Write a test chunk directly into Mode C
+        let chunk_id = 99999;
+        let text = "Critical Error: Kernel Panic in DiskANN mode";
+        let offset = mmap_store.append(&vec).unwrap();
+
+        bm25.add_chunk(chunk_id, text);
+        sq8_chunks.push_back(Arc::new(Sq8Chunk {
+            id: chunk_id,
+            text: Arc::new(text.to_string()),
+            context_payload: Arc::new(text.to_string()),
+            sq8_vector: Sq8Vector::quantize(&vec),
+            f32_offset: offset,
+            source_app: "test".to_string(),
+            timestamp: 1000,
+            category: MemoryCategory::Fact,
+        }));
+
+        bus.memory_pipes.insert(
+            "diskann_pipe".to_string(),
+            PipeState::ActiveSq8Nvme {
+                sq8_chunks,
+                bm25,
+                vector_dim: 8,
+                mmap_store,
+            },
+        );
+
+        // Perform hybrid search over Mode C
+        let outcome = bus.search_pipe(
+            "diskann_pipe",
+            &vec,
+            "Kernel Panic",
+            5,
+            None,
+            None,
+            false,
+            true,
+        );
+
+        assert_eq!(outcome.results.len(), 1);
+        // Verify real persistent chunk ID is retained (was previously overwritten with 0)
+        assert_eq!(outcome.results[0].1.id, 99999);
+        assert!(outcome.top_fused_score > 0.0);
+
+        let _ = std::fs::remove_file(&tmp_file);
+    }
+
+    #[test]
+    fn test_automated_mode_a_to_c_migration() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![0.5; 8];
+
+        // Write 10,000 chunks to trigger promotion
+        for i in 0..10_000 {
+            bus.write_chunk(
+                "auto_migrated_pipe",
+                format!("Document payload {}", i),
+                format!("Context payload {}", i),
+                vec.clone(),
+                "agent",
+                false,
+                MemoryCategory::Fact,
+            );
+        }
+
+        // Verify that the pipe state was automatically promoted to Mode C (ActiveSq8Nvme)
+        let pipe_guard = bus.memory_pipes.get("auto_migrated_pipe").unwrap();
+        match pipe_guard.value() {
+            PipeState::ActiveSq8Nvme { sq8_chunks, .. } => {
+                assert_eq!(sq8_chunks.len(), 10_000);
+            }
+            _ => panic!("Pipe should have been automatically promoted to Mode C (ActiveSq8Nvme)"),
+        }
+        drop(pipe_guard);
+
+        // Verify search continues to work seamlessly post-migration
+        let outcome = bus.search_pipe(
+            "auto_migrated_pipe",
+            &vec,
+            "Document payload 999",
+            3,
+            None,
+            None,
+            false,
+            true,
+        );
+        assert!(!outcome.results.is_empty());
+
+        let store_path = ore_common::paths::get_memory_dir().join("auto_migrated_pipe.f32vecs");
+        let _ = std::fs::remove_file(store_path);
     }
 }

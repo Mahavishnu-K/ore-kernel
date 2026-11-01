@@ -1,7 +1,105 @@
+use memmap2::Mmap;
 use ore_common::protocol::MemoryCategory;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock};
+
+/// High-performance memory-mapped storage for dense f32 vectors (DiskANN pattern).
+/// Uses OS Page Cache mmap to eliminate syscall overhead and avoid per-query file allocations.
+#[derive(Debug)]
+pub struct MmapVectorStore {
+    path: PathBuf,
+    file: Mutex<File>,
+    mmap: RwLock<Option<Mmap>>,
+    vector_dim: usize,
+}
+
+impl MmapVectorStore {
+    pub fn new(path: PathBuf, vector_dim: usize) -> Result<Self, std::io::Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+
+        let meta = file.metadata()?;
+        let mmap = if meta.len() > 0 {
+            Some(unsafe { Mmap::map(&file)? })
+        } else {
+            None
+        };
+
+        Ok(Self {
+            path,
+            file: Mutex::new(file),
+            mmap: RwLock::new(mmap),
+            vector_dim,
+        })
+    }
+
+    pub fn for_pipe(pipe_name: &str, vector_dim: usize) -> Result<Self, std::io::Error> {
+        let path = ore_common::paths::get_memory_dir().join(format!("{}.f32vecs", pipe_name));
+        Self::new(path, vector_dim)
+    }
+
+    /// Appends a vector to the end of the file and remaps the virtual memory address space.
+    pub fn append(&self, vector: &[f32]) -> Result<u64, std::io::Error> {
+        let mut file = self.file.lock().unwrap();
+        let offset = file.seek(SeekFrom::End(0))?;
+
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(vector.as_ptr() as *const u8, vector.len() * 4) };
+        file.write_all(byte_slice)?;
+        file.flush()?;
+
+        let mut mmap_guard = self.mmap.write().unwrap();
+        let new_mmap = unsafe { Mmap::map(&*file)? };
+        *mmap_guard = Some(new_mmap);
+
+        Ok(offset)
+    }
+
+    /// Zero-copy accessor: executes a closure over the memory-mapped vector slice with 0 allocations.
+    #[inline(always)]
+    pub fn with_vector<R>(
+        &self,
+        offset: u64,
+        f: impl FnOnce(&[f32]) -> R,
+    ) -> Result<R, std::io::Error> {
+        let mmap_guard = self.mmap.read().unwrap();
+        if let Some(mmap) = mmap_guard.as_ref() {
+            let start = offset as usize;
+            let end = start + self.vector_dim * 4;
+
+            if end <= mmap.len() {
+                let ptr = unsafe { mmap.as_ptr().add(start) as *const f32 };
+                let slice = unsafe { std::slice::from_raw_parts(ptr, self.vector_dim) };
+                return Ok(f(slice));
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "Vector offset out of mmap bounds",
+        ))
+    }
+
+    /// Reads and clones an owned f32 vector from the memory map.
+    #[inline(always)]
+    pub fn read_vector(&self, offset: u64) -> Result<Vec<f32>, std::io::Error> {
+        self.with_vector(offset, |slice| slice.to_vec())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
 
 /// 1-byte Scalar Quantization (SQ8): Compresses f32 in [-1.0, 1.0] to signed i8.
 /// Yields 75% RAM reduction and executes via fast integer SIMD math.
@@ -52,51 +150,6 @@ impl Sq8Vector {
         }
 
         total as f32 / 16129.0 // (127.0 * 127.0)
-    }
-}
-
-/// Append-only NVMe storage for exact f32 vectors (DiskANN pattern)
-#[derive(Debug)]
-pub struct DiskVectorStore {
-    path: PathBuf,
-}
-
-impl DiskVectorStore {
-    pub fn new(pipe_name: &str) -> Self {
-        let path = ore_common::paths::get_memory_dir().join(format!("{}.f32vecs", pipe_name));
-        Self { path }
-    }
-
-    pub fn append(&self, vector: &[f32]) -> Result<u64, std::io::Error> {
-        use std::io::{Seek, SeekFrom, Write};
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&self.path)?;
-
-        let offset = file.seek(SeekFrom::End(0))?;
-        let byte_slice = unsafe {
-            std::slice::from_raw_parts(vector.as_ptr() as *const u8, std::mem::size_of_val(vector))
-        };
-        file.write_all(byte_slice)?;
-        Ok(offset)
-    }
-
-    pub fn read_vector(&self, offset: u64, dim: usize) -> Result<Vec<f32>, std::io::Error> {
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file = std::fs::File::open(&self.path)?;
-        file.seek(SeekFrom::Start(offset))?;
-
-        let mut buffer = vec![0.0f32; dim];
-        let byte_slice = unsafe {
-            std::slice::from_raw_parts_mut(
-                buffer.as_mut_ptr() as *mut u8,
-                std::mem::size_of_val(&buffer[..]),
-            )
-        };
-        file.read_exact(byte_slice)?;
-        Ok(buffer)
     }
 }
 

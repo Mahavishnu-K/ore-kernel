@@ -1,6 +1,6 @@
 use super::bm25::Bm25Index;
 use super::chunking::MemoryChunk;
-use super::quant::{DiskVectorStore, PqChunk, PqCodebook, Sq8Chunk, Sq8Vector};
+use super::quant::{MmapVectorStore, PqChunk, PqCodebook, Sq8Chunk, Sq8Vector};
 use dashmap::DashMap;
 use ore_common::protocol::MemoryCategory;
 use std::cmp::Ordering;
@@ -30,6 +30,7 @@ pub enum PipeState {
         sq8_chunks: VecDeque<Arc<Sq8Chunk>>,
         bm25: Bm25Index,
         vector_dim: usize,
+        mmap_store: Arc<MmapVectorStore>,
     },
     // Copy-on-Write Branch
     Branched {
@@ -140,13 +141,14 @@ pub struct SemanticBus {
 }
 
 pub struct Sq8Candidate {
-    score: f32,
-    f32_offset: u64,
-    text: Arc<String>,
-    context_payload: Arc<String>,
-    source_app: String,
-    timestamp: u64,
-    category: MemoryCategory,
+    pub id: u64,
+    pub score: f32,
+    pub f32_offset: u64,
+    pub text: Arc<String>,
+    pub context_payload: Arc<String>,
+    pub source_app: String,
+    pub timestamp: u64,
+    pub category: MemoryCategory,
 }
 
 impl SemanticBus {
@@ -347,20 +349,71 @@ impl SemanticBus {
                 }
                 bm25.add_chunk(chunk.id, &chunk.text);
                 chunks.push_back(chunk);
-                if chunks.len() > 10_000
-                    && let Some(evicted) = chunks.pop_front()
-                {
-                    bm25.remove_chunk(evicted.id, &evicted.text);
+
+                // AUTOMATED MIGRATION: Promote to Mode C (DiskANN) when reaching 10,000 chunks
+                if chunks.len() >= 10_000 {
+                    let vector_dim = chunks.front().map(|c| c.vector.len()).unwrap_or(768);
+                    crate::kprintln!(
+                        "-> [MMU MIGRATION] Pipe '{}' reached capacity ({} chunks). Promoting Mode A (HotSimd) -> Mode C (DiskANN SQ8)...",
+                        pipe_name,
+                        chunks.len()
+                    );
+
+                    let store_path =
+                        ore_common::paths::get_memory_dir().join(format!("{}.f32vecs", pipe_name));
+                    match MmapVectorStore::new(store_path, vector_dim) {
+                        Ok(mmap_store) => {
+                            let mmap_arc = Arc::new(mmap_store);
+                            let mut sq8_chunks = VecDeque::with_capacity(chunks.len());
+
+                            for c in chunks.drain(..) {
+                                let f32_offset = mmap_arc.append(&c.vector).unwrap_or(0);
+                                let sq8_vec = Sq8Vector::quantize(&c.vector);
+                                sq8_chunks.push_back(Arc::new(Sq8Chunk {
+                                    id: c.id,
+                                    text: Arc::clone(&c.text),
+                                    context_payload: Arc::clone(&c.context_payload),
+                                    sq8_vector: sq8_vec,
+                                    f32_offset,
+                                    source_app: c.source_app.clone(),
+                                    timestamp: c.timestamp,
+                                    category: c.category,
+                                }));
+                            }
+
+                            let preserved_bm25 = bm25.clone();
+                            *entry.value_mut() = PipeState::ActiveSq8Nvme {
+                                sq8_chunks,
+                                bm25: preserved_bm25,
+                                vector_dim,
+                                mmap_store: mmap_arc,
+                            };
+                            crate::kprintln!(
+                                "-> [MMU MIGRATION] Promotion complete for '{}'. Active RAM converted to int8 SQ8, vectors backed by zero-copy mmap.",
+                                pipe_name
+                            );
+                        }
+                        Err(e) => {
+                            crate::kprintln!(
+                                "-> [MMU MIGRATION ERROR] Failed to initialize MmapVectorStore for '{}': {}. Falling back to tail eviction.",
+                                pipe_name,
+                                e
+                            );
+                            if let Some(evicted) = chunks.pop_front() {
+                                bm25.remove_chunk(evicted.id, &evicted.text);
+                            }
+                        }
+                    }
                 }
             }
             PipeState::ActiveSq8Nvme {
                 sq8_chunks,
                 bm25,
                 vector_dim,
+                mmap_store,
             } => {
                 *vector_dim = chunk.vector.len();
-                let store = DiskVectorStore::new(pipe_name);
-                let f32_offset = store.append(&chunk.vector).unwrap_or(0);
+                let f32_offset = mmap_store.append(&chunk.vector).unwrap_or(0);
                 let sq8_vec = Sq8Vector::quantize(&chunk.vector);
 
                 bm25.add_chunk(chunk.id, &chunk.text);
@@ -374,8 +427,9 @@ impl SemanticBus {
                     timestamp: chunk.timestamp,
                     category: chunk.category,
                 }));
-                // COUPLED BM25 EVICTION
-                if sq8_chunks.len() > 50_000
+
+                // Enterprise capacity cap: 1,000,000 chunks
+                if sq8_chunks.len() > 1_000_000
                     && let Some(evicted) = sq8_chunks.pop_front()
                 {
                     bm25.remove_chunk(evicted.id, &evicted.text);
@@ -397,7 +451,6 @@ impl SemanticBus {
                     timestamp: chunk.timestamp,
                     category: chunk.category,
                 }));
-                // COUPLED BM25 EVICTION
                 if pq_chunks.len() > 50_000
                     && let Some(evicted) = pq_chunks.pop_front()
                 {
@@ -429,7 +482,6 @@ impl SemanticBus {
                 bm25.add_chunk(chunk.id, &chunk.text);
 
                 restored.push_back(chunk);
-                // COUPLED BM25 EVICTION ON RESTORE
                 if restored.len() > 10_000
                     && let Some(evicted) = restored.pop_front()
                 {
@@ -686,7 +738,29 @@ impl SemanticBus {
                     delta_chunks,
                     ..
                 } => (delta_chunks.clone(), Some(base_pipe.clone())),
-                PipeState::ActiveSq8Nvme { .. } | PipeState::ActivePqRecompute { .. } => {
+                PipeState::ActiveSq8Nvme {
+                    sq8_chunks,
+                    mmap_store,
+                    ..
+                } => {
+                    let chunks: VecDeque<Arc<MemoryChunk>> = sq8_chunks
+                        .iter()
+                        .map(|sc| {
+                            let vec = mmap_store.read_vector(sc.f32_offset).unwrap_or_default();
+                            Arc::new(MemoryChunk {
+                                id: sc.id,
+                                text: Arc::clone(&sc.text),
+                                context_payload: Arc::clone(&sc.context_payload),
+                                vector: Arc::new(vec),
+                                source_app: sc.source_app.clone(),
+                                timestamp: sc.timestamp,
+                                category: sc.category,
+                            })
+                        })
+                        .collect();
+                    (chunks, None)
+                }
+                PipeState::ActivePqRecompute { .. } => {
                     let restored =
                         crate::memory::Pager::page_in_semantic(pipe_name).unwrap_or_default();
                     (restored, None)
@@ -738,7 +812,7 @@ impl SemanticBus {
         ranked
     }
 
-    /// Dual-Pass Hybrid Search (BM25 Sparse + Dense SIMD fused via Reciprocal Rank Fusion)
+    /// Dual-Pass Hybrid Search (BM25 Sparse + Tri-Mode Dense SIMD fused via Reciprocal Rank Fusion)
     #[allow(clippy::too_many_arguments)]
     pub fn search_pipe(
         &self,
@@ -785,11 +859,13 @@ impl SemanticBus {
                     sq8_chunks,
                     bm25,
                     vector_dim,
+                    mmap_store,
                 } => (
                     PipeState::ActiveSq8Nvme {
                         sq8_chunks: sq8_chunks.clone(),
                         bm25: Bm25Index::new(),
                         vector_dim: *vector_dim,
+                        mmap_store: Arc::clone(mmap_store),
                     },
                     None,
                     enable_hybrid.then(|| bm25.score_query(query_text)),
@@ -842,75 +918,12 @@ impl SemanticBus {
             top_k
         };
 
-        // Mode C (DiskANN) Support: Scans SQ8 in RAM and fetches exact candidates from SSD
-        if let PipeState::ActiveSq8Nvme {
-            sq8_chunks,
-            vector_dim,
-            ..
-        } = pipe_state_snapshot
-        {
-            let dim = vector_dim;
-            let query_sq8 = Sq8Vector::quantize(query_vector);
-            let store = DiskVectorStore::new(pipe_name);
-
-            // Step 1: Scan int8 vectors in RAM
-            let mut sq8_candidates: Vec<Sq8Candidate> = sq8_chunks
-                .iter()
-                .filter(|c| passes_filters(&c.source_app, c.category))
-                .map(|c| {
-                    let score = Sq8Vector::dot_product(&c.sq8_vector.data, &query_sq8.data);
-                    Sq8Candidate {
-                        score,
-                        f32_offset: c.f32_offset,
-                        text: Arc::clone(&c.text),
-                        context_payload: Arc::clone(&c.context_payload),
-                        source_app: c.source_app.clone(),
-                        timestamp: c.timestamp,
-                        category: c.category,
-                    }
-                })
-                .collect();
-
-            sq8_candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
-            sq8_candidates.truncate(candidate_limit);
-
-            // Step 2 & 3: NVMe Direct seek + Exact SIMD dot-product rerank
-            let mut exact_reranked = Vec::new();
-            for (i, cand) in sq8_candidates.into_iter().enumerate() {
-                if let Ok(f32_vec) = store.read_vector(cand.f32_offset, dim) {
-                    let exact_score = Self::dot_product(&f32_vec, query_vector);
-                    exact_reranked.push((
-                        exact_score,
-                        Arc::new(MemoryChunk {
-                            id: i as u64,
-                            text: cand.text,
-                            context_payload: cand.context_payload,
-                            vector: Arc::new(f32_vec),
-                            source_app: cand.source_app,
-                            timestamp: cand.timestamp,
-                            category: cand.category,
-                        }),
-                    ));
-                }
-            }
-
-            exact_reranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
-            let top_dense_score = exact_reranked.first().map_or(0.0, |(s, _)| *s);
-            exact_reranked.truncate(top_k);
-
-            return SearchOutcome {
-                results: exact_reranked,
-                top_dense_score,
-                top_fused_score: top_dense_score,
-            };
-        }
-
-        // ── MODE B: LEANN PRODUCT QUANTIZATION SEARCH PATH ───────────────────
+        // ── MODE B: LEANN PRODUCT QUANTIZATION SEARCH PATH (Sprint 5) ───────────
         if let PipeState::ActivePqRecompute {
             codebook,
             pq_chunks,
             ..
-        } = pipe_state_snapshot
+        } = &pipe_state_snapshot
         {
             let dist_table = codebook.compute_distance_table(query_vector);
 
@@ -926,7 +939,6 @@ impl SemanticBus {
             pq_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
             pq_candidates.truncate(top_k);
 
-            // Return candidates for candidate recompute
             let dummy_results: Vec<(f32, Arc<MemoryChunk>)> = pq_candidates
                 .into_iter()
                 .map(|(score, c)| {
@@ -953,43 +965,117 @@ impl SemanticBus {
             };
         }
 
-        let unified_chunks = match base_pipe {
-            None => match pipe_state_snapshot {
-                PipeState::Active { chunks, .. } => chunks,
-                _ => VecDeque::new(),
-            },
-            Some(base) => {
-                let mut combined = self.get_pipe_contents(&base).unwrap_or_default();
-                if let PipeState::Branched { delta_chunks, .. } = pipe_state_snapshot {
-                    combined.extend(delta_chunks);
+        // ── PASS 1: Dense Scoring (Mode A / CoW vs Mode C) ─────────────────────
+        let (dense_ranked, top_dense_score) = match &pipe_state_snapshot {
+            PipeState::ActiveSq8Nvme {
+                sq8_chunks,
+                mmap_store,
+                ..
+            } => {
+                let query_sq8 = Sq8Vector::quantize(query_vector);
+
+                // Step 1: In-RAM integer dot product filter
+                let mut sq8_candidates: Vec<Sq8Candidate> = sq8_chunks
+                    .iter()
+                    .filter(|c| passes_filters(&c.source_app, c.category))
+                    .map(|c| {
+                        let mut score = Sq8Vector::dot_product(&c.sq8_vector.data, &query_sq8.data);
+                        if allow_time_decay {
+                            let hours_old =
+                                current_time.saturating_sub(c.timestamp) as f32 / 3600.0;
+                            score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                        }
+                        Sq8Candidate {
+                            id: c.id,
+                            score,
+                            f32_offset: c.f32_offset,
+                            text: Arc::clone(&c.text),
+                            context_payload: Arc::clone(&c.context_payload),
+                            source_app: c.source_app.clone(),
+                            timestamp: c.timestamp,
+                            category: c.category,
+                        }
+                    })
+                    .collect();
+
+                sq8_candidates
+                    .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+                sq8_candidates.truncate(candidate_limit);
+
+                // Step 2: Zero-copy mmap exact SIMD rerank
+                let mut exact_reranked = Vec::with_capacity(sq8_candidates.len());
+                for cand in sq8_candidates {
+                    if let Ok(exact_score_res) =
+                        mmap_store.with_vector(cand.f32_offset, |f32_slice| {
+                            let mut exact_score = Self::dot_product(f32_slice, query_vector);
+                            if allow_time_decay {
+                                let hours_old =
+                                    current_time.saturating_sub(cand.timestamp) as f32 / 3600.0;
+                                exact_score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                            }
+                            exact_score
+                        })
+                    {
+                        let f32_vec = mmap_store.read_vector(cand.f32_offset).unwrap_or_default();
+                        exact_reranked.push((
+                            exact_score_res,
+                            Arc::new(MemoryChunk {
+                                id: cand.id,
+                                text: cand.text,
+                                context_payload: cand.context_payload,
+                                vector: Arc::new(f32_vec),
+                                source_app: cand.source_app,
+                                timestamp: cand.timestamp,
+                                category: cand.category,
+                            }),
+                        ));
+                    }
                 }
-                combined
+
+                exact_reranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+                let top_score = exact_reranked.first().map_or(0.0, |(s, _)| *s);
+                exact_reranked.truncate(candidate_limit);
+                (exact_reranked, top_score)
+            }
+            _ => {
+                // Mode A & CoW Branch: Direct in-RAM SIMD sweep
+                let unified_chunks = match &base_pipe {
+                    None => match &pipe_state_snapshot {
+                        PipeState::Active { chunks, .. } => chunks.clone(),
+                        _ => VecDeque::new(),
+                    },
+                    Some(base) => {
+                        let mut combined = self.get_pipe_contents(base).unwrap_or_default();
+                        if let PipeState::Branched { delta_chunks, .. } = &pipe_state_snapshot {
+                            combined.extend(delta_chunks.clone());
+                        }
+                        combined
+                    }
+                };
+
+                let mut dense_heap = BinaryHeap::with_capacity(candidate_limit);
+                for chunk in unified_chunks
+                    .iter()
+                    .filter(|c| passes_filters(&c.source_app, c.category))
+                {
+                    let mut score = Self::dot_product(&chunk.vector, query_vector);
+                    if allow_time_decay {
+                        let hours_old =
+                            current_time.saturating_sub(chunk.timestamp) as f32 / 3600.0;
+                        score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                    }
+                    if score.is_finite() {
+                        Self::keep_top(&mut dense_heap, candidate_limit, score, chunk);
+                    }
+                }
+
+                let ranked = Self::into_ranked(dense_heap);
+                let top_score = ranked.first().map_or(0.0, |(s, _)| *s);
+                (ranked, top_score)
             }
         };
 
-        // ── PASS 1: Dense SIMD Scoring ──────────────────────────────────────────
-        let mut dense_heap = BinaryHeap::with_capacity(candidate_limit);
-
-        for chunk in unified_chunks
-            .iter()
-            .filter(|c| passes_filters(&c.source_app, c.category))
-        {
-            let mut score = Self::dot_product(&chunk.vector, query_vector);
-
-            if allow_time_decay {
-                let hours_old = current_time.saturating_sub(chunk.timestamp) as f32 / 3600.0;
-                score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
-            }
-
-            // NaN/inf (e.g. a corrupt vector) would poison the ordering
-            if score.is_finite() {
-                Self::keep_top(&mut dense_heap, candidate_limit, score, chunk);
-            }
-        }
-
-        let dense_ranked = Self::into_ranked(dense_heap);
-        let top_dense_score = dense_ranked.first().map_or(0.0, |(score, _)| *score);
-
+        // If BM25 is not requested, return dense results directly
         let Some(bm25_scores) = bm25_scores else {
             // Dense-only search: dense scores are already in [-1.0, 1.0] (clamped to [0.0, 1.0])
             let normalized_dense: Vec<_> = dense_ranked
@@ -1007,22 +1093,66 @@ impl SemanticBus {
         // ── PASS 2: BM25 Sparse Scoring ─────────────────────────────────────────
         let mut sparse_heap = BinaryHeap::with_capacity(candidate_limit);
 
-        for chunk in unified_chunks
-            .iter()
-            .filter(|c| passes_filters(&c.source_app, c.category))
-        {
-            if let Some(&score) = bm25_scores.get(&chunk.id)
-                && score > 0.0
-                && score.is_finite()
-            {
-                Self::keep_top(&mut sparse_heap, candidate_limit, score, chunk);
+        match &pipe_state_snapshot {
+            PipeState::ActiveSq8Nvme {
+                sq8_chunks,
+                mmap_store,
+                ..
+            } => {
+                for c in sq8_chunks
+                    .iter()
+                    .filter(|c| passes_filters(&c.source_app, c.category))
+                {
+                    if let Some(&score) = bm25_scores.get(&c.id)
+                        && score > 0.0
+                        && score.is_finite()
+                    {
+                        let f32_vec = mmap_store.read_vector(c.f32_offset).unwrap_or_default();
+                        let chunk = Arc::new(MemoryChunk {
+                            id: c.id,
+                            text: Arc::clone(&c.text),
+                            context_payload: Arc::clone(&c.context_payload),
+                            vector: Arc::new(f32_vec),
+                            source_app: c.source_app.clone(),
+                            timestamp: c.timestamp,
+                            category: c.category,
+                        });
+                        Self::keep_top(&mut sparse_heap, candidate_limit, score, &chunk);
+                    }
+                }
+            }
+            _ => {
+                let unified_chunks = match &base_pipe {
+                    None => match &pipe_state_snapshot {
+                        PipeState::Active { chunks, .. } => chunks.clone(),
+                        _ => VecDeque::new(),
+                    },
+                    Some(base) => {
+                        let mut combined = self.get_pipe_contents(base).unwrap_or_default();
+                        if let PipeState::Branched { delta_chunks, .. } = &pipe_state_snapshot {
+                            combined.extend(delta_chunks.clone());
+                        }
+                        combined
+                    }
+                };
+
+                for chunk in unified_chunks
+                    .iter()
+                    .filter(|c| passes_filters(&c.source_app, c.category))
+                {
+                    if let Some(&score) = bm25_scores.get(&chunk.id)
+                        && score > 0.0
+                        && score.is_finite()
+                    {
+                        Self::keep_top(&mut sparse_heap, candidate_limit, score, chunk);
+                    }
+                }
             }
         }
 
         let sparse_ranked = Self::into_ranked(sparse_heap);
 
-        // ── PASS 3: Reciprocal Rank Fusion (RRF) ────────────────────────────────
-        // score = Σ 1 / (k + rank), rank starting at 1 for the best hit in each list.
+        // ── PASS 3: Calibrated RRF Fusion ───────────────────────────────────────
         const RRF_K: f32 = 60.0;
         let (results, top_fused_score) =
             HybridFusion::compute_rrf_and_normalize(dense_ranked, sparse_ranked, RRF_K, top_k);
