@@ -468,4 +468,93 @@ mod tests {
         assert_eq!(single_results.len(), 1);
         assert!((single_top - 1.0).abs() < 1e-5);
     }
+
+    #[tokio::test]
+    async fn test_raptor_multi_level_recursion_and_centroids() {
+        let bus = SemanticBus::new(24, 24);
+
+        // 4 orthogonal/distinct vectors
+        let v1 = vec![1.0, 0.0, 0.0, 0.0];
+        let v2 = vec![0.9, 0.1, 0.0, 0.0];
+        let v3 = vec![0.0, 1.0, 0.0, 0.0];
+        let v4 = vec![0.0, 0.9, 0.1, 0.0];
+
+        bus.write_chunk(
+            "raptor_pipe",
+            "Chunk 1".into(),
+            "Ctx 1".into(),
+            v1.clone(),
+            "app",
+            false,
+            MemoryCategory::Fact,
+        );
+        bus.write_chunk(
+            "raptor_pipe",
+            "Chunk 2".into(),
+            "Ctx 2".into(),
+            v2.clone(),
+            "app",
+            false,
+            MemoryCategory::Fact,
+        );
+        bus.write_chunk(
+            "raptor_pipe",
+            "Chunk 3".into(),
+            "Ctx 3".into(),
+            v3.clone(),
+            "app",
+            false,
+            MemoryCategory::Fact,
+        );
+        bus.write_chunk(
+            "raptor_pipe",
+            "Chunk 4".into(),
+            "Ctx 4".into(),
+            v4.clone(),
+            "app",
+            false,
+            MemoryCategory::Fact,
+        );
+
+        // Run multi-level RAPTOR with cluster_size = 2 and max_levels = 2
+        let (total_summaries, levels_built) = bus
+            .build_raptor_tree("raptor_pipe", 2, 2, |prompt| async move {
+                format!("Summary of {}", prompt.len())
+            })
+            .await
+            .unwrap();
+
+        // Level 1 builds 2 summaries, Level 2 builds 1 root summary -> 3 total summaries across 2 levels
+        assert!(
+            levels_built >= 2,
+            "RAPTOR must build at least 2 levels recursively"
+        );
+        assert!(
+            total_summaries >= 3,
+            "RAPTOR must generate both intermediate and root summaries"
+        );
+
+        let contents = bus.get_pipe_contents("raptor_pipe").unwrap();
+        let l1_summary = contents
+            .iter()
+            .find(|c| c.text.starts_with("[RAPTOR-L1]"))
+            .unwrap();
+
+        // Centroid vector verification: centroid must NOT simply equal child 0's vector!
+        assert_ne!(
+            l1_summary.vector.as_slice(),
+            v1.as_slice(),
+            "Summary vector must be a computed centroid, not child 0's vector"
+        );
+
+        // Re-running RAPTOR must filter out previous summaries and not treat them as leaves
+        let (rerun_summaries, _) = bus
+            .build_raptor_tree("raptor_pipe", 2, 1, |_| async { "Duplicate".into() })
+            .await
+            .unwrap();
+        assert_eq!(
+            rerun_summaries, 2,
+            "Re-run must cluster only raw leaves, ignoring prior summaries"
+        );
+    }
 }

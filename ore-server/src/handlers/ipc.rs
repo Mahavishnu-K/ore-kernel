@@ -61,16 +61,17 @@ pub async fn sys_raptor_build(
             .into_response();
     }
 
+    // Resolve target model safely (skips wildcard "*")
     let target_model = manifest
-        .resources
-        .allowed_models
-        .first()
-        .map(|s| s.as_str())
+        .default_model()
         .unwrap_or("llama3.2:1b")
         .to_string();
 
-    let app_id = payload.app_id.clone();
+    // Isolate identity to prevent agent conversational KV-cache pollution
+    let raptor_app_id = format!("{}::raptor", payload.app_id);
+
     let driver = Arc::clone(&state.driver);
+    let scheduler = Arc::clone(&state.scheduler);
 
     let cluster_sz = payload.cluster_size.unwrap_or(4);
     let max_lvls = payload.max_levels.unwrap_or(2);
@@ -83,19 +84,38 @@ pub async fn sys_raptor_build(
             max_lvls,
             |summary_prompt| {
                 let d = Arc::clone(&driver);
+                let sched = Arc::clone(&scheduler);
                 let m = target_model.clone();
-                let a = app_id.clone();
+                let a = raptor_app_id.clone();
                 async move {
+                    // Acquire a GPU lease from the scheduler
+                    let lease = match sched.request_gpu(&m, &a).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            ore_core::kprintln!(
+                                "-> [RAPTOR WARN] Scheduler rejected GPU lease: {}",
+                                e
+                            );
+                            return String::new();
+                        }
+                    };
+
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    let d_clone = Arc::clone(&d);
+                    let m_clone = m.clone();
+                    let a_clone = a.clone();
+
                     tokio::spawn(async move {
-                        let _ = d
-                            .generate_text(&m, &a, false, &summary_prompt, None, tx, "")
+                        let _ = d_clone
+                            .generate_text(&m_clone, &a_clone, false, &summary_prompt, None, tx, "")
                             .await;
                     });
+
                     let mut summary = String::new();
                     while let Some(chunk) = rx.recv().await {
                         summary.push_str(&chunk);
                     }
+                    drop(lease); // Release permit immediately
                     summary
                 }
             },
@@ -489,33 +509,55 @@ pub async fn sys_search_context(
             "Write a factual, one-sentence direct answer excerpt to this question. Output ONLY the answer excerpt, no chat:\nQuestion: {}\nHypothetical Excerpt:",
             payload.query
         );
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let driver = Arc::clone(&state.driver);
+
+        // Resolve model safely (skips wildcard "*")
         let target_model = manifest
-            .resources
-            .allowed_models
-            .first()
-            .map(|s| s.as_str())
+            .default_model()
             .unwrap_or("llama3.2:1b")
             .to_string();
-        let app_id = manifest.app_id.clone();
 
-        tokio::spawn(async move {
-            let _ = driver
-                .generate_text(&target_model, &app_id, false, &hyde_prompt, None, tx, "")
-                .await;
-        });
+        // Isolate identity
+        let hyde_app_id = format!("{}::hyde", manifest.app_id);
 
-        let mut hypo = String::new();
-        while let Some(word) = rx.recv().await {
-            hypo.push_str(&word);
-        }
-        let trimmed = hypo.trim().to_string();
-        if trimmed.is_empty() {
-            payload.query.clone()
-        } else {
-            kprintln!("-> [HyDE] Synthesized Excerpt: '{}'", trimmed);
-            trimmed
+        // Acquire GPU Lease through the scheduler
+        match state
+            .scheduler
+            .request_gpu(&target_model, &hyde_app_id)
+            .await
+        {
+            Ok(lease) => {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                let driver = Arc::clone(&state.driver);
+                let m_clone = target_model.clone();
+                let a_clone = hyde_app_id.clone();
+
+                tokio::spawn(async move {
+                    let _ = driver
+                        .generate_text(&m_clone, &a_clone, false, &hyde_prompt, None, tx, "")
+                        .await;
+                });
+
+                let mut hypo = String::new();
+                while let Some(word) = rx.recv().await {
+                    hypo.push_str(&word);
+                }
+                drop(lease); // Release permit immediately
+
+                let trimmed = hypo.trim().to_string();
+                if trimmed.is_empty() {
+                    payload.query.clone()
+                } else {
+                    kprintln!("-> [HyDE] Synthesized Excerpt: '{}'", trimmed);
+                    trimmed
+                }
+            }
+            Err(e) => {
+                kprintln!(
+                    "-> [HyDE WARN] Scheduler rejected GPU lease: {}. Falling back to raw query.",
+                    e
+                );
+                payload.query.clone()
+            }
         }
     } else {
         payload.query.clone()

@@ -1054,12 +1054,17 @@ impl SemanticBus {
             .get_pipe_contents(pipe_name)
             .ok_or_else(|| format!("Pipe '{}' not found.", pipe_name))?;
 
-        if chunks.len() < cluster_size {
+        // Filter out previous summaries to prevent self-pollution and duplicate leaf clustering
+        let mut current_level_chunks: Vec<Arc<MemoryChunk>> = chunks
+            .into_iter()
+            .filter(|c| !c.source_app.starts_with("raptor_l") && !c.text.starts_with("[RAPTOR-L"))
+            .collect();
+
+        if current_level_chunks.len() < cluster_size {
             return Ok((0, 0));
         }
 
         let cluster_size = cluster_size.clamp(2, 10);
-        let mut current_level_chunks: Vec<Arc<MemoryChunk>> = chunks.into_iter().collect();
         let mut total_summaries = 0;
         let mut levels_built = 0;
 
@@ -1098,7 +1103,8 @@ impl SemanticBus {
                 clusters.push(cluster);
             }
 
-            let next_level_chunks = Vec::new();
+            // Next-level container to feed recursive tree hierarchy
+            let mut next_level_chunks: Vec<Arc<MemoryChunk>> = Vec::new();
 
             for cluster in clusters {
                 if cluster.is_empty() {
@@ -1120,23 +1126,50 @@ impl SemanticBus {
 
                 if !trimmed.is_empty() {
                     let tagged_text = format!("[RAPTOR-L{}] {}", level, trimmed);
-                    let dummy_vec = cluster[0].vector.as_ref().clone();
 
-                    self.write_chunk(
-                        pipe_name,
-                        tagged_text.clone(),
-                        tagged_text,
-                        dummy_vec,
-                        &format!("raptor_l{}", level),
-                        true,
-                        MemoryCategory::Fact,
-                    );
+                    // Compute true mathematical centroid of the cluster (mean unit vector)
+                    let dim = cluster[0].vector.len();
+                    let mut centroid_vec = vec![0.0f32; dim];
+                    for member in &cluster {
+                        for (i, val) in member.vector.iter().enumerate() {
+                            centroid_vec[i] += val;
+                        }
+                    }
+                    Self::normalize(&mut centroid_vec);
 
+                    let chunk_id = self.next_chunk_id.fetch_add(1, AtomicOrdering::SeqCst);
+                    let arc_text = Arc::new(tagged_text.clone());
+                    let arc_context = Arc::new(trimmed.clone());
+                    let arc_vec = Arc::new(centroid_vec);
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    let summary_chunk = Arc::new(MemoryChunk {
+                        id: chunk_id,
+                        text: arc_text,
+                        context_payload: arc_context,
+                        vector: Arc::clone(&arc_vec),
+                        source_app: format!("raptor_l{}", level),
+                        timestamp,
+                        category: MemoryCategory::Fact,
+                    });
+
+                    // Insert summary into pipe and warm cache
+                    self.insert_chunk_to_pipe(pipe_name, Arc::clone(&summary_chunk), true);
+                    let hash = Self::hash_text(&tagged_text);
+                    self.embedding_cache.insert(hash, (arc_vec, timestamp));
+
+                    // Push to next level input
+                    next_level_chunks.push(summary_chunk);
                     total_summaries += 1;
                 }
             }
 
             levels_built += 1;
+
+            // Terminate if no summaries were generated, otherwise recurse to the next level
             if next_level_chunks.is_empty() {
                 break;
             }
