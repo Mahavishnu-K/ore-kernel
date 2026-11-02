@@ -12,7 +12,6 @@ use axum::{
 };
 use ore_core::ipc::{AgentMessage, chunking};
 use ore_core::kprintln;
-use ore_core::memory::Pager;
 use std::sync::Arc;
 
 /// Validates pipe access including wildcard branch patterns (e.g., "incident_409:branch/*" or "*")
@@ -319,6 +318,7 @@ pub async fn sys_share_context(
             );
         }
     };
+    let declared_mode = manifest.rag.vector_mode;
 
     if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.target_pipe) {
         kprintln!(
@@ -413,6 +413,8 @@ pub async fn sys_share_context(
                         &manifest.app_id,
                         manifest.ipc.semantic_persistence,
                         category,
+                        declared_mode,
+                        manifest.rag.max_hot_chunks,
                     );
                 }
                 kprintln!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
@@ -432,19 +434,17 @@ pub async fn sys_share_context(
             &manifest.app_id,
             manifest.ipc.semantic_persistence,
             category,
+            declared_mode,
+            manifest.rag.max_hot_chunks,
         );
     }
 
     if manifest.ipc.semantic_persistence {
         let p_name = payload.target_pipe.clone();
-
-        // Grab the updated pipe from RAM
-        if let Some(pipe_contents) = state.semantic_bus.get_pipe_contents(&p_name) {
-            // Spawn a background thread to freeze it to the SSD without blocking the API!
-            tokio::spawn(async move {
-                Pager::page_out_semantic(&p_name, &pipe_contents);
-            });
-        }
+        let bus = Arc::clone(&state.semantic_bus);
+        tokio::spawn(async move {
+            bus.persist_pipe(&p_name);
+        });
     } else {
         kprintln!(
             "-> [SEMANTIC BUS] Ephemeral Mode: Data secured in RAM only. (semantic_persistence = false)"
@@ -473,6 +473,7 @@ pub async fn sys_search_context(
                 .into_response();
         }
     };
+    let declare_mode = manifest.rag.vector_mode;
 
     // PERMISSION CHECK
     if !is_pipe_permitted(&manifest.ipc.allowed_semantic_pipes, &payload.target_pipe) {
@@ -694,6 +695,8 @@ pub async fn sys_search_context(
                             tool_name,
                             manifest.ipc.semantic_persistence,
                             ore_common::protocol::MemoryCategory::Fact,
+                            declare_mode,
+                            manifest.rag.max_hot_chunks,
                         );
 
                         // Re-run search to surface the live finding

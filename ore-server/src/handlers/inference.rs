@@ -178,6 +178,7 @@ async fn crag_fallback(
         dependencies: None,
         shell_command: None,
     };
+    let declared_mode = manifest.rag.vector_mode;
 
     let output = match crate::execution::execute_request(state.clone(), exec_req).await {
         // A trap, non-zero exit, or fuel exhaustion ends the output with a KERNEL ERROR
@@ -214,6 +215,8 @@ async fn crag_fallback(
         tool,
         manifest.ipc.semantic_persistence,
         ore_common::protocol::MemoryCategory::Fact,
+        declared_mode,
+        manifest.rag.max_hot_chunks,
     );
     kprintln!(
         "-> [CRAG] Ingested live finding from '{}' into '{}'.",

@@ -18,6 +18,16 @@ pub struct MmapVectorStore {
 
 impl MmapVectorStore {
     pub fn new(path: PathBuf, vector_dim: usize) -> Result<Self, std::io::Error> {
+        Self::init(path, vector_dim, false)
+    }
+
+    /// Creates a fresh vector store, truncating any existing file.
+    /// Used during Mode A -> Mode C migration to prevent vector duplication across re-migrations.
+    pub fn create_fresh(path: PathBuf, vector_dim: usize) -> Result<Self, std::io::Error> {
+        Self::init(path, vector_dim, true)
+    }
+
+    fn init(path: PathBuf, vector_dim: usize, truncate: bool) -> Result<Self, std::io::Error> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -26,7 +36,7 @@ impl MmapVectorStore {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(false)
+            .truncate(truncate)
             .open(&path)?;
 
         let meta = file.metadata()?;
@@ -50,10 +60,25 @@ impl MmapVectorStore {
     }
 
     /// Appends a batch of vectors in a single I/O write and a single mmap remap.
-    /// Crucial for Mode A -> Mode C migration to avoid 10,000 separate mmap calls.
+    /// Strictly verifies that all vector dimensions match `vector_dim` to prevent out-of-bounds reads.
     pub fn append_batch(&self, vectors: &[&[f32]]) -> Result<Vec<u64>, std::io::Error> {
         if vectors.is_empty() {
             return Ok(Vec::new());
+        }
+
+        // DIMENSION VALIDATION: Prevent reading past the end of the slice
+        for (idx, vec) in vectors.iter().enumerate() {
+            if vec.len() != self.vector_dim {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "Vector dimension mismatch at index {}: expected {}, got {}",
+                        idx,
+                        self.vector_dim,
+                        vec.len()
+                    ),
+                ));
+            }
         }
 
         let mut file = self.file.lock().unwrap();
@@ -80,13 +105,25 @@ impl MmapVectorStore {
         Ok(offsets)
     }
 
-    /// Appends a vector to the end of the file and remaps the virtual memory address space.
+    /// Appends a single vector, remapping only when necessary.
     pub fn append(&self, vector: &[f32]) -> Result<u64, std::io::Error> {
+        if vector.len() != self.vector_dim {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Vector dimension mismatch: expected {}, got {}",
+                    self.vector_dim,
+                    vector.len()
+                ),
+            ));
+        }
+
         let mut file = self.file.lock().unwrap();
         let offset = file.seek(SeekFrom::End(0))?;
 
-        let byte_slice =
-            unsafe { std::slice::from_raw_parts(vector.as_ptr() as *const u8, vector.len() * 4) };
+        let byte_slice = unsafe {
+            std::slice::from_raw_parts(vector.as_ptr() as *const u8, self.vector_dim * 4)
+        };
         file.write_all(byte_slice)?;
         file.flush()?;
 

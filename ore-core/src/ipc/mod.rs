@@ -17,7 +17,7 @@ pub use semantic::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ore_common::protocol::MemoryCategory;
+    use ore_common::protocol::{MemoryCategory, VectorMode};
     use std::sync::Arc;
 
     #[test]
@@ -114,6 +114,8 @@ mod tests {
             "agent_a",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
 
         bus.write_chunk(
@@ -124,6 +126,8 @@ mod tests {
             "agent_a",
             false,
             MemoryCategory::Directive,
+            VectorMode::Auto,
+            10_000,
         );
 
         let results = bus
@@ -171,6 +175,8 @@ mod tests {
             "admin",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
 
         assert!(
@@ -186,6 +192,8 @@ mod tests {
             "agent_alpha",
             false,
             MemoryCategory::Skill,
+            VectorMode::Auto,
+            10_000,
         );
 
         let base_results = bus
@@ -231,6 +239,8 @@ mod tests {
             "admin",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
 
         assert!(bus.branch_pipe("base_doc", "base_doc:branch/task").is_ok());
@@ -243,6 +253,8 @@ mod tests {
             "worker",
             false,
             MemoryCategory::Skill,
+            VectorMode::Auto,
+            10_000,
         );
 
         let diff = bus.diff_pipe("base_doc", "base_doc:branch/task").unwrap();
@@ -289,6 +301,8 @@ mod tests {
             "admin",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
 
         assert!(
@@ -304,6 +318,8 @@ mod tests {
             "worker",
             false,
             MemoryCategory::Skill,
+            VectorMode::Auto,
+            10_000,
         );
 
         // Merge with delete_branch = false
@@ -349,6 +365,8 @@ mod tests {
             "admin",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
 
         // Create an empty branch
@@ -382,6 +400,8 @@ mod tests {
             "agent",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
 
         // Verify BM25 index contains the document
@@ -486,6 +506,8 @@ mod tests {
             "app",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
         bus.write_chunk(
             "raptor_pipe",
@@ -495,6 +517,8 @@ mod tests {
             "app",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
         bus.write_chunk(
             "raptor_pipe",
@@ -504,6 +528,8 @@ mod tests {
             "app",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
         bus.write_chunk(
             "raptor_pipe",
@@ -513,6 +539,8 @@ mod tests {
             "app",
             false,
             MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
         );
 
         // Run multi-level RAPTOR with cluster_size = 2 and max_levels = 2
@@ -663,6 +691,8 @@ mod tests {
                 "agent",
                 false,
                 MemoryCategory::Fact,
+                VectorMode::Auto,
+                10_000,
             );
         }
 

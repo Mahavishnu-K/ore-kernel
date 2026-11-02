@@ -1,5 +1,6 @@
 use crate::ipc::MemoryChunk;
 use candle_core::{Device, Tensor};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -9,6 +10,13 @@ use std::sync::Arc;
 
 use ore_common::paths;
 pub use ore_common::types::ContextMessage;
+
+#[derive(Serialize, Deserialize)]
+pub struct PersistentPipeRecord {
+    pub max_hot_chunks: usize,
+    pub is_persistent: bool,
+    pub chunks: VecDeque<Arc<MemoryChunk>>,
+}
 
 // THE OS PAGEFILE MANAGER (SSD Swap)
 pub struct Pager;
@@ -58,13 +66,23 @@ impl Pager {
         Vec::new()
     }
 
-    pub fn page_out_semantic(pipe_name: &str, chunks: &VecDeque<Arc<MemoryChunk>>) {
+    pub fn page_out_semantic(
+        pipe_name: &str,
+        chunks: &VecDeque<Arc<MemoryChunk>>,
+        max_hot_chunks: usize,
+    ) {
+        let record = PersistentPipeRecord {
+            max_hot_chunks,
+            is_persistent: true,
+            chunks: chunks.clone(),
+        };
+
         let swap_dir = Self::get_swap_dir();
         let path = swap_dir.join(format!("{}.pipe", pipe_name));
 
         let tmp_path = swap_dir.join(format!("{}.pipe.{}.tmp", pipe_name, uuid::Uuid::new_v4()));
 
-        match bincode::serialize(chunks) {
+        match bincode::serialize(&record) {
             Ok(data) => {
                 let write_res = (|| -> Result<(), std::io::Error> {
                     let mut file = fs::File::create(&tmp_path)?;
@@ -111,27 +129,26 @@ impl Pager {
         }
     }
 
-    pub fn page_in_semantic(pipe_name: &str) -> Option<VecDeque<Arc<MemoryChunk>>> {
+    pub fn page_in_semantic(pipe_name: &str) -> Option<PersistentPipeRecord> {
         let swap_dir = Self::get_swap_dir();
         let path = swap_dir.join(format!("{}.pipe", pipe_name));
 
-        if Path::new(&path).exists() {
-            // Read raw bytes instead of strings
-            if let Ok(data) = fs::read(&path) {
-                if let Ok(chunks) = bincode::deserialize::<VecDeque<Arc<MemoryChunk>>>(&data) {
-                    kprintln!(
-                        "-> [PAGER] Semantic Pipe '{}' mapped IN from SSD ({} chunks).",
-                        pipe_name,
-                        chunks.len()
-                    );
-                    return Some(chunks);
-                } else {
-                    kprintln!(
-                        "-> [PAGER] [ERROR] Failed to deserialize pipe '{}'. The binary file might be corrupt or from an older version.",
-                        pipe_name
-                    );
-                }
-            }
+        if path.exists()
+            && let Ok(data) = fs::read(&path)
+            && let Ok(record) = bincode::deserialize::<PersistentPipeRecord>(&data)
+        {
+            kprintln!(
+                "-> [PAGER] Semantic Pipe '{}' mapped IN from SSD ({} chunks, limit: {}).",
+                pipe_name,
+                record.chunks.len(),
+                record.max_hot_chunks
+            );
+            return Some(record);
+        } else {
+            kprintln!(
+                "-> [PAGER] [ERROR] Failed to deserialize pipe '{}'. The binary file might be corrupt or from an older version.",
+                pipe_name
+            );
         }
         None
     }
