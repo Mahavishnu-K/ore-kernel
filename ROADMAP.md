@@ -9,6 +9,7 @@ Ore is **alpha** (v0.1.0). This page tracks what's built, what's next, and where
 | [1. Foundation](#phase-1-foundation) | ✅ Done |
 | [2. VRAM manager](#phase-2-vram-manager) | 🚧 Mostly done |
 | [3. Sandboxed execution](#phase-3-sandboxed-execution) | ✅ Done |
+| [3b. Cognitive MMU](#phase-3b-cognitive-mmu) | 🚧 Core done |
 | [4. Hardening](#phase-4-hardening-current-focus) | 🚧 **Current focus** |
 | [5. Agent coordination and SDKs](#phase-5-agent-coordination-and-sdks) | ⬜ Planned |
 | [6. Beyond one machine](#phase-6-beyond-one-machine) | ⬜ Exploratory |
@@ -52,6 +53,24 @@ Ore is **alpha** (v0.1.0). This page tracks what's built, what's next, and where
 - [x] **`ore-ld` dynamic linker:** `ore_dlopen` / `ore_dlsym` load `.wasi.so` plugins into a host's linear memory for zero-copy calls, with SDKs for Rust (`ore-sys`), C/C++ (`ore.h`), and Zig (`ore.zig`).
 - [x] **Host shell mode:** an explicit escape hatch (`can_execute_shell = true`) that flags the agent as UNSAFE.
 
+## Phase 3b: Cognitive MMU
+
+🚧 Kernel-native agent memory, with no external database. See [IPC & Cognitive MMU](docs/kernel-internals/ipc-and-semantic-bus.md).
+
+- [x] **Hybrid retrieval:** BM25 sparse index + dense search, fused with normalized Reciprocal Rank Fusion; identifiers and error codes match exactly.
+- [x] **Memory tiers:** `fact` / `skill` / `directive` / `general` tags on every chunk, filterable at search time.
+- [x] **Sentence-window chunks:** a tight per-sentence probe for embedding, with a wider context passage returned to the model.
+- [x] **Copy-on-write branches:** branch, diff, and merge for shared pipes, with validation before any state changes and rollback on failure.
+- [x] **Autonomous RAG:** `[rag].auto_rag` grounding for `/infer` and `/run`, HyDE, and a CRAG fallback that runs a sandboxed tool on low confidence; retrieved chunks pass the firewall.
+- [x] **Storage modes:** Mode A (RAM) with automatic migration to Mode C (`int8` in RAM + memory-mapped `f32` on disk) at `max_hot_chunks`.
+- [x] **RAPTOR summary trees:** recursive cluster summaries with centroid embeddings, built under a GPU lease.
+- [x] **Durable persistence:** load-before-write, `fsync` + atomic rename, settings stored with the data, corrupt files quarantined, restart tests for both modes.
+- [ ] **Mode B in production:** train the PQ codebook on real data (`train_mini_batch` exists but isn't run outside tests) and persist Mode B pipes.
+- [ ] **Branch persistence:** branches are RAM-only and don't survive a restart.
+- [ ] **Distinct `hot_simd` mode:** currently identical to `auto`; it should keep a pipe in RAM and evict instead of migrating.
+- [ ] **Adaptive query routing, RAG-Fusion, contextual enrichment:** from the original Cognitive MMU design, not yet built.
+- [ ] **Measured performance:** `criterion` benchmarks for `search_pipe` across pipe sizes and modes, published in the README.
+
 ## Phase 4: Hardening (current focus)
 
 🚧 Making the existing features trustworthy before adding more. This is where contributions help most.
@@ -60,7 +79,7 @@ Ore is **alpha** (v0.1.0). This page tracks what's built, what's next, and where
 - [ ] **Firewall tests and tuning:** measure false positives (for example, SQL questions tripping the SQL-injection rule, or long numbers matched as card numbers) and false negatives on paraphrased injections. Document clearly what the firewall can and can't catch.
 - [ ] **Panic safety:** replace `unwrap()` on locks and I/O in kernel paths with proper errors, so one bad request can't poison a mutex or take down the daemon.
 - [ ] **Reproducible benchmarks:** a `bench/` harness with fixed models, context lengths, and hardware notes for KV paging, sandbox start-up, and scheduler throughput.
-- [ ] **Stable formats:** version the KV-cache and Semantic Bus on-disk formats so upgrades don't silently invalidate saved state.
+- [ ] **Stable formats:** version the KV-cache and Semantic Bus on-disk formats so upgrades migrate saved state. (Today, unreadable pipe files are quarantined as `.corrupt-<timestamp>` rather than lost.)
 
 ## Phase 5: Agent coordination and SDKs
 

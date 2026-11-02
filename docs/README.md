@@ -27,7 +27,7 @@ Deep-dives into each subsystem for contributors who want to understand Ore's bra
 | Context Firewall | `ore-core/src/firewall.rs` | [Deep Dive](./kernel-internals/context-firewall.md) |
 | GPU Scheduler | `ore-core/src/scheduler.rs` | [Deep Dive](./kernel-internals/gpu-scheduler.md) |
 | Memory Management | `ore-core/src/memory.rs` | [Deep Dive](./kernel-internals/memory-management.md) |
-| IPC & Semantic Bus | `ore-core/src/ipc.rs` | [Deep Dive](./kernel-internals/ipc-and-semantic-bus.md) |
+| IPC & Cognitive MMU | `ore-core/src/ipc/` | [Deep Dive](./kernel-internals/ipc-and-semantic-bus.md) |
 | Hardware Abstraction Layer | `ore-core/src/driver.rs` | [Deep Dive](./kernel-internals/hardware-abstraction-layer.md) |
 | Native Candle Engine | `ore-core/src/inference/native/` | [Deep Dive](./kernel-internals/native-candle-engine.md) |
 | Polyglot Memory Fusion | `ore-core/src/linker/` | [Deep Dive](./kernel-internals/polyglot-memory-fusion.md) |
@@ -38,7 +38,8 @@ Deep-dives into each subsystem for contributors who want to understand Ore's bra
 ```text
 ore-system/
 ├── ore-common/     Shared foundation crate (protocol DTOs, paths, constants, manifest schema)
-├── ore-core/       Kernel logic (sandbox subsystem, MMU, firewall, multi-tenant scheduler, wasmtime runtime)
+├── ore-core/       Kernel logic (Cognitive MMU, sandbox, firewall, multi-tenant scheduler, wasmtime runtime)
+│   ├── ipc/        Message Bus + Cognitive MMU (hybrid search, CoW pipes, Modes A/B/C, persistence)
 │   ├── sandbox/    Modular Zero-Trust WASM Sandbox (AOT, VFS, Layer 7 network proxy, portals)
 │   └── linker/     ore-ld: WebAssembly Dynamic Linker & Memory Fusion Engine
 ├── ore-server/     Axum HTTP daemon (routes, auth middleware, state)

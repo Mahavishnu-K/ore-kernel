@@ -101,11 +101,23 @@ Either way, the compacted history is paged out, and for `stateful_paging` agents
 ## Semantic Persistence
 
 ```rust
-pub fn page_out_semantic(pipe_name: &str, chunks: &VecDeque<Arc<MemoryChunk>>)  // → memory/<pipe>.pipe
-pub fn page_in_semantic(pipe_name: &str) -> Option<VecDeque<Arc<MemoryChunk>>>
+// Mode A pipes → memory/<pipe>.pipe
+pub fn page_out_semantic(pipe_name: &str, chunks: &VecDeque<Arc<MemoryChunk>>, max_hot_chunks: usize)
+pub fn page_in_semantic(pipe_name: &str) -> Option<PersistentPipeRecord>
+
+// Mode C pipes → memory/<pipe>.sq8pipe (vectors live in memory/<pipe>.f32vecs)
+pub fn page_out_sq8_semantic(pipe_name: &str, sq8_chunks: &VecDeque<Arc<Sq8Chunk>>, max_chunks: usize, vector_dim: usize)
+pub fn page_in_sq8_semantic(pipe_name: &str) -> Option<PersistentSq8PipeRecord>
 ```
 
-When an agent's manifest has `semantic_persistence = true`, a background thread serializes the pipe to a Bincode `.pipe` file after each write, and pipes are restored from disk when needed. See [IPC & Semantic Bus](./ipc-and-semantic-bus.md).
+Semantic Bus pipes are saved as Bincode records that carry their settings along with their data (`max_hot_chunks` / `max_chunks`, `is_persistent`, and for Mode C the vector dimension), so a pipe comes back from a restart exactly as configured.
+
+- **When:** after each `/ipc/share` to a pipe of an agent with `semantic_persistence = true`, after a branch merge, and at the hourly GC. Branches are never written.
+- **Crash-safe writes:** each save goes to a uniquely named temp file, which is `fsync`ed, renamed over the target, and followed by a directory sync, so a crash leaves either the old file or the new one.
+- **Loading:** a pipe is loaded before any read **or write** touches it (`.sq8pipe` first, then `.pipe`), so a write after a restart extends the stored pipe instead of replacing it.
+- **Corruption:** a file that can't be deserialized is renamed to `<file>.corrupt-<timestamp>` and logged as `[CRITICAL]`. It is never overwritten. Files written by older Ore versions are quarantined the same way after upgrading.
+
+See [IPC & Semantic Bus → Persistence](./ipc-and-semantic-bus.md#persistence).
 
 ---
 
@@ -130,7 +142,10 @@ All files live in `memory/` under the Ore base directory:
 | `<app_id>.json` | Chat history, human-readable JSON array of `{ role, content }` |
 | `<app_id>_<model>.safetensors` | Flattened KV-cache tensors (`:` in the model name becomes `-`) |
 | `<app_id>_<model>.hash` | SHA-256 fingerprint of the history the cache belongs to |
-| `<pipe_name>.pipe` | Bincode-serialized Semantic Bus pipe |
+| `<pipe_name>.pipe` | Mode A Semantic Bus pipe (Bincode record: chunks + settings) |
+| `<pipe_name>.sq8pipe` | Mode C Semantic Bus pipe metadata (Bincode record: `int8` chunks, vector dimension, settings) |
+| `<pipe_name>.f32vecs` | Mode C full-precision vectors, appended and memory-mapped |
+| `<file>.corrupt-<timestamp>` | A quarantined pipe file that failed to load (kept for recovery) |
 
 Example `<app_id>.json`:
 

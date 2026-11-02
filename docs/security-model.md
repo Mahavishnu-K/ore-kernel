@@ -58,9 +58,9 @@ Handlers look up the caller's manifest in the `AppRegistry` (loaded from `manife
 |---|---|
 | Unregistered `app_id` → rejected | `/run` (`401`), `/ipc/*`, `/execute` (error text) |
 | `allowed_models` (`403`; `"*"` allows every model) | `/run` |
-| `max_tokens_per_minute` rate limit | `/run` (`429`), `/ask` |
+| `max_tokens_per_minute` rate limit | `/run`, `/infer` (`429`) |
 | `allowed_agent_targets` for agent-to-agent messages | `/ipc/send` |
-| `allowed_semantic_pipes` for reading and writing shared memory | `/ipc/share`, `/ipc/search` |
+| `allowed_semantic_pipes` for reading and writing shared memory | `/ipc/share`, `/ipc/search`, `/ipc/pipe/*` (branch and merge check **both** pipes) |
 | `can_execute_wasm`, `allowed_tools`, `allowed_language_runtimes`, `can_execute_shell` | `/execute` |
 | `allowed_models` (first concrete entry picks the model) | `/infer`, `/compact` |
 
@@ -140,14 +140,14 @@ These are the same regex heuristics as for prompts: they stop literal planted in
 
 ### Layer 4: Rate Limiting
 
-**Source:** [`ore-core/src/ipc.rs` - `RateLimiter`](../ore-core/src/ipc.rs)
+**Source:** [`ore-core/src/ipc/rate_limiter.rs` - `RateLimiter`](../ore-core/src/ipc/rate_limiter.rs)
 
 A `DashMap`-backed per-agent counter:
 
 - Each agent entry stores `(tokens_used: u32, window_start: Instant)`.
 - When more than 60 seconds have passed since `window_start`, the counter resets.
 - If `tokens_used + requested > max_tokens_per_minute`, the request is rejected with `429`.
-- `/run` currently charges a flat **1,000 tokens per request**, not the real token count, so the limit works as a requests-per-minute cap (`max_tokens_per_minute / 1000`).
+- `/run` and `/infer` currently charge a flat **1,000 tokens per request**, not the real token count, so the limit works as a requests-per-minute cap (`max_tokens_per_minute / 1000`).
 
 ---
 
@@ -156,7 +156,15 @@ A `DashMap`-backed per-agent counter:
 | IPC Tier | Permission Key | Check |
 |---|---|---|
 | **Message Bus** (agent → agent) | `allowed_agent_targets` | The sender's manifest must list the receiver's `app_id` |
-| **Semantic Bus** (shared memory) | `allowed_semantic_pipes` | The agent's manifest must list the pipe name, for both reads and writes |
+| **Semantic Bus** (shared memory) | `allowed_semantic_pipes` | The manifest must match the pipe (exact name, `"*"`, a `prefix*`, or `base:branch/*`), for reads and writes |
+
+**Copy-on-write branches** keep shared pipes clean: agents write into a branch, and the shared pipe changes only on an explicit merge. Creating a branch and merging it both require access to the branch **and** the base; writing to or searching a branch requires only the branch. To make merging a review step:
+
+1. grant the base pipe (e.g. `"kb"`) only to a reviewing agent;
+2. give working agents only `"kb:branch/*"`;
+3. the reviewer creates a branch, workers write to it, and the reviewer inspects `/ipc/pipe/diff` before merging.
+
+Searching a branch returns the base's chunks too, so access to a branch implies read access to its base.
 
 ---
 

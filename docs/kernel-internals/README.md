@@ -7,7 +7,7 @@
 | [Context Firewall](./context-firewall.md) | `ore-core/src/firewall.rs` | 2-stage prompt filter: injection heuristics + DLP redaction |
 | [GPU Scheduler](./gpu-scheduler.md) | `ore-core/src/scheduler.rs` | Multi-tenant VRAM bin-packing, dynamic KV cache estimation & LRU eviction |
 | [Memory Management](./memory-management.md) | `ore-core/src/memory.rs` | JSON history, fingerprinted KV-cache paging & compaction |
-| [IPC & Semantic Bus](./ipc-and-semantic-bus.md) | `ore-core/src/ipc.rs` | Bounded agent messaging + vector memory with SSD paging |
+| [IPC & Cognitive MMU](./ipc-and-semantic-bus.md) | `ore-core/src/ipc/` | Bounded messaging; hybrid BM25 + dense search, memory tiers, CoW branches, storage Modes A/B/C, RAPTOR, crash-safe persistence |
 | [Hardware Abstraction Layer](./hardware-abstraction-layer.md) | `ore-core/src/driver.rs` | Trait-based driver system for inference backends |
 | [Native Candle Engine](./native-candle-engine.md) | `ore-core/src/inference/native/` | Pure-Rust GGUF inference (Llama, Qwen2/3, Qwen3-MoE) + BERT/Nomic embedders |
 | [Polyglot Memory Fusion](./polyglot-memory-fusion.md) | `ore-core/src/linker/` | `dlopen`-style dynamic linker (`ore-ld`): load, bind, unload, errors, zero-copy calls |

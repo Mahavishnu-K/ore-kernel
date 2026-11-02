@@ -62,7 +62,7 @@ Controls the Semantic Bus garbage collector, which runs every hour.
 - Every tick, it calls `driver.flush_idle_memory(5)`, which unloads an engine that's been idle for more than 5 minutes.
 - Every 60th tick (hourly), it calls `SemanticBus::run_garbage_collection()`, which walks the embedding cache and all memory pipes and evicts entries older than their TTL. Empty pipes are pruned.
 
-Source: [`ore-server/src/main.rs`](../ore-server/src/main.rs) · [`ore-core/src/ipc.rs`](../ore-core/src/ipc.rs)
+Source: [`ore-server/src/main.rs`](../ore-server/src/main.rs) · [`ore-core/src/ipc/semantic.rs`](../ore-core/src/ipc/semantic.rs)
 
 ### `[models."<name>"]` Sections (optional)
 

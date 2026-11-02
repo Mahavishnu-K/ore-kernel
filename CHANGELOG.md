@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cognitive MMU**: the Semantic Bus is now a kernel-native agent memory system (`ore-core/src/ipc/`):
+  - **Hybrid retrieval**: a BM25 sparse index alongside dense search, fused with Reciprocal Rank Fusion; scores are normalized to [0, 1].
+  - **Memory tiers**: every chunk carries a `MemoryCategory` (`fact`, `skill`, `directive`, `general`), set on `/ipc/share` and filterable on `/ipc/search`.
+  - **Sentence-window chunking** (`chunk_strategy: "sentence_window"`): each sentence is embedded on its own, while a wider `context_payload` is stored and returned.
+  - **Copy-on-write branches**: `POST /ipc/pipe/branch`, `/ipc/pipe/diff`, and `/ipc/pipe/merge`.
+  - **Storage modes**: Mode A (full-precision vectors in RAM), Mode C (`int8` vectors in RAM + `f32` vectors in a memory-mapped `.f32vecs` file), with automatic A → C migration at `max_hot_chunks`; Mode B (product quantization + on-the-fly re-embedding) is experimental.
+  - **RAPTOR summary trees**: `POST /ipc/pipe/raptor_build` clusters a pipe, summarizes each cluster with the agent's model, and recurses up to `max_levels`.
+- **Autonomous RAG**: with `[rag].auto_rag`, `/infer` and `/run` retrieve context before inference, with optional HyDE (hypothetical-answer search) and a CRAG fallback that runs a sandboxed tool when confidence is below `confidence_threshold`. `/ipc/search` accepts per-request overrides.
+- **`[rag]` manifest section**: `auto_rag`, `enable_hybrid`, `enable_hyde`, `confidence_threshold`, `crag_fallback_tool`, `vector_mode`, `max_hot_chunks`.
+- **`POST /infer`**: the stateful agent route takes a JSON body and identifies the agent with the `X-App-ID` (or `X-Agent-ID`) header. `GET /infer/:prompt` remains as a legacy alias for quick `curl` checks.
+- **`ore-ld` plugin lifecycle**: `ore_dlclose` (nulls the plugin's table slots so stale pointers trap, and recycles its memory slab) and `ore_dlerror`, with SDK wrappers: `ore_close` / `ore_error` (C), `Plugin::close` / `Plugin::last_error` and automatic close on `Drop` (Rust), `close` / `lastError` (Zig).
+- Plugin lifecycle test tools in `tests/memory_fusion/` and `tests/cross_lang_memory_fusion/`, run by `examples/wasm_agents/run_plugin_lifecycle.py`.
+- **Managed Zig toolchain**: `ore mktool` installs Zig 0.17.0 automatically when no `zig` is available, downloading from community mirrors and verifying the minisign signature and signed file name. `ORE_ZIG` can point at a specific binary.
+- `InferenceDriver::count_tokens` (exact counts from the native tokenizer) and `device_name`; context limits use a fast estimate and switch to exact counts near the limit.
+- `execution.is_coding_agent` manifest field (and manifest-wizard option), which lets SQL and code text pass the injection firewall.
+- `"*"` wildcard in `allowed_models`; the manifest wizard offers `* (any installed model)`.
+- `docs/why-ore.md` and a "Prior Art & Research Inspirations" section in the README.
 - **Network Capabilities & Security**: Enhanced network capabilities in WASM agent. Added support for additional network rules in `wasm_agent.toml`, improved metadata handling in sandbox for HTTP requests (including status, headers, and cookies), implemented real-time streaming and response handling in `ORE_Response` class, and added comprehensive network upgrade tests for both Python and JavaScript in `run_network_upgrades.py`. Updated network handling and security.
 - **Runtime Shims**: Added CommonJS and Python shims for module compatibility.
 - **VRAM Bin-Packing (Multi-Tenancy)**: The `GpuScheduler` was fully re-architected to support multiple models co-residing in VRAM. Replaced the single-model `Semaphore(1)` with a `ModelRegistry`, `MemoryAccountant`, and `NvmlGpuMemoryProvider` to enable physical VRAM tracking, dynamic KV cache estimation, and LRU eviction.
@@ -36,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `net/`: Standalone Layer 7 egress proxy engine (`fetch.rs`).
 - **JavaScript/TypeScript Execution Safeguard**: Added `wrap_tla_with_error_boundary` in `ore-server/src/execution/script.rs` to automatically enclose autonomous script bodies inside Top-Level Await promise handlers with clean unhandled rejection routing to STDERR.
 ### Changed
+- **`ipc.rs` split into the `ipc/` module**: `semantic.rs`, `bm25.rs`, `chunking.rs`, `quant.rs`, `message_bus.rs`, `rate_limiter.rs`.
+- `search_pipe` returns a `SearchOutcome` (`results`, `top_dense_score`, `top_fused_score`); equal scores are ordered by chunk id, so results are deterministic. `/ipc/search` results include `context_payload`, `category`, and `is_crag_fallback`.
+- **Breaking:** the old `/ask/:prompt` route is replaced by `POST /infer` and `GET /infer/:prompt`. Errors on these routes now use HTTP status codes (`400`, `401`, `403`, `429`, `503`). `ore_client.ask()` uses `POST /infer`.
+- `/infer` and `/run` share one Auto-RAG pipeline; HyDE runs under its own identity (`<app_id>::hyde`) with a GPU lease.
+- **Sandbox result reporting**: outcomes are classified by wasmtime's typed error instead of message text. A non-zero exit, a fuel trap, or any other trap ends the output with a single `KERNEL ERROR:` line; output printed before a fuel trap is kept.
+- `ore mktool` compiles C++ with `-fno-exceptions` (WASI's libc++ has no exception support).
+- `[models."<name>"].kv_cache_mb_per_1k` is now applied per 1,000 tokens of context, as its name says.
+- A manifest that fails to parse is skipped with a `[SECURITY ALERT]` instead of stopping the kernel from booting; duplicate `app_id`s are reported.
+- The Message Bus is bounded at 1,024 pending messages per agent and rejects new messages when full.
+- README and `docs/` rewritten to match the code.
 - **Workspace Architecture**: Expanded the Rust workspace to 5 member crates (`ore-common`, `ore-core`, `ore-server`, `ore-cli`, `ore-sys`).
 - **Canonical System Paths & Constants**: Migrated path resolution (`get_ore_dir`, `get_models_dir`, `get_manifests_dir`, `get_token_path`, `get_memory_dir`, `get_runtimes_dir`, `get_plugins_dir`) and ports/fuel limits across `ore-core`, `ore-server`, and `ore-cli` to use `ore_common::paths` and `ore_common::constants`.
 - **Execution Modules**: Refactored `execution` as a module for handling various execution modes.
@@ -57,10 +84,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DashMap` and manual `cache_key` tracking from the Sandbox AOT Cache. Tool cache state is now entirely managed via OS File Metadata, maximizing performance and concurrency without RAM bloat.
 
 ### Fixed
+- **Semantic Bus persistence**:
+  - the first write after a restart no longer replaces a persistent pipe on disk (pipes are loaded before writes);
+  - pipe files are written with `fsync` + atomic rename + directory sync;
+  - unreadable pipe files are quarantined as `.corrupt-<timestamp>` instead of being overwritten;
+  - concurrent first access after a restart no longer drops writes.
+- **Mode C**: pipes are persisted (`.sq8pipe`), keep their vector dimension and limits across restarts, and are no longer expired by TTL when persistent. `MmapVectorStore` rejects vectors of the wrong dimension instead of reading out of bounds.
+- **Copy-on-write merge**: no duplicated chunks after a merge, no lost deltas when a merge fails (validation runs first, with rollback), and no disk I/O under the pipe lock.
+- **BM25**: evicted chunks are removed from the index, so it no longer grows without bound or skews scores.
+- **GC** no longer deletes a freshly created, still-empty branch.
+- **RAPTOR**: builds every level (not just one), embeds summaries with their cluster centroid, uses the agent's concrete model, and takes a GPU lease.
+- **Possible deadlock** when searching a branch whose base had to be paged in.
+- **Scheduler**: model files are found for names containing `:` (`models/qwen2.5-0.5b/`), so KV-cache sizing uses real GGUF geometry instead of the fallback.
+- An `allowed_models` list starting with `"*"` no longer makes `/infer`, `/compact`, or RAPTOR request a model named `*`.
+- **CRAG**: the query is passed as `argv[1]` (not after a duplicated tool name), and failed tool output (`KERNEL ERROR`) is never stored as knowledge.
+- **Zig tools** that trapped were reported as clean exits.
+- **`ore-ld`**: `ore.h` declared `ore_close` / `ore_error` without their imports (breaking every C/C++ host); `ore_dlerror` now reports `dlopen` / `dlsym` failures; recycled memory slabs are zeroed; a failed `dlopen` no longer leaks its slab.
+- `/run` FIFO pruning keeps the first message (the compaction summary), as `/infer` does.
 - Clean up of temporary `.tmp_build` directories natively post-execution.
 
 ### Security
-- None yet.
+- **Egress proxy**: every redirect hop is re-checked against the agent's rules; `allowed_paths` is enforced; loopback, link-local, and cloud-metadata addresses (e.g. `169.254.169.254`, `[::ffff:127.0.0.1]`, `http://2130706433/`) are blocked unless `allow_localhost_access = true`; only `http` / `https` are allowed.
+- `/run` enforces the agent's `allowed_models` (`"*"` allows all; the `terminal_user` manifest used by `ore run` ships with `"*"`).
+- Context retrieved by Auto-RAG and CRAG passes the context firewall under the reading agent's manifest before it reaches a prompt.
+- `/infer` is rate-limited with the same per-agent quota as `/run`.
+- Pipe merges require access to both the branch and the base pipe.
 
 ## [0.1.0] - 2026-07-22
 

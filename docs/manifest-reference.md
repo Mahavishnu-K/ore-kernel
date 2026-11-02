@@ -74,6 +74,16 @@ allowed_agent_targets = ["writer_agent"]     # Tier 1: Direct messaging
 allowed_semantic_pipes = ["rust_docs"]       # Tier 2: Semantic memory access
 semantic_persistence = true                  # Freeze semantic pipes to SSD
 allow_time_decay = false                     # Older memories lose relevance in search
+
+# ─── RAG / Cognitive MMU ─────────────────────────
+[rag]
+auto_rag = false                  # Ground /infer and /run with retrieved context
+enable_hybrid = true              # BM25 + dense search fused with RRF
+enable_hyde = false               # Retrieve with a hypothetical answer
+confidence_threshold = 0.70       # Below this, run the CRAG fallback tool
+crag_fallback_tool = "web_search" # WASM tool for live knowledge (must be in allowed_tools)
+vector_mode = "auto"              # "auto" | "hot_simd" | "sq8_nvme" | "pq_recompute"
+max_hot_chunks = 10000            # Mode A size before migrating to Mode C
 ```
 
 ---
@@ -101,7 +111,7 @@ allow_time_decay = false                     # Older memories lose relevance in 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `allowed_models` | string[] | `[]` · required in section | Models this agent may run. `/run` rejects any other model with `403`. `"*"` allows every installed model. `:` and `-` match each other (`qwen2.5:0.5b` = `qwen2.5-0.5b`). `/infer` and `/compact` use the first entry that isn't `"*"` |
-| `max_tokens_per_minute` | u32 | `10000` · required in section | Rate limit per 60-second window. Must not be `0`. `/run` charges a flat 1,000 tokens per request |
+| `max_tokens_per_minute` | u32 | `10000` · required in section | Rate limit per 60-second window. Must not be `0`. `/run` and `/infer` each charge a flat 1,000 tokens per request |
 | `gpu_priority` | string | `"normal"` · required in section | `"low"`, `"normal"`, or `"high"`. Shown in dashboards; not yet used by the scheduler |
 | `json_history` | bool | `true` | Keep chat history as JSON text. Required for paging and compaction |
 | `stateful_paging` | bool | `false` | Page the agent's physical KV cache to SSD between turns and restore it on the next request |
@@ -158,6 +168,24 @@ WASI can only mount directories, not individual files.
 | `allowed_semantic_pipes` | string[] | `[]` | Semantic pipes this agent can read from and write to |
 | `semantic_persistence` | bool | `true` | Save this agent's semantic pipes to SSD (Bincode) |
 | `allow_time_decay` | bool | `false` | Older memories gradually lose relevance in semantic search |
+
+`allowed_semantic_pipes` entries can be exact names, `"*"`, a prefix ending in `*` (`"team_*"`), or a branch pattern ending in `/*` (`"kb:branch/*"` covers every branch of `kb`).
+
+### `[rag]`
+
+Retrieval settings for the [Cognitive MMU](./kernel-internals/ipc-and-semantic-bus.md). Every field is optional.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `auto_rag` | bool | `false` | Before `/infer` and `/run`, search the agent's first concrete pipe in `allowed_semantic_pipes` and prepend the firewall-screened results to the prompt |
+| `enable_hybrid` | bool | `true` | Fuse BM25 keyword ranking with dense ranking (RRF). `false` = dense only |
+| `enable_hyde` | bool | `false` | Embed a model-written hypothetical answer instead of the raw question |
+| `confidence_threshold` | f32 | `0.70` | CRAG gate (0–1): if the best normalized score is lower, run `crag_fallback_tool` |
+| `crag_fallback_tool` | string | none | WASM tool run on low confidence; its output is stored in the pipe as a `fact`. Must also be in `[execution].allowed_tools` |
+| `vector_mode` | string | `"auto"` | Storage mode for pipes this agent **creates**: `"auto"` / `"hot_simd"` (Mode A, migrating to Mode C at `max_hot_chunks`), `"sq8_nvme"` (Mode C from the start), `"pq_recompute"` (Mode B, experimental) |
+| `max_hot_chunks` | usize | `10000` | Number of chunks a Mode A pipe holds before migrating to Mode C |
+
+`/ipc/search` requests can override `enable_hybrid`, `enable_hyde`, `confidence_threshold`, and `crag_fallback_tool` per call.
 
 ---
 

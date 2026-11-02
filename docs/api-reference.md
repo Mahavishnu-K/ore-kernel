@@ -354,7 +354,7 @@ Source: [`ore-server/src/handlers/ipc.rs`](../ore-server/src/handlers/ipc.rs)
 
 ### `POST /ipc/share`
 
-Write knowledge to a Semantic Bus pipe. The text is chunked, embedded, and stored in the in-memory vector database.
+Write knowledge to a Semantic Bus pipe. The text is chunked, each chunk is embedded, and the chunks are stored in the pipe (and persisted to SSD if the agent has `semantic_persistence = true`).
 
 ```bash
 curl -X POST \
@@ -363,42 +363,33 @@ curl -X POST \
      -d '{
        "source_app": "writer_agent",
        "target_pipe": "rust_docs",
-       "knowledge_text": "Rust ownership means each value has exactly one owner...",
+       "knowledge_text": "Rust ownership means each value has exactly one owner. ...",
        "chunk_size": 100,
-       "chunk_overlap": 20,
-       "chunk_strategy": "sentence_aware"
+       "chunk_strategy": "sentence_window",
+       "category": "fact"
      }' \
      http://127.0.0.1:6767/ipc/share
 ```
 
-**Request Body:**
-```json
-{
-  "source_app": "writer_agent",
-  "target_pipe": "rust_docs",
-  "knowledge_text": "The text to embed and store",
-  "chunk_size": 100,
-  "chunk_overlap": 20,
-  "chunk_strategy": "sliding_window"
-}
-```
-
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `source_app` | string | ✅ | The app writing the knowledge (must have pipe in `allowed_semantic_pipes`) |
-| `target_pipe` | string | ✅ | Named pipe to write to |
+| `source_app` | string | ✅ | The app writing the knowledge (pipe must match `allowed_semantic_pipes`) |
+| `target_pipe` | string | ✅ | Pipe (or branch) to write to |
 | `knowledge_text` | string | ✅ | Raw text to chunk and embed |
-| `chunk_size` | usize | ❌ | Chunk size (default: 100) |
+| `chunk_size` | usize | ❌ | Words per chunk, or the context window for `sentence_window` (default: 100) |
 | `chunk_overlap` | usize | ❌ | Overlap between chunks (default: 20). If it's ≥ `chunk_size`, `chunk_size / 4` is used instead |
-| `chunk_strategy` | string | ❌ | Strategy to use: `"sliding_window"` (default), `"sentence_aware"`, `"paragraph"`, `"exact_match"` |
+| `chunk_strategy` | string | ❌ | `"sliding_window"` (default), `"sentence_aware"`, `"sentence_window"`, `"paragraph"`, `"exact_match"` |
+| `category` | string | ❌ | Memory tier: `"fact"`, `"skill"`, `"directive"`, or `"general"` (default) |
 
-**Response:** plain text, `SUCCESS: …` or a `KERNEL ALERT` / `KERNEL ERROR` line (unregistered agent, pipe not in `allowed_semantic_pipes`, embedding failure).
+With `sentence_window`, each sentence is embedded on its own while the stored `context_payload` keeps its surrounding ~`chunk_size` words. See [IPC & Semantic Bus](./kernel-internals/ipc-and-semantic-bus.md#chunking-strategies-chunk_text).
+
+**Response:** plain text, `SUCCESS: …` or a `KERNEL ALERT` / `KERNEL ERROR` line (unregistered agent, pipe not permitted, embedding failure).
 
 ---
 
 ### `POST /ipc/search`
 
-Search a Semantic Bus pipe using fast dot-product similarity with time-decay scoring.
+Hybrid search over a pipe: dense vector similarity and BM25 keyword matching, fused with Reciprocal Rank Fusion. Optionally runs HyDE first and a CRAG fallback tool when confidence is low.
 
 ```bash
 curl -X POST \
@@ -408,43 +399,126 @@ curl -X POST \
        "source_app": "writer_agent",
        "target_pipe": "rust_docs",
        "query": "How does ownership work?",
-       "top_k": 3
+       "top_k": 3,
+       "filter_category": "fact"
      }' \
      http://127.0.0.1:6767/ipc/search
 ```
 
-**Request Body:**
-```json
-{
-  "source_app": "writer_agent",
-  "target_pipe": "rust_docs",
-  "query": "Search query text",
-  "filter_app": null,
-  "top_k": 3
-}
-```
-
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `source_app` | string | ✅ | The app performing the search (must have pipe in `allowed_semantic_pipes`) |
-| `target_pipe` | string | ✅ | Named pipe to search |
-| `query` | string | ✅ | Natural-language search query |
-| `filter_app` | string | ❌ | Only return results from this specific app |
+| `source_app` | string | ✅ | The app performing the search (pipe must match `allowed_semantic_pipes`) |
+| `target_pipe` | string | ✅ | Pipe (or branch) to search |
+| `query` | string | ✅ | Natural-language query |
 | `top_k` | usize | ❌ | Number of results (default: 5) |
+| `filter_app` | string | ❌ | Only return chunks written by this app |
+| `filter_category` | string | ❌ | Only return chunks of this tier: `"fact"`, `"skill"`, `"directive"`, `"general"` |
+| `enable_hybrid` | bool | ❌ | Override the manifest's `[rag].enable_hybrid` (BM25 + dense fusion) |
+| `enable_hyde` | bool | ❌ | Override `[rag].enable_hyde` |
+| `confidence_threshold` | f32 | ❌ | Override `[rag].confidence_threshold` (0–1) for the CRAG gate |
+| `crag_fallback_tool` | string | ❌ | Override `[rag].crag_fallback_tool`. The tool must still be in the agent's `allowed_tools` |
 
-**Response:** Array of `SearchResult` JSON objects containing the top-K most relevant text chunks, ranked by dot-product match × time-decay factor. Example:
+**Response:** a JSON array of results, best first. Scores are normalized to [0, 1].
+
 ```json
 [
   {
-    "text": "Rust ownership means each value...",
+    "text": "Rust ownership means each value has exactly one owner.",
+    "context_payload": "… the surrounding sentences returned for prompting …",
     "score": 0.98,
     "source_app": "scraper_agent",
-    "timestamp": 1711728200
+    "timestamp": 1711728200,
+    "category": "fact",
+    "is_crag_fallback": false
   }
 ]
 ```
 
-**Errors:** Returns standard HTTP status codes like `401 Unauthorized` or `403 Forbidden` if manifest permissions are denied.
+`text` is the matched probe; `context_payload` is the passage to give the model. `is_crag_fallback` marks chunks that a CRAG fallback tool just fetched.
+
+**Errors:** `401` unregistered agent · `403` pipe not permitted.
+
+---
+
+### `POST /ipc/pipe/branch`
+
+Create a copy-on-write branch of a pipe. Writes to the branch go to its own delta; the base is untouched until a merge.
+
+```bash
+curl -X POST \
+     -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     -H "Content-Type: application/json" \
+     -d '{"app_id": "agent_alpha", "base_pipe": "kb", "branch_pipe": "kb:branch/task_42"}' \
+     http://127.0.0.1:6767/ipc/pipe/branch
+```
+
+The agent must be allowed on both pipes (a pattern like `"kb:branch/*"` covers all branches of `kb`).
+
+**Response:** `200` `SUCCESS: Forked branch '…' from base '…' (Zero-copy CoW).` · `400` the branch already exists or the base can't be loaded · `401` / `403` as above.
+
+---
+
+### `POST /ipc/pipe/diff`
+
+List the branch's staged chunks that haven't been merged.
+
+```json
+{ "app_id": "auditor", "base_pipe": "kb", "branch_pipe": "kb:branch/task_42" }
+```
+
+**Response:**
+```json
+{
+  "base_pipe": "kb",
+  "branch_pipe": "kb:branch/task_42",
+  "delta_count": 1,
+  "staged_chunks": [
+    { "id": 812, "text": "…", "context_payload": "…", "source_app": "agent_alpha", "timestamp": 1711728200, "category": "fact" }
+  ]
+}
+```
+
+Requires access to the branch pipe. `400` if the pipe isn't a branch of that base.
+
+---
+
+### `POST /ipc/pipe/merge`
+
+Append a branch's staged chunks to its base pipe and persist the base.
+
+```json
+{ "app_id": "auditor", "base_pipe": "kb", "branch_pipe": "kb:branch/task_42", "delete_branch_after_merge": true }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `app_id` | string | ✅ | Must be allowed on both the base and the branch pipe |
+| `base_pipe` | string | ✅ | The branch's base |
+| `branch_pipe` | string | ✅ | The branch to merge |
+| `delete_branch_after_merge` | bool | ❌ | Remove the branch afterwards (default: `false`; a kept branch has its deltas emptied) |
+
+All checks run before anything changes; if the merge fails part-way, the staged chunks are returned to the branch.
+
+**Response:** `200` `SUCCESS: Merged N chunks from '…' into '…' (Crash-consistent SSD commit).` · `400` wrong base or base not mergeable · `401` / `403` as above.
+
+---
+
+### `POST /ipc/pipe/raptor_build`
+
+Build a RAPTOR summary tree over a pipe: cluster related chunks, summarize each cluster with the agent's model, and store the summaries (recursively, level by level) back in the pipe.
+
+```json
+{ "app_id": "researcher", "target_pipe": "kb", "cluster_size": 4, "max_levels": 2 }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `app_id` | string | ✅ | Agent whose model and GPU quota are used; must be allowed on `target_pipe` |
+| `target_pipe` | string | ✅ | Pipe to summarize |
+| `cluster_size` | usize | ❌ | Chunks per cluster (default: 4, clamped to 2–10) |
+| `max_levels` | usize | ❌ | Maximum tree depth (default: 2) |
+
+**Response:** `{ "target_pipe": "kb", "generated_summaries": 12, "tree_levels": 2 }` once the tree is built. Each summary costs one LLM call, so large pipes take a while. Re-running adds a new set of summaries.
 
 ---
 

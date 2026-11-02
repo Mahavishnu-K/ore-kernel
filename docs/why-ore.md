@@ -104,17 +104,19 @@ Details: [Memory Management](./kernel-internals/memory-management.md).
 
 ---
 
-## 5. Semantic Bus
+## 5. The Cognitive MMU (Semantic Bus)
 
-Sharing knowledge between agents usually means running a separate vector database. Ore has one built in.
+Sharing knowledge between agents usually means running a vector database, often a keyword index next to it, and glue code for everything else. Ore builds this memory layer into the kernel, the way an OS provides memory management instead of leaving it to applications.
 
-- An agent writes text to a named pipe. Ore loads an embedding model (BERT / all-MiniLM or Nomic v1.5, from safetensors), embeds the chunks, and unloads the model, so it uses no RAM while idle.
-- Other agents search the pipe by similarity, with optional time-decay scoring and per-source filtering.
-- Embeddings are cached by content hash and shared through `Arc` pointers, so the same text is embedded only once.
-- Read and write access to each pipe is gated by `allowed_semantic_pipes` in the manifest.
-- Pipes can be persisted to disk, and a TTL-based sweep removes stale data.
+- **Hybrid retrieval.** Each search combines dense vector similarity (embeddings) with BM25 keyword matching, fused by Reciprocal Rank Fusion. Embeddings catch meaning; BM25 catches exact identifiers such as `ERR_0x99A` or `parse_config` that embeddings blur.
+- **Memory tiers.** Every chunk is tagged `fact`, `skill`, `directive`, or `general`, and searches can filter by tier, for example only the rules an agent must follow.
+- **Precise search, full context.** With `sentence_window` chunking, each sentence is embedded on its own, but the passage handed to the model keeps its surrounding sentences.
+- **Copy-on-write branches.** An agent can branch a shared pipe, write its findings into the branch, and leave the shared pipe untouched until someone reviews the diff and merges it. One agent's hallucinations don't leak into everyone's memory.
+- **Scales without a server.** Pipes start with full-precision vectors in RAM and migrate automatically, at a configurable size, to `int8` vectors in RAM with full-precision vectors memory-mapped from disk.
+- **Self-correcting retrieval.** Optionally, HyDE searches with a hypothetical answer, and when confidence is low, CRAG runs a sandboxed tool (such as a web search) and stores what it finds. RAPTOR builds summary trees for questions that span many documents.
+- **Safe by default.** Access to each pipe is gated by the manifest, retrieved text passes the context firewall before reaching a prompt, embedders load on demand and unload when idle, and persistence is crash-safe (`fsync` + atomic rename, corrupt files quarantined rather than overwritten).
 
-Details: [IPC & Semantic Bus](./kernel-internals/ipc-and-semantic-bus.md).
+Details: [IPC & Cognitive MMU](./kernel-internals/ipc-and-semantic-bus.md).
 
 ---
 

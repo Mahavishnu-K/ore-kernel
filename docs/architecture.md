@@ -61,12 +61,14 @@ Applications never talk to the GPU or host operating system directly. They talk 
 ║   └──────────────────────────────────────────────┘   ║
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
-║   │  IPC Layer                                   │   ║
+║   │  IPC Layer & Cognitive MMU (ipc/)            │   ║
 ║   │  · Message Bus  (bounded mpsc, 1024/agent)   │   ║
-║   │  · Semantic Bus (Vector memory + dot product)│   ║
-║   │  · Zero-Copy Embedding Cache (DashMap + Arc) │   ║
-║   │  · Memory GC  (Hourly TTL-based sweep)       │   ║
-║   │  · Semantic Persistence (SSD Bincode Pipes)  │   ║
+║   │  · Hybrid search: BM25 + dense, RRF fusion   │   ║
+║   │  · Memory tiers: fact/skill/directive        │   ║
+║   │  · Modes A (RAM) / B (PQ) / C (SQ8 + mmap)   │   ║
+║   │  · CoW branches: branch / diff / merge       │   ║
+║   │  · HyDE, CRAG fallback, RAPTOR trees         │   ║
+║   │  · Crash-safe persistence + hourly GC        │   ║
 ║   └──────────────────────────────────────────────┘   ║
 ╚══════════════════════════╤═══════════════════════════╝
                            │
@@ -113,9 +115,10 @@ Client (curl / CLI / App)
                ▼
 ┌─────────────────────────────────────┐
 │ 2. ROUTE HANDLER                    │  ore-server/src/handlers/inference.rs
-│    Parse request (model + prompt)   │
+│    Identify agent (X-App-ID / body) │
 │    Lookup AppManifest from registry │
-│    Enforce rate limit (/run)        │
+│    Check allowed_models (/run)      │
+│    Enforce rate limit               │
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
@@ -125,14 +128,21 @@ Client (curl / CLI / App)
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
-│ 4. MEMORY MANAGER (if stateful)     │  ore-core/src/memory.rs
+│ 4. AUTO-RAG (if [rag].auto_rag)     │  inference.rs ground_prompt()
+│    HyDE -> hybrid search -> CRAG    │
+│    Firewall each retrieved chunk    │
+│    Prepend screened context         │
+└──────────────┬──────────────────────┘
+               ▼
+┌─────────────────────────────────────┐
+│ 5. MEMORY MANAGER (if stateful)     │  ore-core/src/memory.rs
 │    Pager::page_in_history()         │
 │    Pager::page_in_kv_cache()        │
 │    Append new message to context    │
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
-│ 5. GPU SCHEDULER                    │  ore-core/src/scheduler.rs
+│ 6. GPU SCHEDULER                    │  ore-core/src/scheduler.rs
 │    Acquire permit (out of 32)       │
 │    Compute KV-cache from GGUF math  │
 │    MemoryAccountant admission check │
@@ -141,13 +151,13 @@ Client (curl / CLI / App)
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
-│ 6. INFERENCE DRIVER (HAL)           │  ore-core/src/driver.rs
+│ 7. INFERENCE DRIVER (HAL)           │  ore-core/src/driver.rs
 │    driver.generate_text()           │
 │    Stream tokens via mpsc channel   │
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
-│ 7. RESPONSE + CLEANUP               │
+│ 8. RESPONSE + CLEANUP               │
 │    Stream tokens to client          │
 │    Check memory limits & Summarize  │
 │    Pager::page_out_history/kv_cache │
@@ -201,7 +211,13 @@ ore-system/
 ├── ore-core/                Kernel logic
 │   ├── driver.rs            HAL trait (InferenceDriver) + shared types
 │   ├── firewall.rs          Context firewall (PII redaction, injection heuristics)
-│   ├── ipc.rs               MessageBus, SemanticBus (w/ cache + GC), RateLimiter
+│   ├── ipc/                 Message Bus + Cognitive MMU (Semantic Bus)
+│   │   ├── semantic.rs      SemanticBus, PipeState, hybrid search, CoW branches, RAPTOR, GC
+│   │   ├── bm25.rs          BM25 sparse index
+│   │   ├── chunking.rs      MemoryChunk + chunking strategies (incl. sentence_window)
+│   │   ├── quant.rs         SQ8 vectors, MmapVectorStore (Mode C), PQ codebook (Mode B)
+│   │   ├── message_bus.rs   Bounded agent-to-agent messaging
+│   │   └── rate_limiter.rs  Per-agent token rate limiter
 │   ├── scheduler.rs         Multi-tenant GpuScheduler, ModelRegistry, MemoryAccountant
 │   ├── memory.rs            Memory Management (context persistence & KV-cache paging)
 │   ├── registry.rs          App manifest registry (TOML loader, validation)
@@ -252,8 +268,8 @@ ore-system/
 │   │   └── python/          WASI asyncio event loop, requests/httpx shims
 │   └── handlers/            Route handlers
 │       ├── system.rs        Health, ps, ls, agents, manifests, pull, load, expel
-│       ├── inference.rs     run_agent_inference (secured + paged), run_user_inference (streamed)
-│       └── ipc.rs           Semantic bus share/search, agent messaging
+│       ├── inference.rs     infer (POST /infer, stateful agents), run_user_inference (/run, streamed), Auto-RAG
+│       └── ipc.rs           Share/search, pipe branch/diff/merge, RAPTOR build, agent messaging
 ├── ore-cli/                 Interactive CLI tool (clap + dialoguer)
 │   ├── main.rs              Command dispatch + package downloads
 │   ├── cli.rs               Clap argument definitions

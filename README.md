@@ -168,7 +168,7 @@ More: [Polyglot Memory Fusion internals](docs/kernel-internals/polyglot-memory-f
 | **WebAssembly sandbox** | Tools in eight languages run in-process under `wasmtime`, with fuel limits, scoped mounts, and an egress proxy. [Details ↓](#sandboxed-tools-wasm) |
 | **`ore-ld` dynamic linker** | Plugins are linked into a running WebAssembly host and share its memory, so data is passed by pointer. [Details ↓](#memory-fusion-with-ore-ld) |
 | **Agent manifests** | Each agent has a TOML manifest listing the models, files, network domains, tools, and IPC channels it may use, plus a token-per-minute rate limit. Requests are checked against it on every call. |
-| **Semantic Bus** | Built-in vector memory shared between agents through named pipes. The embedding model loads on demand and unloads when idle. Pipe access is gated by the manifest. |
+| **Cognitive MMU (Semantic Bus)** | Shared agent memory in named pipes, with no external database. Hybrid search (BM25 + dense vectors, fused with RRF), `fact` / `skill` / `directive` memory tiers, sentence-window chunks, and copy-on-write branches that agents merge only after review. Large pipes move automatically from RAM to `int8` + memory-mapped storage. Optional HyDE, CRAG web fallback, and RAPTOR summary trees. Persistence is crash-safe. [Internals](docs/kernel-internals/ipc-and-semantic-bus.md) |
 | **Native inference** | Pure-Rust GGUF inference via [Candle](https://github.com/huggingface/candle) for Llama, Qwen2, Qwen3, and Qwen3-MoE on CPU, CUDA, or Metal. Ollama is supported as an alternative backend. |
 | **Prompt filtering** | Optional regex-based PII redaction and prompt-injection heuristics. These are best-effort filters, not a security boundary. See the [security model](docs/security-model.md). |
 
@@ -262,7 +262,7 @@ flowchart TB
         sched["GPU scheduler<br/>(leases, VRAM admission, LRU eviction)"]
         mem["Memory manager<br/>(KV-cache page in / out)"]
         sandbox["WASM sandbox + ore-ld<br/>(fuel, VFS, egress proxy)"]
-        ipc["IPC<br/>(message bus, Semantic Bus)"]
+        ipc["IPC + Cognitive MMU<br/>(messages, hybrid search, CoW pipes)"]
         auth --> fw --> sched --> mem
         auth --> sandbox
         auth --> ipc
