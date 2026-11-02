@@ -18,6 +18,14 @@ pub struct PersistentPipeRecord {
     pub chunks: VecDeque<Arc<MemoryChunk>>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct PersistentSq8PipeRecord {
+    pub max_chunks: usize,
+    pub is_persistent: bool,
+    pub vector_dim: usize,
+    pub sq8_chunks: VecDeque<Arc<crate::ipc::Sq8Chunk>>,
+}
+
 // THE OS PAGEFILE MANAGER (SSD Swap)
 pub struct Pager;
 
@@ -133,30 +141,65 @@ impl Pager {
         let swap_dir = Self::get_swap_dir();
         let path = swap_dir.join(format!("{}.pipe", pipe_name));
 
-        if path.exists()
-            && let Ok(data) = fs::read(&path)
-            && let Ok(record) = bincode::deserialize::<PersistentPipeRecord>(&data)
-        {
-            kprintln!(
-                "-> [PAGER] Semantic Pipe '{}' mapped IN from SSD ({} chunks, limit: {}).",
-                pipe_name,
-                record.chunks.len(),
-                record.max_hot_chunks
-            );
-            return Some(record);
-        } else {
-            kprintln!(
-                "-> [PAGER] [ERROR] Failed to deserialize pipe '{}'. The binary file might be corrupt or from an older version.",
-                pipe_name
-            );
+        if !path.exists() {
+            return None;
         }
-        None
+
+        let data = match fs::read(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                kprintln!(
+                    "-> [PAGER] [ERROR] Failed to read pipe file '{}': {}",
+                    path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        match bincode::deserialize::<PersistentPipeRecord>(&data) {
+            Ok(record) => {
+                kprintln!(
+                    "-> [PAGER] Semantic Pipe '{}' mapped IN from SSD ({} chunks, limit: {}).",
+                    pipe_name,
+                    record.chunks.len(),
+                    record.max_hot_chunks
+                );
+                Some(record)
+            }
+            Err(e) => {
+                // CORRUPT QUARANTINE: Never silently overwrite damaged files!
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let corrupt_path =
+                    swap_dir.join(format!("{}.pipe.corrupt-{}", pipe_name, timestamp));
+                kprintln!(
+                    "-> [PAGER] [CRITICAL] Pipe file '{}' is corrupt ({}). Quarantining to '{}'.",
+                    path.display(),
+                    e,
+                    corrupt_path.display()
+                );
+                let _ = fs::rename(&path, &corrupt_path);
+                None
+            }
+        }
     }
 
     pub fn page_out_sq8_semantic(
         pipe_name: &str,
         sq8_chunks: &VecDeque<Arc<crate::ipc::Sq8Chunk>>,
+        max_chunks: usize,
+        vector_dim: usize,
     ) {
+        let record = PersistentSq8PipeRecord {
+            max_chunks,
+            is_persistent: true,
+            vector_dim,
+            sq8_chunks: sq8_chunks.clone(),
+        };
+
         let swap_dir = Self::get_swap_dir();
         let path = swap_dir.join(format!("{}.sq8pipe", pipe_name));
         let tmp_path = swap_dir.join(format!(
@@ -165,7 +208,7 @@ impl Pager {
             uuid::Uuid::new_v4()
         ));
 
-        if let Ok(data) = bincode::serialize(sq8_chunks) {
+        if let Ok(data) = bincode::serialize(&record) {
             let write_res = (|| -> Result<(), std::io::Error> {
                 let mut file = fs::File::create(&tmp_path)?;
                 file.write_all(&data)?;
@@ -200,22 +243,54 @@ impl Pager {
         }
     }
 
-    pub fn page_in_sq8_semantic(pipe_name: &str) -> Option<VecDeque<Arc<crate::ipc::Sq8Chunk>>> {
+    pub fn page_in_sq8_semantic(pipe_name: &str) -> Option<PersistentSq8PipeRecord> {
         let swap_dir = Self::get_swap_dir();
         let path = swap_dir.join(format!("{}.sq8pipe", pipe_name));
 
-        if path.exists()
-            && let Ok(data) = fs::read(&path)
-            && let Ok(chunks) = bincode::deserialize::<VecDeque<Arc<crate::ipc::Sq8Chunk>>>(&data)
-        {
-            kprintln!(
-                "-> [PAGER] Restored SQ8 metadata for '{}' from disk ({} chunks).",
-                pipe_name,
-                chunks.len()
-            );
-            return Some(chunks);
+        if !path.exists() {
+            return None;
         }
-        None
+
+        let data = match fs::read(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                kprintln!(
+                    "-> [PAGER] [ERROR] Failed to read SQ8 pipe file '{}': {}",
+                    path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        match bincode::deserialize::<PersistentSq8PipeRecord>(&data) {
+            Ok(record) => {
+                kprintln!(
+                    "-> [PAGER] Restored SQ8 metadata for '{}' from disk ({} chunks, limit: {}, dim: {}).",
+                    pipe_name,
+                    record.sq8_chunks.len(),
+                    record.max_chunks,
+                    record.vector_dim
+                );
+                Some(record)
+            }
+            Err(e) => {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let corrupt_path =
+                    swap_dir.join(format!("{}.sq8pipe.corrupt-{}", pipe_name, timestamp));
+                kprintln!(
+                    "-> [PAGER] [CRITICAL] SQ8 pipe file '{}' is corrupt ({}). Quarantining to '{}'.",
+                    path.display(),
+                    e,
+                    corrupt_path.display()
+                );
+                let _ = fs::rename(&path, &corrupt_path);
+                None
+            }
+        }
     }
 
     pub fn page_out_kv_cache(

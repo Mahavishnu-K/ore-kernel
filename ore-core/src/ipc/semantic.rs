@@ -488,9 +488,15 @@ impl SemanticBus {
                             let preserved_bm25 = bm25.clone();
                             let is_pers = *p;
 
+                            let max_chunks = DEFAULT_MAX_SQ8_CHUNKS;
                             // IMMEDIATE PERSISTENCE: Save .sq8pipe right now
                             if is_pers {
-                                crate::memory::Pager::page_out_sq8_semantic(pipe_name, &sq8_chunks);
+                                crate::memory::Pager::page_out_sq8_semantic(
+                                    pipe_name,
+                                    &sq8_chunks,
+                                    max_chunks,
+                                    vector_dim,
+                                );
                                 // Clean up old .pipe so restart won't revert to Mode A
                                 let old_pipe = ore_common::paths::get_memory_dir()
                                     .join(format!("{}.pipe", pipe_name));
@@ -503,7 +509,7 @@ impl SemanticBus {
                                 bm25: preserved_bm25,
                                 vector_dim,
                                 mmap_store: mmap_arc,
-                                max_chunks: DEFAULT_MAX_SQ8_CHUNKS,
+                                max_chunks,
                             };
                             crate::kprintln!(
                                 "-> [MMU MIGRATION] Promotion complete for '{}'. Working set converted to SQ8 mmap.",
@@ -610,21 +616,18 @@ impl SemanticBus {
                 );
 
                 // Try restoring Mode C (.sq8pipe + .f32vecs)
-                if let Some(mut sq8_chunks) = crate::memory::Pager::page_in_sq8_semantic(pipe_name)
-                {
-                    let max_id = sq8_chunks.iter().map(|c| c.id).max().unwrap_or(0);
+                if let Some(mut record) = crate::memory::Pager::page_in_sq8_semantic(pipe_name) {
+                    let max_id = record.sq8_chunks.iter().map(|c| c.id).max().unwrap_or(0);
                     self.next_chunk_id
                         .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
 
                     let mut bm25 = Bm25Index::new();
-                    for sc in &sq8_chunks {
+                    for sc in &record.sq8_chunks {
                         bm25.add_chunk(sc.id, &sc.text);
                     }
 
-                    let vector_dim = sq8_chunks
-                        .front()
-                        .map(|c| c.sq8_vector.data.len())
-                        .unwrap_or(768);
+                    // Vector dimension and max capacity are preserved directly in the envelope!
+                    let vector_dim = record.vector_dim;
 
                     if let Ok(store) =
                         super::quant::MmapVectorStore::for_pipe(pipe_name, vector_dim)
@@ -634,7 +637,7 @@ impl SemanticBus {
                         if let Ok(f32_offset) = mmap_arc.append(&chunk.vector) {
                             let sq8_vec = Sq8Vector::quantize(&chunk.vector);
                             bm25.add_chunk(chunk.id, &chunk.text);
-                            sq8_chunks.push_back(Arc::new(Sq8Chunk {
+                            record.sq8_chunks.push_back(Arc::new(Sq8Chunk {
                                 id: chunk.id,
                                 text: Arc::clone(&chunk.text),
                                 context_payload: Arc::clone(&chunk.context_payload),
@@ -647,12 +650,12 @@ impl SemanticBus {
                         }
 
                         *state = PipeState::ActiveSq8Nvme {
-                            is_persistent: true,
-                            sq8_chunks,
+                            is_persistent: record.is_persistent,
+                            sq8_chunks: record.sq8_chunks,
                             bm25,
                             vector_dim,
                             mmap_store: mmap_arc,
-                            max_chunks: DEFAULT_MAX_SQ8_CHUNKS,
+                            max_chunks: record.max_chunks,
                         };
                         return;
                     }
@@ -853,7 +856,7 @@ impl SemanticBus {
         // Incorporate deltas into the base pipe (Supports Mode A and Mode C)
         enum SyncAction {
             ModeA(VecDeque<Arc<MemoryChunk>>, usize),
-            ModeC(VecDeque<Arc<Sq8Chunk>>),
+            ModeC(VecDeque<Arc<Sq8Chunk>>, usize, usize),
             None,
         }
 
@@ -949,7 +952,7 @@ impl SemanticBus {
                     }
 
                     let action = if *is_persistent {
-                        SyncAction::ModeC(sq8_chunks.clone())
+                        SyncAction::ModeC(sq8_chunks.clone(), *max_chunks, *vector_dim)
                     } else {
                         SyncAction::None
                     };
@@ -978,8 +981,8 @@ impl SemanticBus {
             SyncAction::ModeA(chunks, max_hot_chunks) => {
                 Pager::page_out_semantic(base_pipe, &chunks, max_hot_chunks);
             }
-            SyncAction::ModeC(sq8_chunks) => {
-                Pager::page_out_sq8_semantic(base_pipe, &sq8_chunks);
+            SyncAction::ModeC(sq8_chunks, max_chunks, vector_dim) => {
+                Pager::page_out_sq8_semantic(base_pipe, &sq8_chunks, max_chunks, vector_dim);
             }
             SyncAction::None => {}
         }
@@ -1018,54 +1021,71 @@ impl SemanticBus {
 
         if needs_load {
             // Check for Mode C (.sq8pipe + .f32vecs) first
-            if let Some(sq8_chunks) = Pager::page_in_sq8_semantic(pipe_name) {
-                let max_id = sq8_chunks.iter().map(|c| c.id).max().unwrap_or(0);
+            if let Some(record) = Pager::page_in_sq8_semantic(pipe_name) {
+                let max_id = record.sq8_chunks.iter().map(|c| c.id).max().unwrap_or(0);
                 self.next_chunk_id
                     .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
 
                 let mut bm25 = Bm25Index::new();
-                for sc in &sq8_chunks {
+                for sc in &record.sq8_chunks {
                     bm25.add_chunk(sc.id, &sc.text);
                 }
 
-                // Supports all-minilm (384), nomic (768), and any custom model embedding size!
-                let vector_dim = sq8_chunks
-                    .front()
-                    .map(|c| c.sq8_vector.data.len())
-                    .unwrap_or(768);
-
+                let vector_dim = record.vector_dim;
                 let store = super::quant::MmapVectorStore::for_pipe(pipe_name, vector_dim)
                     .map_err(|e| format!("Failed to open mmap vector store: {}", e))?;
 
-                self.memory_pipes.insert(
-                    pipe_name.to_string(),
-                    PipeState::ActiveSq8Nvme {
-                        is_persistent: true,
-                        sq8_chunks,
-                        bm25,
-                        vector_dim,
-                        mmap_store: Arc::new(store),
-                        max_chunks: DEFAULT_MAX_SQ8_CHUNKS,
-                    },
-                );
+                let loaded_state = PipeState::ActiveSq8Nvme {
+                    is_persistent: record.is_persistent,
+                    sq8_chunks: record.sq8_chunks,
+                    bm25,
+                    vector_dim,
+                    mmap_store: Arc::new(store),
+                    max_chunks: record.max_chunks,
+                };
+
+                // DOUBLE-CHECKED LOCK FIX:
+                // Only insert if the entry is still Vacant or PagedToDisk.
+                // If a concurrent thread already loaded it and added writes, KEEP THEIRS!
+                let entry = self.memory_pipes.entry(pipe_name.to_string());
+                match entry {
+                    dashmap::mapref::entry::Entry::Vacant(v) => {
+                        v.insert(loaded_state);
+                    }
+                    dashmap::mapref::entry::Entry::Occupied(mut o) => {
+                        if matches!(o.get(), PipeState::PagedToDisk) {
+                            o.insert(loaded_state);
+                        }
+                    }
+                }
                 return Ok(());
             }
 
             // Fall back to Mode A (.pipe)
-            if let Some(record) = Pager::page_in_semantic(pipe_name) {
+            if let Some(record) = crate::memory::Pager::page_in_semantic(pipe_name) {
                 let max_id = record.chunks.iter().map(|c| c.id).max().unwrap_or(0);
                 self.next_chunk_id
                     .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
                 let bm25 = Bm25Index::from_chunks(&record.chunks);
-                self.memory_pipes.insert(
-                    pipe_name.to_string(),
-                    PipeState::Active {
-                        is_persistent: record.is_persistent,
-                        chunks: record.chunks,
-                        bm25,
-                        max_hot_chunks: record.max_hot_chunks,
-                    },
-                );
+
+                let loaded_state = PipeState::Active {
+                    is_persistent: record.is_persistent,
+                    chunks: record.chunks,
+                    bm25,
+                    max_hot_chunks: record.max_hot_chunks,
+                };
+
+                let entry = self.memory_pipes.entry(pipe_name.to_string());
+                match entry {
+                    dashmap::mapref::entry::Entry::Vacant(v) => {
+                        v.insert(loaded_state);
+                    }
+                    dashmap::mapref::entry::Entry::Occupied(mut o) => {
+                        if matches!(o.get(), PipeState::PagedToDisk) {
+                            o.insert(loaded_state);
+                        }
+                    }
+                }
                 return Ok(());
             } else if !self.memory_pipes.contains_key(pipe_name) {
                 return Err(format!("Pipe '{}' does not exist.", pipe_name));
@@ -1098,15 +1118,17 @@ impl SemanticBus {
                 PipeState::ActiveSq8Nvme {
                     is_persistent,
                     sq8_chunks,
+                    max_chunks,
+                    vector_dim,
                     ..
                 } => {
                     if *is_persistent {
-                        (None, Some(sq8_chunks.clone()))
+                        (None, Some((sq8_chunks.clone(), *max_chunks, *vector_dim)))
                     } else {
                         (None, None)
                     }
                 }
-                // CoW Branches are in-RAM overlays; never overwrite base with a monolithic dump!
+                // CoW Branches are in-RAM overlays; never overwrite base with a monolithic dump
                 PipeState::Branched { .. }
                 | PipeState::ActivePqRecompute { .. }
                 | PipeState::PagedToDisk => (None, None),
@@ -1115,8 +1137,8 @@ impl SemanticBus {
 
         if let Some((chunks, max_hot_chunks)) = mode_a_data {
             Pager::page_out_semantic(pipe_name, &chunks, max_hot_chunks);
-        } else if let Some(sq8_chunks) = mode_c_data {
-            Pager::page_out_sq8_semantic(pipe_name, &sq8_chunks);
+        } else if let Some((sq8_chunks, max_chunks, vector_dim)) = mode_c_data {
+            Pager::page_out_sq8_semantic(pipe_name, &sq8_chunks, max_chunks, vector_dim);
         }
     }
 
@@ -2085,11 +2107,18 @@ impl SemanticBus {
                         is_persistent,
                         sq8_chunks,
                         bm25,
+                        max_chunks,
+                        vector_dim,
                         ..
                     } => {
                         if *is_persistent {
                             if !sq8_chunks.is_empty() {
-                                crate::memory::Pager::page_out_sq8_semantic(&pipe_name, sq8_chunks);
+                                crate::memory::Pager::page_out_sq8_semantic(
+                                    &pipe_name,
+                                    sq8_chunks,
+                                    *max_chunks,
+                                    *vector_dim,
+                                );
                                 pipes_evicted += 1;
                             }
                             evict_to_disk = true; // Safe to evict to PagedToDisk; restored via .sq8pipe

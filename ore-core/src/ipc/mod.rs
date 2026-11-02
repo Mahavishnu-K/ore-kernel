@@ -854,4 +854,94 @@ mod tests {
 
         let _ = std::fs::remove_file(ore_common::paths::get_memory_dir().join("durable_kb.pipe"));
     }
+
+    #[test]
+    fn test_restart_durability_both_modes_and_quarantine() {
+        let bus = SemanticBus::new(24, 24);
+        let pid = std::process::id();
+        let vec = vec![1.0; 8];
+
+        // ── TEST 1: Mode A Restart Durability ────────────────────────────────
+        let pipe_a = format!("durable_a_{}", pid);
+        bus.write_chunk(
+            &pipe_a,
+            "Doc A1".into(),
+            "Ctx A1".into(),
+            vec.clone(),
+            "admin",
+            true,
+            MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
+        );
+        bus.persist_pipe(&pipe_a);
+
+        // Wipe memory to simulate restart
+        bus.memory_pipes.clear();
+
+        // First write after restart must NOT wipe the pipe
+        bus.write_chunk(
+            &pipe_a,
+            "Doc A2".into(),
+            "Ctx A2".into(),
+            vec.clone(),
+            "admin",
+            true,
+            MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
+        );
+
+        let contents_a = bus.get_pipe_contents(&pipe_a).unwrap();
+        assert_eq!(
+            contents_a.len(),
+            2,
+            "Mode A pipe must retain both pre-restart and post-restart chunks"
+        );
+
+        // ── TEST 2: Mode C Restart Durability ────────────────────────────────
+        let pipe_c = format!("durable_c_{}", pid);
+        // Initialize as Mode C
+        bus.write_chunk(
+            &pipe_c,
+            "Doc C1".into(),
+            "Ctx C1".into(),
+            vec.clone(),
+            "admin",
+            true,
+            MemoryCategory::Fact,
+            VectorMode::Sq8Nvme,
+            10_000,
+        );
+        bus.persist_pipe(&pipe_c);
+
+        // Wipe memory to simulate restart
+        bus.memory_pipes.clear();
+
+        // First write after restart into Mode C must preserve C1 and add C2
+        bus.write_chunk(
+            &pipe_c,
+            "Doc C2".into(),
+            "Ctx C2".into(),
+            vec.clone(),
+            "admin",
+            true,
+            MemoryCategory::Fact,
+            VectorMode::Sq8Nvme,
+            10_000,
+        );
+
+        let contents_c = bus.get_pipe_contents(&pipe_c).unwrap();
+        assert_eq!(
+            contents_c.len(),
+            2,
+            "Mode C pipe must retain both pre-restart and post-restart chunks"
+        );
+
+        // Cleanup test files
+        let mem_dir = ore_common::paths::get_memory_dir();
+        let _ = std::fs::remove_file(mem_dir.join(format!("{}.pipe", pipe_a)));
+        let _ = std::fs::remove_file(mem_dir.join(format!("{}.sq8pipe", pipe_c)));
+        let _ = std::fs::remove_file(mem_dir.join(format!("{}.f32vecs", pipe_c)));
+    }
 }
