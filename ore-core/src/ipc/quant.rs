@@ -6,6 +6,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
+pub const DEFAULT_MAX_SQ8_CHUNKS: usize = 1_000_000;
+
 /// High-performance memory-mapped storage for dense f32 vectors (DiskANN pattern).
 /// Uses OS Page Cache mmap to eliminate syscall overhead and avoid per-query file allocations.
 #[derive(Debug)]

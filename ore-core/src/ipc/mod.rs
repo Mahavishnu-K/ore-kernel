@@ -653,6 +653,7 @@ mod tests {
                 bm25,
                 vector_dim: 8,
                 mmap_store,
+                max_chunks: 1_000_000,
             },
         );
 
@@ -793,5 +794,64 @@ mod tests {
         // Verify real f32 vectors are restored and not empty!
         assert_eq!(outcome.results[0].1.vector.len(), 8);
         assert!(outcome.top_dense_score > 0.0);
+    }
+
+    #[test]
+    fn test_restart_durability_does_not_wipe_persistent_pipe() {
+        let bus = SemanticBus::new(24, 24);
+        let vec = vec![1.0; 8];
+
+        // Write chunks to a persistent pipe
+        bus.write_chunk(
+            "durable_kb",
+            "Doc 1".into(),
+            "Ctx 1".into(),
+            vec.clone(),
+            "admin",
+            true,
+            MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
+        );
+        bus.write_chunk(
+            "durable_kb",
+            "Doc 2".into(),
+            "Ctx 2".into(),
+            vec.clone(),
+            "admin",
+            true,
+            MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
+        );
+
+        // Manually persist to simulate normal runtime flush
+        bus.persist_pipe("durable_kb");
+
+        // SIMULATE KERNEL RESTART: Wipe in-memory DashMap clean!
+        bus.memory_pipes.clear();
+
+        // Write a 3rd chunk after restart
+        bus.write_chunk(
+            "durable_kb",
+            "Doc 3".into(),
+            "Ctx 3".into(),
+            vec.clone(),
+            "admin",
+            true,
+            MemoryCategory::Fact,
+            VectorMode::Auto,
+            10_000,
+        );
+
+        // Verify the pipe was NOT wiped out: it must have ALL 3 chunks (2 restored + 1 new)!
+        let contents = bus.get_pipe_contents("durable_kb").unwrap();
+        assert_eq!(
+            contents.len(),
+            3,
+            "First write after restart must NOT wipe out existing persistent chunks!"
+        );
+
+        let _ = std::fs::remove_file(ore_common::paths::get_memory_dir().join("durable_kb.pipe"));
     }
 }
