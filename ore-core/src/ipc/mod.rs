@@ -399,12 +399,11 @@ mod tests {
         assert!(outcome1.results[0].1.text.contains("UniqueMarkerAlpha"));
 
         // Simulate reaching capacity and popping the first chunk
-        if let Some(mut pipe_guard) = bus.memory_pipes.get_mut("test_cap_pipe") {
-            if let PipeState::Active { chunks, bm25, .. } = pipe_guard.value_mut() {
-                if let Some(evicted) = chunks.pop_front() {
-                    bm25.remove_chunk(evicted.id, &evicted.text);
-                }
-            }
+        if let Some(mut pipe_guard) = bus.memory_pipes.get_mut("test_cap_pipe")
+            && let PipeState::Active { chunks, bm25, .. } = pipe_guard.value_mut()
+            && let Some(evicted) = chunks.pop_front()
+        {
+            bm25.remove_chunk(evicted.id, &evicted.text);
         }
 
         // Querying for the evicted term must yield 0 results in BM25
@@ -621,6 +620,7 @@ mod tests {
         bus.memory_pipes.insert(
             "diskann_pipe".to_string(),
             PipeState::ActiveSq8Nvme {
+                is_persistent: true,
                 sq8_chunks,
                 bm25,
                 vector_dim: 8,

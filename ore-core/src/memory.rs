@@ -136,6 +136,71 @@ impl Pager {
         None
     }
 
+    pub fn page_out_sq8_semantic(
+        pipe_name: &str,
+        sq8_chunks: &VecDeque<Arc<crate::ipc::Sq8Chunk>>,
+    ) {
+        let swap_dir = Self::get_swap_dir();
+        let path = swap_dir.join(format!("{}.sq8pipe", pipe_name));
+        let tmp_path = swap_dir.join(format!(
+            "{}.sq8pipe.{}.tmp",
+            pipe_name,
+            uuid::Uuid::new_v4()
+        ));
+
+        if let Ok(data) = bincode::serialize(sq8_chunks) {
+            let write_res = (|| -> Result<(), std::io::Error> {
+                let mut file = fs::File::create(&tmp_path)?;
+                file.write_all(&data)?;
+                file.sync_all()?;
+                drop(file);
+
+                fs::rename(&tmp_path, &path)?;
+
+                #[cfg(unix)]
+                {
+                    if let Some(parent) = path.parent() {
+                        let dir = fs::File::open(parent)?;
+                        dir.sync_all()?;
+                    }
+                }
+                Ok(())
+            })();
+
+            if let Err(e) = write_res {
+                kprintln!(
+                    "-> [PAGER] [ERROR] Failed to flush SQ8 pipe '{}': {}",
+                    pipe_name,
+                    e
+                );
+                let _ = fs::remove_file(&tmp_path);
+            } else {
+                kprintln!(
+                    "-> [PAGER] SQ8 Metadata for '{}' committed to disk.",
+                    pipe_name
+                );
+            }
+        }
+    }
+
+    pub fn page_in_sq8_semantic(pipe_name: &str) -> Option<VecDeque<Arc<crate::ipc::Sq8Chunk>>> {
+        let swap_dir = Self::get_swap_dir();
+        let path = swap_dir.join(format!("{}.sq8pipe", pipe_name));
+
+        if path.exists()
+            && let Ok(data) = fs::read(&path)
+            && let Ok(chunks) = bincode::deserialize::<VecDeque<Arc<crate::ipc::Sq8Chunk>>>(&data)
+        {
+            kprintln!(
+                "-> [PAGER] Restored SQ8 metadata for '{}' from disk ({} chunks).",
+                pipe_name,
+                chunks.len()
+            );
+            return Some(chunks);
+        }
+        None
+    }
+
     pub fn page_out_kv_cache(
         app_id: &str,
         model_name: &str,

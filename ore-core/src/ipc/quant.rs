@@ -49,6 +49,37 @@ impl MmapVectorStore {
         Self::new(path, vector_dim)
     }
 
+    /// Appends a batch of vectors in a single I/O write and a single mmap remap.
+    /// Crucial for Mode A -> Mode C migration to avoid 10,000 separate mmap calls.
+    pub fn append_batch(&self, vectors: &[&[f32]]) -> Result<Vec<u64>, std::io::Error> {
+        if vectors.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut file = self.file.lock().unwrap();
+        let start_offset = file.seek(SeekFrom::End(0))?;
+        let vector_bytes = self.vector_dim * 4;
+
+        let mut offsets = Vec::with_capacity(vectors.len());
+        let mut buffer = Vec::with_capacity(vectors.len() * vector_bytes);
+
+        for (i, vec) in vectors.iter().enumerate() {
+            offsets.push(start_offset + (i * vector_bytes) as u64);
+            let byte_slice =
+                unsafe { std::slice::from_raw_parts(vec.as_ptr() as *const u8, vector_bytes) };
+            buffer.extend_from_slice(byte_slice);
+        }
+
+        file.write_all(&buffer)?;
+        file.flush()?;
+
+        let mut mmap_guard = self.mmap.write().unwrap();
+        let new_mmap = unsafe { Mmap::map(&*file)? };
+        *mmap_guard = Some(new_mmap);
+
+        Ok(offsets)
+    }
+
     /// Appends a vector to the end of the file and remaps the virtual memory address space.
     pub fn append(&self, vector: &[f32]) -> Result<u64, std::io::Error> {
         let mut file = self.file.lock().unwrap();

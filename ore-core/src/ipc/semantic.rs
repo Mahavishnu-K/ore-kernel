@@ -1,6 +1,7 @@
 use super::bm25::Bm25Index;
 use super::chunking::MemoryChunk;
 use super::quant::{MmapVectorStore, PqChunk, PqCodebook, Sq8Chunk, Sq8Vector};
+use crate::memory::Pager;
 use dashmap::DashMap;
 use ore_common::protocol::MemoryCategory;
 use std::cmp::Ordering;
@@ -27,6 +28,7 @@ pub enum PipeState {
     },
     /// Mode C: DiskANN Enterprise NVMe (> 50,000 chunks, SQ8 int8 RAM + f32 on SSD)
     ActiveSq8Nvme {
+        is_persistent: bool,
         sq8_chunks: VecDeque<Arc<Sq8Chunk>>,
         bm25: Bm25Index,
         vector_dim: usize,
@@ -332,10 +334,29 @@ impl SemanticBus {
         let mut entry = self
             .memory_pipes
             .entry(pipe_name.to_string())
-            .or_insert_with(|| PipeState::Active {
-                is_persistent,
-                chunks: VecDeque::new(),
-                bm25: Bm25Index::new(),
+            .or_insert_with(|| {
+                // If the pipe name or configuration targets Mode B cold storage:
+                if pipe_name.ends_with(":cold") || pipe_name.ends_with(":leann") {
+                    let dim = chunk.vector.len();
+                    let num_subspaces = if dim.is_multiple_of(48) {
+                        48
+                    } else if dim.is_multiple_of(24) {
+                        24
+                    } else {
+                        16
+                    };
+                    PipeState::ActivePqRecompute {
+                        codebook: Arc::new(super::quant::PqCodebook::new(dim, num_subspaces)),
+                        pq_chunks: VecDeque::new(),
+                        bm25: Bm25Index::new(),
+                    }
+                } else {
+                    PipeState::Active {
+                        is_persistent,
+                        chunks: VecDeque::new(),
+                        bm25: Bm25Index::new(),
+                    }
+                }
             });
 
         match entry.value_mut() {
@@ -354,20 +375,40 @@ impl SemanticBus {
                 if chunks.len() >= 10_000 {
                     let vector_dim = chunks.front().map(|c| c.vector.len()).unwrap_or(768);
                     crate::kprintln!(
-                        "-> [MMU MIGRATION] Pipe '{}' reached capacity ({} chunks). Promoting Mode A (HotSimd) -> Mode C (DiskANN SQ8)...",
+                        "-> [MMU MIGRATION] Pipe '{}' reached capacity ({} chunks). Promoting Mode A -> Mode C...",
                         pipe_name,
                         chunks.len()
                     );
 
                     let store_path =
                         ore_common::paths::get_memory_dir().join(format!("{}.f32vecs", pipe_name));
-                    match MmapVectorStore::new(store_path, vector_dim) {
+
+                    // Truncate/create fresh to prevent file duplication across restarts
+                    match super::quant::MmapVectorStore::new(store_path, vector_dim) {
                         Ok(mmap_store) => {
                             let mmap_arc = Arc::new(mmap_store);
-                            let mut sq8_chunks = VecDeque::with_capacity(chunks.len());
+                            let drained_chunks: Vec<_> = chunks.drain(..).collect();
 
-                            for c in chunks.drain(..) {
-                                let f32_offset = mmap_arc.append(&c.vector).unwrap_or(0);
+                            // BATCH WRITE: 1 write syscall + 1 mmap remap for all 10,000 vectors
+                            let vector_slices: Vec<&[f32]> =
+                                drained_chunks.iter().map(|c| c.vector.as_slice()).collect();
+                            let offsets = match mmap_arc.append_batch(&vector_slices) {
+                                Ok(offs) => offs,
+                                Err(e) => {
+                                    crate::kprintln!(
+                                        "-> [MMU MIGRATION ERROR] Batch write failed: {}. Aborting migration.",
+                                        e
+                                    );
+                                    chunks.extend(drained_chunks);
+                                    return;
+                                }
+                            };
+
+                            // Build SQ8 chunks with real offsets
+                            let mut sq8_chunks = VecDeque::with_capacity(drained_chunks.len());
+                            for (c, f32_offset) in
+                                drained_chunks.into_iter().zip(offsets.into_iter())
+                            {
                                 let sq8_vec = Sq8Vector::quantize(&c.vector);
                                 sq8_chunks.push_back(Arc::new(Sq8Chunk {
                                     id: c.id,
@@ -382,21 +423,22 @@ impl SemanticBus {
                             }
 
                             let preserved_bm25 = bm25.clone();
+                            let is_pers = *p;
                             *entry.value_mut() = PipeState::ActiveSq8Nvme {
+                                is_persistent: is_pers,
                                 sq8_chunks,
                                 bm25: preserved_bm25,
                                 vector_dim,
                                 mmap_store: mmap_arc,
                             };
                             crate::kprintln!(
-                                "-> [MMU MIGRATION] Promotion complete for '{}'. Active RAM converted to int8 SQ8, vectors backed by zero-copy mmap.",
+                                "-> [MMU MIGRATION] Promotion complete for '{}' (single batch remap).",
                                 pipe_name
                             );
                         }
                         Err(e) => {
                             crate::kprintln!(
-                                "-> [MMU MIGRATION ERROR] Failed to initialize MmapVectorStore for '{}': {}. Falling back to tail eviction.",
-                                pipe_name,
+                                "-> [MMU MIGRATION ERROR] Failed to initialize MmapVectorStore: {}",
                                 e
                             );
                             if let Some(evicted) = chunks.pop_front() {
@@ -407,13 +449,24 @@ impl SemanticBus {
                 }
             }
             PipeState::ActiveSq8Nvme {
+                is_persistent: _,
                 sq8_chunks,
                 bm25,
                 vector_dim,
                 mmap_store,
             } => {
                 *vector_dim = chunk.vector.len();
-                let f32_offset = mmap_store.append(&chunk.vector).unwrap_or(0);
+                let f32_offset = match mmap_store.append(&chunk.vector) {
+                    Ok(off) => off,
+                    Err(e) => {
+                        crate::kprintln!(
+                            "-> [DISKANN ERROR] Failed to append vector to mmap for chunk {}: {}. Aborting insert.",
+                            chunk.id,
+                            e
+                        );
+                        return; // Do NOT silently insert with offset 0
+                    }
+                };
                 let sq8_vec = Sq8Vector::quantize(&chunk.vector);
 
                 bm25.add_chunk(chunk.id, &chunk.text);
@@ -591,29 +644,22 @@ impl SemanticBus {
             return Err("Cannot merge a pipe into itself.".to_string());
         }
 
-        // Verify branch, validate parent relationship, and drain deltas.
-        // We acquire the branch lock, drain, and immediately drop to prevent cross-shard deadlock.
-        let (parent_pipe, deltas) = {
-            let mut branch_guard = self
+        // Pre-validation without modifying state
+        let (parent_pipe, delta_count) = {
+            let branch_guard = self
                 .memory_pipes
-                .get_mut(branch_pipe)
+                .get(branch_pipe)
                 .ok_or_else(|| format!("Branch pipe '{}' not found.", branch_pipe))?;
 
-            match branch_guard.value_mut() {
+            match branch_guard.value() {
                 PipeState::Branched {
                     base_pipe: parent,
                     delta_chunks,
                     ..
-                } => {
-                    let parent = parent.clone();
-
-                    // DRAIN deltas to prevent dual-view memory duplication
-                    let deltas: Vec<Arc<MemoryChunk>> = delta_chunks.drain(..).collect();
-                    (parent, deltas)
-                }
+                } => (parent.clone(), delta_chunks.len()),
                 _ => return Err(format!("Pipe '{}' is not a branched pipe.", branch_pipe)),
             }
-        }; // branch_guard is dropped here
+        };
 
         if parent_pipe != base_pipe {
             return Err(format!(
@@ -622,7 +668,6 @@ impl SemanticBus {
             ));
         }
 
-        let delta_count = deltas.len();
         if delta_count == 0 {
             if delete_branch {
                 self.memory_pipes.remove(branch_pipe);
@@ -630,10 +675,49 @@ impl SemanticBus {
             return Ok(0);
         }
 
+        // Ensure base pipe is loaded if paged out
         self.ensure_pipe_loaded(base_pipe)?;
 
-        // Incorporate deltas into the base pipe under write lock
-        let (should_persist, base_chunks_snapshot, base_bm25_snapshot) = {
+        // Verify base pipe is in a mergeable state (Active Mode A OR ActiveSq8Nvme Mode C)
+        {
+            let base_guard = self
+                .memory_pipes
+                .get(base_pipe)
+                .ok_or_else(|| format!("Base pipe '{}' not found.", base_pipe))?;
+
+            match base_guard.value() {
+                PipeState::Active { .. } | PipeState::ActiveSq8Nvme { .. } => {}
+                _ => {
+                    return Err(format!(
+                        "Base pipe '{}' is not in an active mergeable state.",
+                        base_pipe
+                    ));
+                }
+            }
+        }
+
+        // Now that validation is 100% complete, drain the deltas safely
+        let deltas: Vec<Arc<MemoryChunk>> = {
+            let mut branch_guard = self.memory_pipes.get_mut(branch_pipe).ok_or_else(|| {
+                format!("Branch pipe '{}' disappeared during merge.", branch_pipe)
+            })?;
+
+            match branch_guard.value_mut() {
+                PipeState::Branched { delta_chunks, .. } => delta_chunks.drain(..).collect(),
+                _ => unreachable!(),
+            }
+        };
+
+        let merged_count = deltas.len();
+
+        // Incorporate deltas into the base pipe (Supports Mode A and Mode C)
+        enum SyncAction {
+            ModeA(VecDeque<Arc<MemoryChunk>>),
+            ModeC(VecDeque<Arc<Sq8Chunk>>),
+            None,
+        }
+
+        let (sync_action, base_bm25_snapshot) = {
             let mut base_entry = self
                 .memory_pipes
                 .get_mut(base_pipe)
@@ -654,46 +738,97 @@ impl SemanticBus {
                             bm25.remove_chunk(evicted.id, &evicted.text);
                         }
                     }
-                    (*is_persistent, chunks.clone(), bm25.clone())
+                    let action = if *is_persistent {
+                        SyncAction::ModeA(chunks.clone())
+                    } else {
+                        SyncAction::None
+                    };
+                    (action, bm25.clone())
                 }
-                _ => {
-                    return Err(format!(
-                        "Base pipe '{}' is not in an active state.",
-                        base_pipe
-                    ));
+                PipeState::ActiveSq8Nvme {
+                    is_persistent,
+                    sq8_chunks,
+                    bm25,
+                    vector_dim,
+                    mmap_store,
+                } => {
+                    for chunk in &deltas {
+                        *vector_dim = chunk.vector.len();
+                        match mmap_store.append(&chunk.vector) {
+                            Ok(f32_offset) => {
+                                let sq8_vec = Sq8Vector::quantize(&chunk.vector);
+                                bm25.add_chunk(chunk.id, &chunk.text);
+                                sq8_chunks.push_back(Arc::new(Sq8Chunk {
+                                    id: chunk.id,
+                                    text: Arc::clone(&chunk.text),
+                                    context_payload: Arc::clone(&chunk.context_payload),
+                                    sq8_vector: sq8_vec,
+                                    f32_offset,
+                                    source_app: chunk.source_app.clone(),
+                                    timestamp: chunk.timestamp,
+                                    category: chunk.category,
+                                }));
+                                if sq8_chunks.len() > 1_000_000
+                                    && let Some(evicted) = sq8_chunks.pop_front()
+                                {
+                                    bm25.remove_chunk(evicted.id, &evicted.text);
+                                }
+                            }
+                            Err(e) => {
+                                crate::kprintln!(
+                                    "-> [CoW MERGE ERROR] Failed to append vector to Mode C mmap for chunk {}: {}",
+                                    chunk.id,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    let action = if *is_persistent {
+                        SyncAction::ModeC(sq8_chunks.clone())
+                    } else {
+                        SyncAction::None
+                    };
+                    (action, bm25.clone())
                 }
+                _ => unreachable!(),
             }
-        }; // base_entry DashMap write lock is dropped here
+        }; // DashMap write lock released here!
 
-        if should_persist {
-            crate::memory::Pager::page_out_semantic(base_pipe, &base_chunks_snapshot);
+        // Disk persistence outside the DashMap lock
+        match sync_action {
+            SyncAction::ModeA(chunks) => {
+                Pager::page_out_semantic(base_pipe, &chunks);
+            }
+            SyncAction::ModeC(sq8_chunks) => {
+                Pager::page_out_sq8_semantic(base_pipe, &sq8_chunks);
+            }
+            SyncAction::None => {}
         }
 
+        // Branch cleanup or BM25 resync
         if delete_branch {
             self.memory_pipes.remove(branch_pipe);
             crate::kprintln!(
-                "-> [CoW MERGE] Merged {} chunks from '{}' into '{}' and removed branch.",
-                delta_count,
+                "-> [CoW MERGE] Merged {} chunks from '{}' into '{}' and deleted branch.",
+                merged_count,
                 branch_pipe,
                 base_pipe
             );
         } else {
-            // Synchronize the surviving branch's BM25 index to match the new base state
             if let Some(mut branch_guard) = self.memory_pipes.get_mut(branch_pipe)
                 && let PipeState::Branched { bm25, .. } = branch_guard.value_mut()
             {
                 *bm25 = base_bm25_snapshot;
             }
-
             crate::kprintln!(
-                "-> [CoW MERGE] Merged {} chunks from '{}' into '{}'.",
-                delta_count,
+                "-> [CoW MERGE] Merged {} chunks from '{}' into '{}' (branch preserved, deltas drained).",
+                merged_count,
                 branch_pipe,
                 base_pipe
             );
         }
 
-        Ok(delta_count)
+        Ok(merged_count)
     }
 
     fn ensure_pipe_loaded(&self, pipe_name: &str) -> Result<(), String> {
@@ -703,6 +838,35 @@ impl SemanticBus {
         };
 
         if needs_load {
+            // Check for Mode C (.sq8pipe + .f32vecs) first
+            if let Some(sq8_chunks) = crate::memory::Pager::page_in_sq8_semantic(pipe_name) {
+                let max_id = sq8_chunks.iter().map(|c| c.id).max().unwrap_or(0);
+                self.next_chunk_id
+                    .fetch_max(max_id + 1, AtomicOrdering::SeqCst);
+
+                let mut bm25 = Bm25Index::new();
+                for sc in &sq8_chunks {
+                    bm25.add_chunk(sc.id, &sc.text);
+                }
+
+                let vector_dim = 768; // Default embedding dimension
+                let store = super::quant::MmapVectorStore::for_pipe(pipe_name, vector_dim)
+                    .map_err(|e| format!("Failed to open mmap vector store: {}", e))?;
+
+                self.memory_pipes.insert(
+                    pipe_name.to_string(),
+                    PipeState::ActiveSq8Nvme {
+                        is_persistent: true,
+                        sq8_chunks,
+                        bm25,
+                        vector_dim,
+                        mmap_store: Arc::new(store),
+                    },
+                );
+                return Ok(());
+            }
+
+            // Fall back to Mode A (.pipe)
             if let Some(restored) = crate::memory::Pager::page_in_semantic(pipe_name) {
                 let max_id = restored.iter().map(|c| c.id).max().unwrap_or(0);
                 self.next_chunk_id
@@ -760,10 +924,23 @@ impl SemanticBus {
                         .collect();
                     (chunks, None)
                 }
-                PipeState::ActivePqRecompute { .. } => {
-                    let restored =
-                        crate::memory::Pager::page_in_semantic(pipe_name).unwrap_or_default();
-                    (restored, None)
+                PipeState::ActivePqRecompute { pq_chunks, .. } => {
+                    // Reconstruct MemoryChunks from live in-RAM pq_chunks instead of stale disk file
+                    let chunks: VecDeque<Arc<MemoryChunk>> = pq_chunks
+                        .iter()
+                        .map(|pq| {
+                            Arc::new(MemoryChunk {
+                                id: pq.id,
+                                text: Arc::clone(&pq.text),
+                                context_payload: Arc::clone(&pq.context_payload),
+                                vector: Arc::new(Vec::new()), // Recomputed on-demand
+                                source_app: pq.source_app.clone(),
+                                timestamp: pq.timestamp,
+                                category: pq.category,
+                            })
+                        })
+                        .collect();
+                    (chunks, None)
                 }
                 PipeState::PagedToDisk => return None,
             }
@@ -997,7 +1174,7 @@ impl SemanticBus {
             return empty();
         }
 
-        let (pipe_state_snapshot, base_pipe, bm25_scores) = {
+        let (pipe_state_snapshot, _, bm25_scores) = {
             let Some(pipe) = self.memory_pipes.get(pipe_name) else {
                 return empty();
             };
@@ -1012,12 +1189,14 @@ impl SemanticBus {
                     enable_hybrid.then(|| bm25.score_query(query_text)),
                 ),
                 PipeState::ActiveSq8Nvme {
+                    is_persistent,
                     sq8_chunks,
                     bm25,
                     vector_dim,
                     mmap_store,
                 } => (
                     PipeState::ActiveSq8Nvme {
+                        is_persistent: *is_persistent,
                         sq8_chunks: sq8_chunks.clone(),
                         bm25: Bm25Index::new(),
                         vector_dim: *vector_dim,
@@ -1074,30 +1253,8 @@ impl SemanticBus {
             top_k
         };
 
-        // ── HOIST: Resolve unified chunks ONCE for Mode A and CoW Branches ──────
-        let unified_chunks: Option<VecDeque<Arc<MemoryChunk>>> = match &pipe_state_snapshot {
-            PipeState::Active { chunks, .. } => {
-                if base_pipe.is_none() {
-                    Some(chunks.clone())
-                } else {
-                    None
-                }
-            }
-            PipeState::Branched { delta_chunks, .. } => {
-                if let Some(base) = &base_pipe {
-                    let mut combined = self.get_pipe_contents(base).unwrap_or_default();
-                    combined.extend(delta_chunks.clone());
-                    Some(combined)
-                } else {
-                    Some(delta_chunks.clone())
-                }
-            }
-            _ => None, // Mode B and Mode C don't need unified_chunks
-        };
-
-        // ── PASS 1: Dense Scoring (Mode A vs Mode B vs Mode C) ───────────────────
+        // ── PASS 1: Dense Scoring (Mode A vs Mode B vs Mode C vs CoW Branches) ───
         let (dense_ranked, top_dense_score) = if let Some(mut recomputed) = recomputed_mode_b {
-            // Mode B (LEANN): Real f32 vectors recomputed on the fly
             if allow_time_decay {
                 for (score, chunk) in &mut recomputed {
                     let hours_old = current_time.saturating_sub(chunk.timestamp) as f32 / 3600.0;
@@ -1115,8 +1272,8 @@ impl SemanticBus {
                     mmap_store,
                     ..
                 } => {
-                    // Mode C (DiskANN): In-RAM int8 SQ8 scan + mmap exact seek
                     let query_sq8 = Sq8Vector::quantize(query_vector);
+
                     let mut sq8_candidates: Vec<Sq8Candidate> = sq8_chunks
                         .iter()
                         .filter(|c| passes_filters(&c.source_app, c.category))
@@ -1180,12 +1337,153 @@ impl SemanticBus {
                     exact_reranked.truncate(candidate_limit);
                     (exact_reranked, top_score)
                 }
-                _ => {
-                    // Mode A & CoW Branch: Uses pre-resolved unified_chunks (Zero Re-allocation)
-                    let chunks_ref = unified_chunks.as_ref().unwrap();
+
+                PipeState::Branched {
+                    base_pipe,
+                    delta_chunks,
+                    ..
+                } => {
+                    // ZERO-COPY BRANCH SEARCH:
+                    // Check if base pipe is Mode C. If so, search base SQ8 without heap allocation!
+                    let base_pipe_guard = self.memory_pipes.get(base_pipe);
                     let mut dense_heap = BinaryHeap::with_capacity(candidate_limit);
 
-                    for chunk in chunks_ref
+                    // 1. Search Branch Deltas
+                    for chunk in delta_chunks
+                        .iter()
+                        .filter(|c| passes_filters(&c.source_app, c.category))
+                    {
+                        let mut score = Self::dot_product(&chunk.vector, query_vector);
+                        if allow_time_decay {
+                            let hours_old =
+                                current_time.saturating_sub(chunk.timestamp) as f32 / 3600.0;
+                            score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                        }
+                        if score.is_finite() {
+                            Self::keep_top(&mut dense_heap, candidate_limit, score, chunk);
+                        }
+                    }
+
+                    // 2. Search Base Pipe
+                    if let Some(base_state) = base_pipe_guard.as_ref() {
+                        match base_state.value() {
+                            PipeState::ActiveSq8Nvme {
+                                sq8_chunks,
+                                mmap_store,
+                                ..
+                            } => {
+                                let query_sq8 = Sq8Vector::quantize(query_vector);
+                                for c in sq8_chunks
+                                    .iter()
+                                    .filter(|c| passes_filters(&c.source_app, c.category))
+                                {
+                                    let mut score =
+                                        Sq8Vector::dot_product(&c.sq8_vector.data, &query_sq8.data);
+                                    if allow_time_decay {
+                                        let hours_old = current_time.saturating_sub(c.timestamp)
+                                            as f32
+                                            / 3600.0;
+                                        score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                                    }
+                                    if score.is_finite() {
+                                        let f32_vec = mmap_store
+                                            .read_vector(c.f32_offset)
+                                            .unwrap_or_default();
+                                        let chunk = Arc::new(MemoryChunk {
+                                            id: c.id,
+                                            text: Arc::clone(&c.text),
+                                            context_payload: Arc::clone(&c.context_payload),
+                                            vector: Arc::new(f32_vec),
+                                            source_app: c.source_app.clone(),
+                                            timestamp: c.timestamp,
+                                            category: c.category,
+                                        });
+                                        Self::keep_top(
+                                            &mut dense_heap,
+                                            candidate_limit,
+                                            score,
+                                            &chunk,
+                                        );
+                                    }
+                                }
+                            }
+                            PipeState::Active { chunks, .. } => {
+                                for chunk in chunks
+                                    .iter()
+                                    .filter(|c| passes_filters(&c.source_app, c.category))
+                                {
+                                    let mut score = Self::dot_product(&chunk.vector, query_vector);
+                                    if allow_time_decay {
+                                        let hours_old = current_time.saturating_sub(chunk.timestamp)
+                                            as f32
+                                            / 3600.0;
+                                        score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                                    }
+                                    if score.is_finite() {
+                                        Self::keep_top(
+                                            &mut dense_heap,
+                                            candidate_limit,
+                                            score,
+                                            chunk,
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let ranked = Self::into_ranked(dense_heap);
+                    let top_score = ranked.first().map_or(0.0, |(s, _)| *s);
+                    (ranked, top_score)
+                }
+
+                PipeState::ActivePqRecompute {
+                    codebook,
+                    pq_chunks,
+                    ..
+                } => {
+                    let adc_table = codebook.compute_adc_table(query_vector);
+                    let mut candidates: Vec<(f32, Arc<MemoryChunk>)> = pq_chunks
+                        .iter()
+                        .filter(|c| passes_filters(&c.source_app, c.category))
+                        .map(|c| {
+                            let mut score = codebook.score_code(&c.pq_codes, &adc_table);
+                            if allow_time_decay {
+                                let hours_old =
+                                    current_time.saturating_sub(c.timestamp) as f32 / 3600.0;
+                                score *= (1.0 - hours_old * 0.01).clamp(0.5, 1.0);
+                            }
+                            (
+                                score,
+                                Arc::new(MemoryChunk {
+                                    id: c.id,
+                                    text: Arc::clone(&c.text),
+                                    context_payload: Arc::clone(&c.context_payload),
+                                    vector: Arc::new(Vec::new()),
+                                    source_app: c.source_app.clone(),
+                                    timestamp: c.timestamp,
+                                    category: c.category,
+                                }),
+                            )
+                        })
+                        .collect();
+
+                    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+                    let top_score = candidates.first().map_or(0.0, |(s, _)| *s);
+                    candidates.truncate(candidate_limit);
+                    (candidates, top_score)
+                }
+
+                _ => {
+                    // Mode A: Direct in-RAM SIMD sweep
+                    let unified_chunks = match &pipe_state_snapshot {
+                        PipeState::Active { chunks, .. } => chunks.clone(),
+                        _ => VecDeque::new(),
+                    };
+
+                    let mut dense_heap = BinaryHeap::with_capacity(candidate_limit);
+                    for chunk in unified_chunks
                         .iter()
                         .filter(|c| passes_filters(&c.source_app, c.category))
                     {
@@ -1252,13 +1550,32 @@ impl SemanticBus {
                     }
                 }
             }
-            _ => {
-                // Reuses the exact same unified_chunks reference from PASS 1
-                let chunks_ref = unified_chunks.as_ref().unwrap();
-                for chunk in chunks_ref
+            PipeState::ActivePqRecompute { pq_chunks, .. } => {
+                // Route BM25 over pq_chunks without panic!
+                for c in pq_chunks
                     .iter()
                     .filter(|c| passes_filters(&c.source_app, c.category))
                 {
+                    if let Some(&score) = bm25_scores.get(&c.id)
+                        && score > 0.0
+                        && score.is_finite()
+                    {
+                        let chunk = Arc::new(MemoryChunk {
+                            id: c.id,
+                            text: Arc::clone(&c.text),
+                            context_payload: Arc::clone(&c.context_payload),
+                            vector: Arc::new(Vec::new()),
+                            source_app: c.source_app.clone(),
+                            timestamp: c.timestamp,
+                            category: c.category,
+                        });
+                        Self::keep_top(&mut sparse_heap, candidate_limit, score, &chunk);
+                    }
+                }
+            }
+            _ => {
+                // Mode A and CoW Branches
+                for (_, chunk) in &dense_ranked {
                     if let Some(&score) = bm25_scores.get(&chunk.id)
                         && score > 0.0
                         && score.is_finite()
@@ -1299,11 +1616,29 @@ impl SemanticBus {
         F: Fn(String) -> Fut + Copy,
         Fut: std::future::Future<Output = String>,
     {
+        // Storage cleanup: Prune old summaries from pipe so they don't leak space
+        if let Some(mut pipe_guard) = self.memory_pipes.get_mut(pipe_name)
+            && let PipeState::Active { chunks, bm25, .. } = pipe_guard.value_mut()
+        {
+            let mut pruned = Vec::new();
+            chunks.retain(|c| {
+                let is_old =
+                    c.source_app.starts_with("raptor_l") || c.text.starts_with("[RAPTOR-L");
+                if is_old {
+                    pruned.push((c.id, c.text.clone()));
+                }
+                !is_old
+            });
+            for (id, text) in pruned {
+                bm25.remove_chunk(id, &text);
+            }
+        }
+
         let chunks = self
             .get_pipe_contents(pipe_name)
             .ok_or_else(|| format!("Pipe '{}' not found.", pipe_name))?;
 
-        // Filter out previous summaries to prevent self-pollution and duplicate leaf clustering
+        // Algorithmic protection: Infallible guarantee that leaves are ONLY raw data
         let mut current_level_chunks: Vec<Arc<MemoryChunk>> = chunks
             .into_iter()
             .filter(|c| !c.source_app.starts_with("raptor_l") && !c.text.starts_with("[RAPTOR-L"))
@@ -1499,26 +1834,35 @@ impl SemanticBus {
                     }
 
                     PipeState::ActiveSq8Nvme {
-                        sq8_chunks, bm25, ..
+                        is_persistent,
+                        sq8_chunks,
+                        bm25,
+                        ..
                     } => {
-                        let initial = sq8_chunks.len();
-                        let mut expired = Vec::new();
-                        sq8_chunks.retain(|chunk| {
-                            let keep =
-                                current_time.saturating_sub(chunk.timestamp) < self.pipe_ttl_secs;
-                            if !keep {
-                                expired.push((chunk.id, chunk.text.clone()));
+                        if *is_persistent {
+                            if !sq8_chunks.is_empty() {
+                                crate::memory::Pager::page_out_sq8_semantic(&pipe_name, sq8_chunks);
+                                pipes_evicted += 1;
                             }
-                            keep
-                        });
-
-                        for (id, text) in expired {
-                            bm25.remove_chunk(id, &text);
-                        }
-
-                        let removed = initial - sq8_chunks.len();
-                        if removed > 0 {
-                            chunks_swept += removed;
+                            evict_to_disk = true; // Safe to evict to PagedToDisk; restored via .sq8pipe
+                        } else {
+                            let initial = sq8_chunks.len();
+                            let mut expired = Vec::new();
+                            sq8_chunks.retain(|chunk| {
+                                let keep = current_time.saturating_sub(chunk.timestamp)
+                                    < self.pipe_ttl_secs;
+                                if !keep {
+                                    expired.push((chunk.id, chunk.text.clone()));
+                                }
+                                keep
+                            });
+                            for (id, text) in expired {
+                                bm25.remove_chunk(id, &text);
+                            }
+                            let removed = initial - sq8_chunks.len();
+                            if removed > 0 {
+                                chunks_swept += removed;
+                            }
                         }
                     }
 
