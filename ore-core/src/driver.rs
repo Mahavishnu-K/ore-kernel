@@ -15,6 +15,18 @@ pub enum DriverError {
 
 pub use ore_common::types::{LocalModel, VramProcess};
 
+/// What an embedding is for. Asymmetric retrieval embedders (NomicBert) are trained
+/// with a different task prefix for stored passages and for search queries; vectors
+/// only line up when each side uses its own prefix. Symmetric embedders (BERT/MiniLM)
+/// and external drivers ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmbedTask {
+    /// Text being stored for later retrieval (chunks, tool findings, HyDE excerpts).
+    Document,
+    /// A search query compared against stored documents.
+    Query,
+}
+
 // HARDWARE ABSTRACTION LAYER (HAL)
 // Any backend (Ollama, LM Studio, vLLM) MUST implement these functions.
 #[async_trait]
@@ -53,6 +65,7 @@ pub trait InferenceDriver: Send + Sync {
         &self,
         model: &str,
         inputs: Vec<String>,
+        task: EmbedTask,
     ) -> Result<Vec<Vec<f32>>, DriverError>;
 
     async fn flush_idle_memory(&self, idle_timeout_mins: u64) -> Result<(), DriverError>;

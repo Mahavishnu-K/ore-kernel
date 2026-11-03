@@ -10,6 +10,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json as JsonResponse},
 };
+use ore_core::driver::EmbedTask;
 use ore_core::ipc::{AgentMessage, chunking};
 use ore_core::kprintln;
 use std::sync::Arc;
@@ -381,7 +382,10 @@ pub async fn sys_share_context(
     let mut cached_chunks = Vec::new();
 
     for chunk in chunks.clone() {
-        if let Some(cached_vector) = state.semantic_bus.get_cached_embedding(&chunk.probe_text) {
+        if let Some(cached_vector) = state
+            .semantic_bus
+            .get_cached_embedding(&chunk.probe_text, EmbedTask::Document)
+        {
             cached_chunks.push((chunk, cached_vector));
         } else {
             chunks_to_embed.push(chunk);
@@ -392,16 +396,19 @@ pub async fn sys_share_context(
         .category
         .unwrap_or(ore_common::protocol::MemoryCategory::General);
 
-    let _embedder_guard = state.embedder_lock.lock().await;
-
-    // Convert text to Math Vectors via Scoped Embedder Lease
+    // Convert text to Math Vectors via Scoped Embedder Lease.
+    // generate_embeddings_scoped takes embedder_lock itself; holding it here too
+    // would deadlock (tokio's Mutex is not re-entrant).
     if !chunks_to_embed.is_empty() {
         let probe_texts: Vec<String> = chunks_to_embed
             .iter()
             .map(|c| c.probe_text.clone())
             .collect();
 
-        match state.generate_embeddings_scoped(probe_texts).await {
+        match state
+            .generate_embeddings_scoped(probe_texts, EmbedTask::Document)
+            .await
+        {
             Ok(vectors) => {
                 for (chunk_payload, vector) in chunks_to_embed.into_iter().zip(vectors.into_iter())
                 {
@@ -417,7 +424,7 @@ pub async fn sys_share_context(
                         manifest.rag.max_hot_chunks,
                     );
                 }
-                kprintln!("-> [SEMANTIC BUS] Knowledge embedded. CPU memory flushed (0MB Idle).");
+                kprintln!("-> [SEMANTIC BUS] Knowledge embedded.");
             }
             Err(e) => return format!("KERNEL ERROR: Failed to embed knowledge. {}", e),
         }
@@ -564,40 +571,50 @@ pub async fn sys_search_context(
         payload.query.clone()
     };
 
-    // Generate Embeddings (computed on HyDE text for dense search) via Scoped Lease
-    let query_vector =
-        if let Some(cached_vec) = state.semantic_bus.get_cached_embedding(&dense_query_text) {
-            kprintln!("-> [SEMANTIC BUS] Query found in System Cache. Zero compute used.");
-            cached_vec
-        } else {
-            match state
-                .generate_embeddings_scoped(vec![dense_query_text.clone()])
-                .await
-            {
-                Ok(v) => {
-                    if let Some(first_vec) = v.into_iter().next() {
-                        let arc_vec = std::sync::Arc::new(first_vec);
-                        state
-                            .semantic_bus
-                            .cache_only(&dense_query_text, Arc::clone(&arc_vec));
-                        arc_vec
-                    } else {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "KERNEL ERROR: No embeddings returned from driver".to_string(),
-                        )
-                            .into_response();
-                    }
-                }
-                Err(e) => {
+    // Generate Embeddings (computed on HyDE text for dense search) via Scoped Lease.
+    // A HyDE excerpt is a passage, so it embeds as a document; a raw query as a query.
+    let query_task = if dense_query_text == payload.query {
+        EmbedTask::Query
+    } else {
+        EmbedTask::Document
+    };
+    let query_vector = if let Some(cached_vec) = state
+        .semantic_bus
+        .get_cached_embedding(&dense_query_text, query_task)
+    {
+        kprintln!("-> [SEMANTIC BUS] Query found in System Cache. Zero compute used.");
+        cached_vec
+    } else {
+        match state
+            .generate_embeddings_scoped(vec![dense_query_text.clone()], query_task)
+            .await
+        {
+            Ok(v) => {
+                if let Some(first_vec) = v.into_iter().next() {
+                    let arc_vec = std::sync::Arc::new(first_vec);
+                    state.semantic_bus.cache_only(
+                        &dense_query_text,
+                        query_task,
+                        Arc::clone(&arc_vec),
+                    );
+                    arc_vec
+                } else {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("KERNEL ERROR: Failed to generate query embedding: {}", e),
+                        "KERNEL ERROR: No embeddings returned from driver".to_string(),
                     )
                         .into_response();
                 }
             }
-        };
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("KERNEL ERROR: Failed to generate query embedding: {}", e),
+                )
+                    .into_response();
+            }
+        }
+    };
 
     let k = payload.top_k.unwrap_or(5);
     let filter_ref = payload.filter_app.as_deref();
@@ -630,7 +647,7 @@ pub async fn sys_search_context(
             enable_hybrid,
             |texts| async move {
                 state_for_recompute
-                    .generate_embeddings_scoped(texts)
+                    .generate_embeddings_scoped(texts, EmbedTask::Document)
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -681,9 +698,9 @@ pub async fn sys_search_context(
                         "-> [CRAG] Fallback tool returned findings. Ingesting live context into pipe..."
                     );
 
-                    let _embedder_guard = state.embedder_lock.lock().await;
+                    // generate_embeddings_scoped holds embedder_lock; don't take it here.
                     if let Ok(vecs) = state
-                        .generate_embeddings_scoped(vec![trimmed.to_string()])
+                        .generate_embeddings_scoped(vec![trimmed.to_string()], EmbedTask::Document)
                         .await
                         && let Some(live_vec) = vecs.into_iter().next()
                     {
@@ -716,8 +733,6 @@ pub async fn sys_search_context(
             }
         }
     }
-
-    let _ = state.driver.unload_model(&state.system_embedder).await;
 
     let fallback_tool_name = crag_fallback_tool;
 

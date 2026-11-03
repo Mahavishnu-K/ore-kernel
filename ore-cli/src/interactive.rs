@@ -5,6 +5,7 @@ use std::fs;
 use std::process::exit;
 
 use crate::utils::{get_ore_dir, get_ore_theme, print_panel, print_section_divider};
+use ore_common::config::DEFAULT_EMBEDDER_KEEP_ALIVE_SECS;
 use ore_common::constants;
 use ore_common::manifest::{AppManifest, NetworkRule};
 use ore_common::paths;
@@ -57,6 +58,13 @@ pub fn run_init_wizard() {
         .prompt()
         .unwrap_or_else(|_| exit(0));
 
+    let embedder_alive_secs =
+        CustomType::<u64>::new("Set Embedder Keep-Alive (seconds) [0 = immediate unload]:")
+            .with_default(DEFAULT_EMBEDDER_KEEP_ALIVE_SECS)
+            .with_render_config(theme)
+            .prompt()
+            .unwrap_or_else(|_| exit(0));
+
     let selected_embedder = if embedder_selection.starts_with("all-minilm") {
         "all-minilm"
     } else {
@@ -69,7 +77,11 @@ pub fn run_init_wizard() {
     if engine_selection.starts_with("Ollama") {
         // OLLAMA SETUP
         toml_output.push_str("engine = \"ollama\"\n");
-        toml_output.push_str(&format!("embedder = \"{}\"\n\n", selected_embedder));
+        toml_output.push_str(&format!("embedder = \"{}\"\n", selected_embedder));
+        toml_output.push_str(&format!(
+            "embedder_keep_alive_secs = {}\n\n",
+            embedder_alive_secs
+        ));
         toml_output.push_str("[ollama]\n");
 
         let url = Text::new("Enter Ollama API URL:")
@@ -82,7 +94,11 @@ pub fn run_init_wizard() {
     } else {
         // NATIVE SETUP
         toml_output.push_str("engine = \"native\"\n");
-        toml_output.push_str(&format!("embedder = \"{}\"\n\n", selected_embedder));
+        toml_output.push_str(&format!("embedder = \"{}\"\n", selected_embedder));
+        toml_output.push_str(&format!(
+            "embedder_keep_alive_secs = {}\n\n",
+            embedder_alive_secs
+        ));
         toml_output.push_str("[native]\n");
 
         let model = Text::new("Default Model Alias (e.g., qwen2.5:0.5b):")

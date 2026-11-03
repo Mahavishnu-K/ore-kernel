@@ -1,0 +1,22 @@
+app_id = "mmu_crag"
+description = "Cognitive MMU suite: CRAG probe. May run any installed WASM tool as a fallback, with no network."
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true
+
+[resources]
+allowed_models = []
+max_tokens_per_minute = 1000
+gpu_priority = "low"
+
+[execution]
+can_execute_wasm = true
+# The fallback tool is chosen at run time (--crag-tool). Narrow this to that
+# tool's name if you keep this manifest installed.
+allowed_tools = ["*"]
+
+[ipc]
+allowed_agent_targets = []
+allowed_semantic_pipes = ["mmu_crag_*"]
+semantic_persistence = false

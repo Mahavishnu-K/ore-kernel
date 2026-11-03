@@ -3,7 +3,7 @@ pub mod gguf_tokenizer;
 pub mod kv_manager;
 pub mod models;
 
-use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
+use crate::driver::{DriverError, EmbedTask, InferenceDriver, LocalModel, VramProcess};
 use crate::memory::ContextMessage;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -13,13 +13,97 @@ use ore_common::constants;
 use ore_common::paths;
 use std::fs;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Instant;
 use time::OffsetDateTime;
 use time::macros::format_description;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// A sentence embedder, picked by the `architectures` field of its config.json.
+enum EmbedderModel {
+    Nomic(models::nomic::SystemEmbedder),
+    Bert(models::bert::SystemEmbedder),
+}
+
+impl EmbedderModel {
+    fn load(model_name: &str, device: &Device) -> Result<(Self, u64), String> {
+        let model_dir = paths::get_models_dir().join(model_name);
+        let config_path = model_dir.join(constants::CONFIG_JSON_FILE_NAME);
+
+        if !config_path.exists() {
+            return Err(format!(
+                "Embedder config missing. Run 'ore pull {}'",
+                model_name
+            ));
+        }
+
+        // Detemine the architecture
+        let config_str = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        let config_val: serde_json::Value =
+            serde_json::from_str(&config_str).map_err(|e| e.to_string())?;
+
+        let arch = config_val
+            .get("architectures")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or("BertModel"); // Default to standard BERT if missing
+
+        kprintln!("-> [NATIVE] Detected Embedder Architecture: '{}'", arch);
+
+        let model_dir_str = model_dir.to_string_lossy().to_string();
+        let model = match arch {
+            // Custom Nomic RoPE/SwiGLU implementation
+            "NomicBertModel" => Self::Nomic(
+                models::nomic::SystemEmbedder::load(&model_dir_str, device)
+                    .map_err(|e| format!("Failed to load Nomic embedder: {}", e))?,
+            ),
+            // Standard MiniLM implementation
+            "BertModel" => Self::Bert(
+                models::bert::SystemEmbedder::load(&model_dir_str, device)
+                    .map_err(|e| format!("Failed to load BERT embedder: {}", e))?,
+            ),
+            _ => return Err(format!("Unsupported embedding architecture: {}", arch)),
+        };
+
+        let size_bytes = fs::metadata(model_dir.join(constants::MODEL_SAFETENSORS_FILE_NAME))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        Ok((model, size_bytes))
+    }
+
+    fn embed(&self, inputs: Vec<String>, task: EmbedTask) -> Result<Vec<Vec<f32>>, String> {
+        match self {
+            Self::Nomic(m) => m
+                .embed_batch(inputs, task)
+                .map_err(|e| format!("Nomic math failed: {}", e)),
+            // MiniLM is symmetric: queries and documents embed the same way.
+            Self::Bert(m) => m
+                .embed_batch(inputs)
+                .map_err(|e| format!("BERT math failed: {}", e)),
+        }
+    }
+}
+
+/// The embedder kept in RAM between requests. The kernel calls `unload_model` on it
+/// once it has been idle for `embedder_keep_alive_secs`.
+struct ResidentEmbedder {
+    name: String,
+    size_bytes: u64,
+    model: Arc<EmbedderModel>,
+    last_used: Instant,
+}
+
 pub struct NativeDriver {
     engine: Arc<StdMutex<Option<ActiveEngine>>>,
+    /// Separate from `engine` so the embedder and the chat model never evict each other.
+    embedder: Arc<StdMutex<Option<ResidentEmbedder>>>,
     device: Device,
+}
+
+fn same_model(a: &str, b: &str) -> bool {
+    a.trim()
+        .replace(':', "-")
+        .eq_ignore_ascii_case(&b.trim().replace(':', "-"))
 }
 
 impl Default for NativeDriver {
@@ -41,6 +125,7 @@ impl NativeDriver {
         kprintln!("-> [CANDLE] Using Device: {:?}", device);
         Self {
             engine: Arc::new(StdMutex::new(None)),
+            embedder: Arc::new(StdMutex::new(None)),
             device,
         }
     }
@@ -74,26 +159,36 @@ impl InferenceDriver for NativeDriver {
     }
 
     async fn get_running_models(&self) -> Result<Vec<VramProcess>, DriverError> {
-        let state = self.engine.lock().unwrap();
-        if let Some(active) = &*state {
-            let weights_bytes = active._mmap.len() as u64;
-            let (vram, ram) = match self.device {
-                Device::Cuda(_) => (weights_bytes, 0),
-                Device::Metal(_) => (weights_bytes, weights_bytes), // Unified Memory
-                Device::Cpu => (0, weights_bytes),
-            };
-            let elapsed_secs = active.last_used.elapsed().as_secs();
-            Ok(vec![VramProcess {
+        let placement = |weights_bytes: u64| match self.device {
+            Device::Cuda(_) => (weights_bytes, 0),
+            Device::Metal(_) => (weights_bytes, weights_bytes), // Unified Memory
+            Device::Cpu => (0, weights_bytes),
+        };
+        let mut running = Vec::new();
+
+        if let Some(active) = &*self.engine.lock().unwrap() {
+            let (vram, ram) = placement(active._mmap.len() as u64);
+            running.push(VramProcess {
                 model_name: active.model_name.clone(),
                 size_bytes: ram,
                 size_vram_bytes: vram,
                 status: "IDLE".to_string(),
                 active_requests: 0,
-                last_used_secs: elapsed_secs,
-            }])
-        } else {
-            Ok(vec![])
+                last_used_secs: active.last_used.elapsed().as_secs(),
+            });
         }
+        if let Some(resident) = &*self.embedder.lock().unwrap() {
+            let (vram, ram) = placement(resident.size_bytes);
+            running.push(VramProcess {
+                model_name: resident.name.clone(),
+                size_bytes: ram,
+                size_vram_bytes: vram,
+                status: "IDLE".to_string(),
+                active_requests: 0,
+                last_used_secs: resident.last_used.elapsed().as_secs(),
+            });
+        }
+        Ok(running)
     }
 
     async fn preload_model(&self, model: &str) -> Result<(), DriverError> {
@@ -115,9 +210,27 @@ impl InferenceDriver for NativeDriver {
         Ok(())
     }
 
-    async fn unload_model(&self, _model: &str) -> Result<(), DriverError> {
+    /// Unloads `model` only: unloading the embedder leaves the chat model (and its
+    /// KV cache) in place, and the reverse.
+    async fn unload_model(&self, model: &str) -> Result<(), DriverError> {
+        {
+            let mut embedder = self.embedder.lock().unwrap();
+            if embedder
+                .as_ref()
+                .is_some_and(|r| same_model(&r.name, model))
+            {
+                // An embedding still in flight holds its own Arc; RAM frees when it ends.
+                *embedder = None;
+                return Ok(());
+            }
+        }
         let mut state = self.engine.lock().unwrap();
-        *state = None;
+        if state
+            .as_ref()
+            .is_some_and(|a| same_model(&a.model_name, model))
+        {
+            *state = None;
+        }
         Ok(())
     }
 
@@ -457,61 +570,44 @@ impl InferenceDriver for NativeDriver {
         &self,
         model_name: &str,
         inputs: Vec<String>,
+        task: EmbedTask,
     ) -> Result<Vec<Vec<f32>>, DriverError> {
         let safe_model = model_name.replace(":", "-");
         let device = self.device.clone();
+        let slot = Arc::clone(&self.embedder);
 
         // Spawn a blocking thread
         let result = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>, String> {
-            let model_dir = paths::get_models_dir().join(&safe_model);
-            let config_path = model_dir.join(constants::CONFIG_JSON_FILE_NAME);
+            let resident = slot
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|r| r.name == safe_model)
+                .map(|r| Arc::clone(&r.model));
 
-            if !config_path.exists() {
-                return Err(format!(
-                    "Embedder config missing. Run 'ore pull {}'",
-                    safe_model
-                ));
-            }
-
-            // Detemine the architecture
-            let config_str = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-            let config_val: serde_json::Value =
-                serde_json::from_str(&config_str).map_err(|e| e.to_string())?;
-
-            let arch = config_val
-                .get("architectures")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                .unwrap_or("BertModel"); // Default to standard BERT if missing
-
-            kprintln!("-> [NATIVE] Detected Embedder Architecture: '{}'", arch);
-
-            let model_dir_str = model_dir.to_string_lossy().to_string();
-
-            let vectors = match arch {
-                "NomicBertModel" => {
-                    // Route to custom Nomic RoPE/SwiGLU implementation
-                    let embedder = models::nomic::SystemEmbedder::load(&model_dir_str, &device)
-                        .map_err(|e| format!("Failed to load Nomic embedder: {}", e))?;
-                    embedder
-                        .embed_batch(inputs)
-                        .map_err(|e| format!("Nomic math failed: {}", e))?
+            let model = match resident {
+                Some(model) => model,
+                None => {
+                    // Loaded outside the slot lock, so /ps and /health never wait on disk I/O.
+                    let (model, size_bytes) = EmbedderModel::load(&safe_model, &device)?;
+                    let model = Arc::new(model);
+                    *slot.lock().unwrap() = Some(ResidentEmbedder {
+                        name: safe_model.clone(),
+                        size_bytes,
+                        model: Arc::clone(&model),
+                        last_used: Instant::now(),
+                    });
+                    model
                 }
-                "BertModel" => {
-                    // Route to the ultra-fast standard MiniLM implementation
-                    let embedder = models::bert::SystemEmbedder::load(&model_dir_str, &device)
-                        .map_err(|e| format!("Failed to load BERT embedder: {}", e))?;
-                    embedder
-                        .embed_batch(inputs)
-                        .map_err(|e| format!("BERT math failed: {}", e))?
-                }
-                _ => return Err(format!("Unsupported embedding architecture: {}", arch)),
             };
 
-            // The moment this thread finishes, `embedder` goes out of scope.
-            // Rust's memory safety automatically drops the model and flushes the RAM to 0MB.
+            let vectors = model.embed(inputs, task)?;
 
+            if let Some(r) = slot.lock().unwrap().as_mut()
+                && r.name == safe_model
+            {
+                r.last_used = Instant::now();
+            }
             Ok(vectors)
         })
         .await

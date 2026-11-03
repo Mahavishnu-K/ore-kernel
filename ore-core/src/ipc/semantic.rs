@@ -3,6 +3,7 @@ use super::chunking::MemoryChunk;
 use super::quant::{
     DEFAULT_MAX_SQ8_CHUNKS, MmapVectorStore, PqChunk, PqCodebook, Sq8Chunk, Sq8Vector,
 };
+use crate::driver::EmbedTask;
 use crate::memory::Pager;
 use dashmap::DashMap;
 use ore_common::protocol::{MemoryCategory, VectorMode};
@@ -174,8 +175,23 @@ impl SemanticBus {
         hasher.finish()
     }
 
-    pub fn cache_only(&self, text: &str, vector: Arc<Vec<f32>>) {
-        let hash = Self::hash_text(text);
+    /// Cache key for `text` embedded as `task`. Documents use the plain text hash (the
+    /// key `write_chunk` warms); queries get their own key, because an asymmetric
+    /// embedder gives the same text a different vector as a query.
+    fn cache_key(text: &str, task: EmbedTask) -> u64 {
+        match task {
+            EmbedTask::Document => Self::hash_text(text),
+            EmbedTask::Query => {
+                let mut hasher = DefaultHasher::new();
+                "search_query".hash(&mut hasher);
+                text.hash(&mut hasher);
+                hasher.finish()
+            }
+        }
+    }
+
+    pub fn cache_only(&self, text: &str, task: EmbedTask, vector: Arc<Vec<f32>>) {
+        let hash = Self::cache_key(text, task);
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -183,8 +199,8 @@ impl SemanticBus {
         self.embedding_cache.insert(hash, (vector, timestamp));
     }
 
-    pub fn get_cached_embedding(&self, text: &str) -> Option<Arc<Vec<f32>>> {
-        let hash = Self::hash_text(text);
+    pub fn get_cached_embedding(&self, text: &str, task: EmbedTask) -> Option<Arc<Vec<f32>>> {
+        let hash = Self::cache_key(text, task);
         if let Some(entry) = self.embedding_cache.get(&hash) {
             let (vector, timestamp) = entry.value();
             let current_time = SystemTime::now()

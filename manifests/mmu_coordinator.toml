@@ -1,0 +1,16 @@
+app_id = "mmu_coordinator"
+description = "Cognitive MMU suite: dispatches tasks and collects results over the Message Bus. Owns no memory."
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true
+
+[resources]
+allowed_models = []
+max_tokens_per_minute = 1000
+gpu_priority = "low"
+
+[ipc]
+allowed_agent_targets = ["mmu_researcher", "mmu_worker_a", "mmu_worker_b", "mmu_reviewer"]
+allowed_semantic_pipes = []
+semantic_persistence = false

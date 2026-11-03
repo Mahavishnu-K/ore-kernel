@@ -22,13 +22,15 @@
 //! - Added the `SystemEmbedder` OS wrapper for the Semantic Bus integration.
 //! -------------------------------------------------------------------------
 
+use super::embedding_batch::embed_in_batches;
 use super::utils::with_tracing::{LayerNorm, Linear, layer_norm, linear, linear_no_bias};
+use crate::driver::EmbedTask;
 use candle_core::{D, DType, Device, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder, embedding};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
-use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
+use tokenizers::{Tokenizer, TruncationParams};
 
 // Matches nomic-ai/nomic-embed-text-v1.5 config.json field names.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -473,30 +475,21 @@ impl NomicBertModel {
     }
 }
 
-/// Mean-pool token embeddings using the attention mask.
-///
-/// Takes hidden states of shape (batch, seq_len, hidden_dim) and an attention
-/// mask of shape (batch, seq_len) with 1 for real tokens, 0 for padding.
-/// Returns pooled embeddings of shape (batch, hidden_dim).
-pub fn mean_pooling(hidden_states: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
-    let (batch, seq_len, hidden_dim) = hidden_states.dims3()?;
-    let mask = attention_mask.to_dtype(hidden_states.dtype())?;
-    let mask_expanded = mask
-        .unsqueeze(2)?
-        .broadcast_as((batch, seq_len, hidden_dim))?;
-    let sum_hidden = (hidden_states * &mask_expanded)?.sum(1)?;
-    let sum_mask = mask
-        .sum(1)?
-        .unsqueeze(1)?
-        .broadcast_as((batch, hidden_dim))?
-        .clamp(1e-9, f64::MAX)?;
-    sum_hidden / sum_mask
-}
+pub use super::embedding_batch::{l2_normalize, mean_pooling};
 
-/// L2-normalize embeddings to unit length along the last dimension.
-pub fn l2_normalize(x: &Tensor) -> Result<Tensor> {
-    let norm = x.sqr()?.sum_keepdim(D::Minus1)?.sqrt()?;
-    x.broadcast_div(&norm)
+/// Longest input, in tokens (prefix included). nomic-embed-text-v1.5 was trained to
+/// 2048 positions (`max_trained_positions`); its config allows 8192 via rotary
+/// extrapolation, but attention scores grow with length², so one 8192-token text
+/// needs ~3 GB for scores alone on CPU. 2048 keeps a single text near 200 MB.
+pub const MAX_SEQ_LEN: usize = 2048;
+
+/// Nomic embedders are trained with a task prefix on every input; without one,
+/// queries and passages land in the wrong regions of the space.
+fn task_prefix(task: EmbedTask) -> &'static str {
+    match task {
+        EmbedTask::Document => "search_document: ",
+        EmbedTask::Query => "search_query: ",
+    }
 }
 
 pub struct SystemEmbedder {
@@ -517,21 +510,19 @@ impl SystemEmbedder {
 
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(anyhow::Error::msg)?;
 
-        let pp = PaddingParams {
-            strategy: tokenizers::PaddingStrategy::BatchLongest,
-            ..Default::default()
-        };
+        let config_str = fs::read_to_string(&config_path)?;
+        let config: Config = serde_json::from_str(&config_str)?;
+
+        // embed_in_batches pads each batch itself. Truncate at MAX_SEQ_LEN, or the
+        // rotary table size if a model's is smaller.
         let tp = TruncationParams {
-            max_length: 8192,
+            max_length: config.n_positions.min(MAX_SEQ_LEN),
             ..Default::default()
         };
         tokenizer
-            .with_padding(Some(pp))
+            .with_padding(None)
             .with_truncation(Some(tp))
             .map_err(anyhow::Error::msg)?;
-
-        let config_str = fs::read_to_string(&config_path)?;
-        let config: Config = serde_json::from_str(&config_str)?;
 
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[&safetensors_path], DType::F32, device)?
@@ -545,32 +536,18 @@ impl SystemEmbedder {
         })
     }
 
-    pub fn embed_batch(&self, texts: Vec<String>) -> anyhow::Result<Vec<Vec<f32>>> {
-        let mut all_vectors = Vec::new();
-
-        for text in texts {
-            let tokens = self
-                .tokenizer
-                .encode(text, true)
-                .map_err(anyhow::Error::msg)?;
-            let token_ids = tokens.get_ids().to_vec();
-            let mask = tokens.get_attention_mask().to_vec();
-
-            let token_tensor = Tensor::new(token_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-            let mask_tensor = Tensor::new(mask.as_slice(), &self.device)?.unsqueeze(0)?;
-
-            // 1. Forward Pass
-            let embeddings = self
-                .model
-                .forward(&token_tensor, None, Some(&mask_tensor))?;
-
-            // 2. Use Daniel's built-in pooling and normalization!
-            let pooled = mean_pooling(&embeddings, &mask_tensor)?;
-            let normalized = l2_normalize(&pooled)?;
-
-            let final_vector = normalized.squeeze(0)?.to_vec1::<f32>()?;
-            all_vectors.push(final_vector);
-        }
-        Ok(all_vectors)
+    /// Embeds `texts` in length-bucketed, padded batches (see `embedding_batch`),
+    /// each prefixed for `task`. Returns one unit-length vector per input, in input order.
+    pub fn embed_batch(
+        &self,
+        texts: Vec<String>,
+        task: EmbedTask,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        let prefix = task_prefix(task);
+        let texts = texts.into_iter().map(|t| format!("{prefix}{t}")).collect();
+        embed_in_batches(&self.tokenizer, &self.device, texts, |ids, mask| {
+            let hidden = self.model.forward(ids, None, Some(mask))?;
+            l2_normalize(&mean_pooling(&hidden, mask)?)
+        })
     }
 }

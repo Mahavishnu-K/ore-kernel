@@ -1,0 +1,20 @@
+app_id = "mmu_bench"
+description = "Cognitive MMU suite: benchmark agent. Mode A up to 20,000 chunks so the 10k benchmark stays in RAM."
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true
+
+[resources]
+allowed_models = []
+max_tokens_per_minute = 1000
+gpu_priority = "normal"
+
+[ipc]
+allowed_agent_targets = []
+allowed_semantic_pipes = ["mmu_bench_*"]
+semantic_persistence = false
+
+[rag]
+enable_hybrid = true
+max_hot_chunks = 20000

@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use ore_core::driver::InferenceDriver;
+use ore_core::driver::{EmbedTask, InferenceDriver};
 use ore_core::firewall::ContextFirewall;
 use ore_core::kprintln;
 use ore_core::memory::Pager;
@@ -82,10 +82,10 @@ fn build_context_block(
     Some((block, safe_chunks.len()))
 }
 
-/// Embeds one text with the system embedder via scoped lease (0 MB idle).
-async fn embed_text(state: &Arc<KernelState>, text: &str) -> Option<Vec<f32>> {
+/// Embeds one text with the system embedder.
+async fn embed_text(state: &Arc<KernelState>, text: &str, task: EmbedTask) -> Option<Vec<f32>> {
     match state
-        .generate_embeddings_scoped(vec![text.to_string()])
+        .generate_embeddings_scoped(vec![text.to_string()], task)
         .await
     {
         Ok(vecs) => vecs.into_iter().next(),
@@ -97,13 +97,20 @@ async fn embed_text(state: &Arc<KernelState>, text: &str) -> Option<Vec<f32>> {
 }
 
 /// Query vector for retrieval, served from the embedding cache when possible.
-async fn embed_query(state: &Arc<KernelState>, text: &str) -> Option<Arc<Vec<f32>>> {
-    if let Some(cached) = state.semantic_bus.get_cached_embedding(text) {
+/// `task` is `Query` for the user's question, `Document` for a HyDE excerpt.
+async fn embed_query(
+    state: &Arc<KernelState>,
+    text: &str,
+    task: EmbedTask,
+) -> Option<Arc<Vec<f32>>> {
+    if let Some(cached) = state.semantic_bus.get_cached_embedding(text, task) {
         kprintln!("-> [AUTO-RAG] Query vector found in cache.");
         return Some(cached);
     }
-    let vector = Arc::new(embed_text(state, text).await?);
-    state.semantic_bus.cache_only(text, Arc::clone(&vector));
+    let vector = Arc::new(embed_text(state, text, task).await?);
+    state
+        .semantic_bus
+        .cache_only(text, task, Arc::clone(&vector));
     Some(vector)
 }
 
@@ -201,7 +208,7 @@ async fn crag_fallback(
     if finding.is_empty() {
         return false;
     }
-    let Some(vector) = embed_text(state, finding).await else {
+    let Some(vector) = embed_text(state, finding, EmbedTask::Document).await else {
         return false;
     };
 
@@ -264,8 +271,13 @@ async fn ground_prompt(
         safe_user_prompt.to_string()
     };
 
-    // B. Dense query vector
-    let Some(query_vec) = embed_query(state, &dense_query_text).await else {
+    // B. Dense query vector. A HyDE excerpt is a passage, so it embeds as a document.
+    let query_task = if dense_query_text == safe_user_prompt {
+        EmbedTask::Query
+    } else {
+        EmbedTask::Document
+    };
+    let Some(query_vec) = embed_query(state, &dense_query_text, query_task).await else {
         return ungrounded();
     };
 
@@ -290,7 +302,7 @@ async fn ground_prompt(
                     |texts| {
                         let s = Arc::clone(&state_clone);
                         async move {
-                            s.generate_embeddings_scoped(texts)
+                            s.generate_embeddings_scoped(texts, EmbedTask::Document)
                                 .await
                                 .map_err(|e| e.to_string())
                         }

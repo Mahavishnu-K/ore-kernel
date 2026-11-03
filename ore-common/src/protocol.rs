@@ -1,6 +1,7 @@
 //! Common protocol types, API payloads, and DTOs shared between ORE Server and CLI.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ─── Telemetry Models ────────────────────────────────────────────────────────
 
@@ -339,4 +340,22 @@ pub enum ExecutionMode {
     Shell {
         command: String,
     },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NetFetchRequest {
+    pub app_id: String,
+    pub url: String,
+    pub method: Option<String>,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NetFetchResponse {
+    pub status: u16,
+    pub status_text: String,
+    pub headers: HashMap<String, String>,
+    pub body: String,
 }

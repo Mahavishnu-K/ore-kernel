@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cognitive MMU suite** (`examples/ipc_mmu/`): 20 end-to-end scenarios run by a six-agent swarm with its own manifests; a labelled offline corpus (115 documents, 132 queries: near misses, multi-document, technical, long, CJK, unanswerable, adversarial) with Recall@k, MRR, nDCG@10, and CRAG threshold calibration; `web_search.py` (Wikipedia + DuckDuckGo through `/net/fetch`, with agent-side CRAG); HTTP benchmarks with p50/p95/p99; a `criterion` bench for the in-process search core (`cargo bench -p ore-core --bench cognitive_mmu`); and an offline firewall test over the adversarial cases (`cargo test -p ore-core --test firewall_corpus`).
 - **Cognitive MMU**: the Semantic Bus is now a kernel-native agent memory system (`ore-core/src/ipc/`):
   - **Hybrid retrieval**: a BM25 sparse index alongside dense search, fused with Reciprocal Rank Fusion; scores are normalized to [0, 1].
   - **Memory tiers**: every chunk carries a `MemoryCategory` (`fact`, `skill`, `directive`, `general`), set on `/ipc/share` and filterable on `/ipc/search`.
@@ -53,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `net/`: Standalone Layer 7 egress proxy engine (`fetch.rs`).
 - **JavaScript/TypeScript Execution Safeguard**: Added `wrap_tla_with_error_boundary` in `ore-server/src/execution/script.rs` to automatically enclose autonomous script bodies inside Top-Level Await promise handlers with clean unhandled rejection routing to STDERR.
 ### Changed
+- **Batched embeddings**: the BERT and NomicBert embedders run texts in length-bucketed, padded batches (up to 32 texts, bounded by padded tokens and attention size) instead of one forward pass per text. Padding is masked out of attention and pooling, so vectors match single-text embedding; `ore-core/tests/embedder_batching.rs` checks this against the installed models.
+- **Nomic task prefixes**: `system-embedder` (NomicBert) now embeds stored text with `search_document: ` and search queries with `search_query: `, as the model was trained. A HyDE excerpt counts as a document. `InferenceDriver::generate_embeddings` takes an `EmbedTask`, and the embedding cache keys query vectors apart from document vectors. MiniLM and the Ollama engine are unchanged. **Re-ingest persistent pipes written with `system-embedder` before this change**: their vectors have no prefix, so queries match them less well.
+- **Nomic input capped at 2,048 tokens** (the model's trained length, down from 8,192): one very long text needs about 200 MB of attention scores instead of about 3 GB.
+- **Embedder keep-alive**: the embedder stays in RAM between requests and unloads after `[system] embedder_keep_alive_secs` (default 60) without use, instead of loading from disk on every share and search. `0` restores the old unload-after-every-request behaviour. While loaded, the embedder is listed by `/ps`, `/ls` and `/health`.
 - **`ipc.rs` split into the `ipc/` module**: `semantic.rs`, `bm25.rs`, `chunking.rs`, `quant.rs`, `message_bus.rs`, `rate_limiter.rs`.
 - `search_pipe` returns a `SearchOutcome` (`results`, `top_dense_score`, `top_fused_score`); equal scores are ordered by chunk id, so results are deterministic. `/ipc/search` results include `context_payload`, `category`, and `is_crag_fallback`.
 - **Breaking:** the old `/ask/:prompt` route is replaced by `POST /infer` and `GET /infer/:prompt`. Errors on these routes now use HTTP status codes (`400`, `401`, `403`, `429`, `503`). `ore_client.ask()` uses `POST /infer`.
@@ -84,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DashMap` and manual `cache_key` tracking from the Sandbox AOT Cache. Tool cache state is now entirely managed via OS File Metadata, maximizing performance and concurrency without RAM bloat.
 
 ### Fixed
+- **`/ipc/share` hung forever** (and so did CRAG ingestion): the handler held `embedder_lock` and then called `generate_embeddings_scoped`, which takes the same non-re-entrant lock.
+- The BERT embedder truncated input at 8192 tokens instead of the model's 512 positions, so a long text failed to embed.
+- **Embedding unloaded the chat model**: the native driver's `unload_model` ignored the model name, so every share and search evicted the loaded LLM and its KV cache. It now unloads only the model it is given.
 - **Semantic Bus persistence**:
   - the first write after a restart no longer replaces a persistent pipe on disk (pipes are loaded before writes);
   - pipe files are written with `fsync` + atomic rename + directory sync;

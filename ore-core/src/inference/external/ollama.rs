@@ -1,4 +1,4 @@
-use crate::driver::{DriverError, InferenceDriver, LocalModel, VramProcess};
+use crate::driver::{DriverError, EmbedTask, InferenceDriver, LocalModel, VramProcess};
 use crate::memory::ContextMessage;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -339,10 +339,12 @@ impl InferenceDriver for OllamaDriver {
         Ok(models)
     }
 
+    // Ollama owns the model and its prompt template, so the task is not applied here.
     async fn generate_embeddings(
         &self,
         model: &str,
         inputs: Vec<String>,
+        _task: EmbedTask,
     ) -> Result<Vec<Vec<f32>>, DriverError> {
         let url = format!("{}/api/embed", self.base_url);
 

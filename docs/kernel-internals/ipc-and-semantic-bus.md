@@ -255,6 +255,8 @@ A per-agent counter in a 60-second window, limited by `[resources].max_tokens_pe
 
 `ore-core/src/ipc/mod.rs` covers, among others: the dot product, message-bus backpressure, all chunking strategies, BM25 keyword matching and eviction, category filtering, RRF normalization, CoW branch isolation / diff / merge, GC keeping fresh branches, the mmap store, Mode A → C migration, Mode B recompute, and restart durability for both modes including corrupt-file quarantine (`cargo test -p ore-core ipc`).
 
+End to end, [`examples/ipc_mmu/`](../../examples/ipc_mmu/) runs the same features through the HTTP API with six cooperating agents (coordinator, researcher, two workers, reviewer, analyst), and includes HTTP benchmarks (`python run_suite.py --bench`). In-process benchmarks of the search core, without HTTP or the embedder, are in `ore-core/benches/cognitive_mmu.rs` (`cargo bench -p ore-core --bench cognitive_mmu`).
+
 ---
 
 ## Design Decisions

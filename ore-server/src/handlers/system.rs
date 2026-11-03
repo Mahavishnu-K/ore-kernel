@@ -2,9 +2,10 @@ use crate::execution;
 use crate::payloads::*;
 use crate::state::KernelState;
 use axum::extract::{Json, Path, State};
-use axum::http::{HeaderMap, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ore_common::paths;
+use ore_common::protocol::{NetFetchRequest, NetFetchResponse};
 use ore_core::kprintln;
 use ore_core::memory::Pager;
 use std::sync::Arc;
@@ -637,4 +638,131 @@ pub async fn kill_app(State(state): State<Arc<KernelState>>, Path(app_id): Path<
     );
     let _ = state.driver.invalidate_agent_cache(&app_id).await;
     format!("SUCCESS: App '{}' context wiped from GPU Memory.", app_id).to_string()
+}
+
+/// Largest response body `/net/fetch` returns. Bigger bodies are refused, not truncated,
+/// so an agent never mistakes a partial document for a whole one.
+const NET_FETCH_MAX_BODY: u64 = 10 * 1024 * 1024;
+
+/// POST /net/fetch - HTTP egress for agents running outside the WASM sandbox
+/// (Python / TypeScript SDKs). Applies exactly the policy sandboxed tools get from
+/// `ore::fetch`: the agent's `[network]` rules for domain, method, and path, the
+/// localhost / link-local block, and a re-check of every redirect hop.
+pub async fn network_fetch(
+    State(state): State<Arc<KernelState>>,
+    Json(payload): Json<NetFetchRequest>,
+) -> Result<Json<NetFetchResponse>, (StatusCode, String)> {
+    let manifest = state.registry.get_app(&payload.app_id).ok_or_else(|| {
+        kprintln!(
+            "-> [SECURITY ALERT] Ghost Agent '{}' tried to reach the network!",
+            payload.app_id
+        );
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("KERNEL ALERT: Unregistered Agent '{}'.", payload.app_id),
+        )
+    })?;
+
+    let method = payload
+        .method
+        .as_deref()
+        .unwrap_or("GET")
+        .trim()
+        .to_ascii_uppercase();
+    if method.is_empty() || !method.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("KERNEL ERROR: Invalid HTTP method '{}'.", method),
+        ));
+    }
+
+    let url = reqwest::Url::parse(payload.url.trim()).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("KERNEL ERROR: Invalid URL '{}': {}", payload.url, e),
+        )
+    })?;
+
+    kprintln!(
+        "-> [NET FETCH] Agent '{}' requested {} {}",
+        manifest.app_id,
+        method,
+        url.host_str().unwrap_or("")
+    );
+
+    // execute_ore_fetch streams the body to a file; give each request its own name.
+    let tmp_dir = paths::get_tmp_dir();
+    let file_name = format!("netfetch_{}.bin", uuid::Uuid::new_v4().simple());
+    let body_path = tmp_dir.join(&file_name);
+    let done_path = tmp_dir.join(format!("{}.done", file_name));
+
+    let network_enabled = manifest.network.network_enabled;
+    let localhost_access = manifest.network.allow_localhost_access;
+    let rules = manifest.network.rules.clone();
+    let headers = payload.headers.clone();
+    let body = payload.body.clone().unwrap_or_default().into_bytes();
+    let fetch_path = body_path.clone();
+
+    // reqwest::blocking must not run on an async worker thread.
+    let outcome = tokio::task::spawn_blocking(move || {
+        let meta = ore_core::sandbox::net::execute_ore_fetch(
+            &method,
+            &url,
+            headers.as_ref(),
+            &body,
+            &file_name,
+            network_enabled,
+            localhost_access,
+            &rules,
+            &tmp_dir,
+            |_| {},
+        )?;
+
+        let size = std::fs::metadata(&fetch_path)
+            .map(|m| m.len())
+            .map_err(|e| (-4, format!("Failed to stat response body: {}", e)))?;
+        if size > NET_FETCH_MAX_BODY {
+            return Err((
+                -5,
+                format!(
+                    "Response body is {} bytes; /net/fetch returns at most {} bytes",
+                    size, NET_FETCH_MAX_BODY
+                ),
+            ));
+        }
+        let bytes = std::fs::read(&fetch_path)
+            .map_err(|e| (-4, format!("Failed to read response body: {}", e)))?;
+        Ok((meta, bytes))
+    })
+    .await;
+
+    let _ = std::fs::remove_file(&body_path);
+    let _ = std::fs::remove_file(&done_path);
+
+    let (meta, bytes) = match outcome {
+        Ok(Ok(result)) => result,
+        Ok(Err((code, msg))) => {
+            let status = match code {
+                -1 | -2 => StatusCode::FORBIDDEN, // firewall: domain, path, localhost, method
+                -3 => StatusCode::BAD_GATEWAY,    // upstream unreachable or failed mid-stream
+                -5 => StatusCode::PAYLOAD_TOO_LARGE,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            kprintln!("-> [NET FETCH] Refused for '{}': {}", payload.app_id, msg);
+            return Err((status, format!("KERNEL ALERT: {}", msg)));
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("KERNEL ERROR: Network task failed: {}", e),
+            ));
+        }
+    };
+
+    Ok(Json(NetFetchResponse {
+        status: meta.status,
+        status_text: meta.status_text,
+        headers: meta.headers,
+        body: String::from_utf8_lossy(&bytes).into_owned(),
+    }))
 }

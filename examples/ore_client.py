@@ -234,6 +234,24 @@ class OreClient:
         r.raise_for_status()
         return r.json()
 
+    # ─── Network ─────────────────────────────────────────────────
+
+    def net_fetch(self, app_id: str, url: str, method: str = "GET", headers: dict = None, body: str = None) -> dict:
+        """POST /net/fetch - HTTP request through the kernel's egress firewall.
+
+        The agent's [network] manifest rules decide what is reachable. Returns
+        {"status", "status_text", "headers", "body"}; raises on a refusal
+        (401 unknown agent, 403 firewall, 413 body over 10 MiB, 502 upstream failure).
+        """
+        payload = {"app_id": app_id, "url": url, "method": method}
+        if headers:
+            payload["headers"] = headers
+        if body is not None:
+            payload["body"] = body
+        r = requests.post(f"{self.base_url}/net/fetch", json=payload, headers=self.headers)
+        r.raise_for_status()
+        return r.json()
+
     def execute(self, app_id: str, tool_name: str = None, args: list = None, input_data: str = None, language: str = None, script: str = None, dependencies: list = None) -> str:
         """POST /execute - Runs code securely in the WASM Sandbox."""
         payload = {"app_id": app_id}

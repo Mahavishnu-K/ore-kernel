@@ -9,7 +9,8 @@ use axum::{
     routing::{get, post},
 };
 use std::fs;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -109,6 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limiter: RateLimiter::new(),
         auth_token: session_token,
         system_embedder: config.system.embedder.clone(),
+        embedder_keep_alive: Duration::from_secs(config.system.embedder_keep_alive_secs),
+        embedder_last_used: StdMutex::new(None),
         sandbox: shared_sandbox,
     });
 
@@ -140,6 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/ipc/pipe/diff", post(handlers::ipc::sys_diff_pipe))
         .route("/ipc/pipe/merge", post(handlers::ipc::sys_merge_pipe))
         .route("/execute", post(handlers::system::execute_tool))
+        .route("/net/fetch", post(handlers::system::network_fetch))
         .layer(axum_middleware::from_fn_with_state(
             shared_state.clone(),
             auth_middleware,
@@ -168,6 +172,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    // Embedder keep-alive: unload the embedder once it has been idle long enough.
+    // Checked at a quarter of the keep-alive, so it unloads at most 25% late.
+    let keep_alive = shared_state.embedder_keep_alive;
+    if !keep_alive.is_zero() {
+        kprintln!(
+            "-> [BOOT] System Embedder keep-alive: {}s after last use.",
+            keep_alive.as_secs()
+        );
+        let reaper_state = shared_state.clone();
+        let tick = (keep_alive / 4).clamp(Duration::from_secs(1), Duration::from_secs(15));
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tick);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                reaper_state.evict_idle_embedder().await;
+            }
+        });
+    }
 
     let addr = format!(
         "{}:{}",

@@ -1,4 +1,5 @@
 pub mod bert;
+pub mod embedding_batch;
 pub mod llama;
 pub mod nn;
 pub mod nomic;

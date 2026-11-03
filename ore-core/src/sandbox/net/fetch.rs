@@ -68,7 +68,7 @@ pub(crate) fn check_egress(
     if !matches!(url.scheme(), "http" | "https") {
         return Err((
             -1,
-            format!("ORE Firewall: Scheme '{}' is not allowed", url.scheme()),
+            format!("Ore Firewall: Scheme '{}' is not allowed", url.scheme()),
         ));
     }
 
@@ -77,7 +77,7 @@ pub(crate) fn check_egress(
     if !localhost_access && is_local_host(url) {
         return Err((
             -1,
-            format!("ORE Firewall: Localhost access blocked for '{}'", host),
+            format!("Ore Firewall: Localhost access blocked for '{}'", host),
         ));
     }
 
@@ -89,7 +89,7 @@ pub(crate) fn check_egress(
     if host_rules.is_empty() {
         return Err((
             -1,
-            format!("ORE Firewall: Domain '{}' is not whitelisted", host),
+            format!("Ore Firewall: Domain '{}' is not whitelisted", host),
         ));
     }
 
@@ -106,7 +106,7 @@ pub(crate) fn check_egress(
         return Err((
             -2,
             format!(
-                "ORE Firewall: Method '{}' not allowed for '{}'",
+                "Ore Firewall: Method '{}' not allowed for '{}'",
                 method, host
             ),
         ));
@@ -119,7 +119,7 @@ pub(crate) fn check_egress(
         return Err((
             -1,
             format!(
-                "ORE Firewall: Path '{}' not allowed for '{}'",
+                "Ore Firewall: Path '{}' not allowed for '{}'",
                 url.path(),
                 host
             ),
@@ -150,7 +150,7 @@ where
         crate::kprintln!("-> [FIREWALL] Network access globally disabled.");
         return Err((
             -1,
-            "ORE Firewall: Network access globally disabled".to_string(),
+            "Ore Firewall: Network access globally disabled".to_string(),
         ));
     }
 
@@ -161,7 +161,7 @@ where
 
     if safe_filename.contains('/') || safe_filename.contains('\\') || safe_filename.contains("..") {
         crate::kprintln!("-> [SANDBOX ERROR] Invalid filename. Path traversal blocked.");
-        return Err((-1, "ORE Security: Path traversal blocked".to_string()));
+        return Err((-1, "Ore Security: Path traversal blocked".to_string()));
     }
 
     // Domain, Method, Path & Localhost Checks
@@ -171,7 +171,7 @@ where
     }
 
     crate::kprintln!(
-        "-> [SANDBOX APPROVED] Routing {} to {} safely via ORE...",
+        "-> [SANDBOX APPROVED] Routing {} to {} safely via Ore...",
         method,
         parsed_url
     );
@@ -182,7 +182,7 @@ where
     let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() >= MAX_REDIRECTS {
             return attempt.error(format!(
-                "ORE Firewall: Too many redirects (max {})",
+                "Ore Firewall: Too many redirects (max {})",
                 MAX_REDIRECTS
             ));
         }

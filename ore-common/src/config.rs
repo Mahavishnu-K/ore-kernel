@@ -24,10 +24,22 @@ pub struct SystemConfig {
 
     #[serde(default = "default_embedder")]
     pub embedder: String,
+
+    /// Seconds the embedder stays in RAM after its last request. Back-to-back
+    /// shares and searches reuse the loaded weights instead of reading them from
+    /// disk each time. 0 unloads it after every request.
+    #[serde(default = "default_embedder_keep_alive_secs")]
+    pub embedder_keep_alive_secs: u64,
 }
 
 fn default_embedder() -> String {
     DEFAULT_EMBEDDER.to_string()
+}
+
+pub const DEFAULT_EMBEDDER_KEEP_ALIVE_SECS: u64 = 60;
+
+fn default_embedder_keep_alive_secs() -> u64 {
+    DEFAULT_EMBEDDER_KEEP_ALIVE_SECS
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -41,6 +53,7 @@ impl Default for SystemConfig {
         Self {
             engine: "native".to_string(),
             embedder: default_embedder(),
+            embedder_keep_alive_secs: default_embedder_keep_alive_secs(),
         }
     }
 }

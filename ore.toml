@@ -1,6 +1,7 @@
 [system]
 engine = "native"
 embedder = "system-embedder"
+embedder_keep_alive_secs = 60
 
 [native]
 default_model = "llama3.2:1b"

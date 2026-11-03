@@ -18,6 +18,7 @@ Generate it via `ore init` or edit manually.
 [system]
 engine = "native"           # "native" or "ollama"
 embedder = "all-minilm"     # "all-minilm" (90MB Fast) or "system-embedder" (500MB Nomic)
+embedder_keep_alive_secs = 60  # Keep the embedder in RAM this long after its last use (0 = unload after each request)
 
 [native]
 default_model = "llama3.2:1b"  # Written by `ore init`; not read by the kernel yet
@@ -37,6 +38,9 @@ kv_cache_mb_per_1k = 12     # MB of KV cache per 1,000 tokens of context
 |---|---|---|---|
 | `engine` | string | `"native"`, `"ollama"` | Which inference backend to use on boot |
 | `embedder` | string | `"all-minilm"` (default), `"system-embedder"` | Which embedding model the Semantic Bus uses. Optional |
+| `embedder_keep_alive_secs` | u64 | `60` (default) | Seconds the embedder stays loaded after its last request, so back-to-back shares and searches load it from disk once. A background task unloads it once it has been idle this long (checked every quarter of the keep-alive, at most every 15 s). `0` unloads it after every request. Unloading the embedder never unloads the chat model. Optional |
+
+`system-embedder` (Nomic) is asymmetric: the kernel embeds stored text with the `search_document: ` prefix and search queries with `search_query: ` (a HyDE excerpt counts as a document). Inputs are cut at 2,048 tokens, the length Nomic was trained on. `all-minilm` uses no prefixes and is cut at 512 tokens. The Ollama engine passes text through unchanged.
 
 `[system]` and `[memory]` are both **required**: the kernel won't boot if either is missing.
 

@@ -20,3 +20,6 @@
 /toolchains/
 /tmp/
 /cache/
+# Cognitive MMU suite reports (keep the folder)
+/examples/ipc_mmu/results/*
+!/examples/ipc_mmu/results/.gitkeep

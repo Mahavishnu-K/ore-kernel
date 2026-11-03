@@ -20,6 +20,7 @@
 | 04 | [**Agent Messaging**](./agent_messaging/) | Direct agent IPC: `/ipc/send` + `/ipc/listen` |
 | 05 | [**Firewall Demo**](./firewall_demo/) | Context Firewall: injection blocking + PII redaction |
 | 06 | [**Multi-Agent Pipeline**](./multi_agent_pipeline/) | Full swarm: 3 agents chained via Semantic Bus |
+| 07 | [**Cognitive MMU Suite**](./ipc_mmu/) | Tests + benchmarks for hybrid search, memory tiers, CoW branches, Mode C, HyDE / RAPTOR / Auto-RAG / CRAG, and a 6-agent review swarm over the Message Bus |
 
 ## Quick Start
 

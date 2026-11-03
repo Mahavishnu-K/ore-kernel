@@ -32,6 +32,29 @@ mod tests {
     }
 
     #[test]
+    fn test_query_and_document_vectors_cache_separately() {
+        use crate::driver::EmbedTask;
+        let bus = SemanticBus::new(24, 24);
+        let text = "how do I rotate the TLS certificate?";
+
+        bus.cache_only(text, EmbedTask::Query, Arc::new(vec![1.0, 0.0]));
+        assert!(
+            bus.get_cached_embedding(text, EmbedTask::Document)
+                .is_none()
+        );
+
+        bus.cache_only(text, EmbedTask::Document, Arc::new(vec![0.0, 1.0]));
+        assert_eq!(
+            *bus.get_cached_embedding(text, EmbedTask::Query).unwrap(),
+            vec![1.0, 0.0]
+        );
+        assert_eq!(
+            *bus.get_cached_embedding(text, EmbedTask::Document).unwrap(),
+            vec![0.0, 1.0]
+        );
+    }
+
+    #[test]
     fn test_bounded_message_bus_backpressure() {
         let bus = MessageBus::with_capacity(2);
 
