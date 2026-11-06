@@ -23,7 +23,7 @@ There are two sources:
 | Date | 2026-11-06 |
 
 > [!NOTE]
-> **Single-Machine Laptop Numbers:** CPU timings vary with the power plan, battery state and temperature; an earlier partial criterion run measured the dot product at about twice the times below. These benchmarks demonstrate ORE's architectural efficiency on standard consumer hardware. Dedicated server environments and discrete GPUs will yield significantly higher absolute throughput.
+> **Single-Machine Laptop Numbers:** CPU timings vary with the power plan, battery state and temperature; an earlier partial criterion run measured the dot product at about twice the times below. These benchmarks demonstrate Ore's architectural efficiency on standard consumer hardware. Dedicated server environments and discrete GPUs will yield significantly higher absolute throughput.
 
 ## Functional scenarios
 
