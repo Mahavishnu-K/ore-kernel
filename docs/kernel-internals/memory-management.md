@@ -61,8 +61,10 @@ pub fn get_history_fingerprint(app_id: &str) -> String
 
 KV caches are paged **lazily**, by the native driver, only when an agent loses the engine:
 
-- **Page out:** when a different agent or a different model takes over the engine, the outgoing agent's cache is flattened (`KvManager::flatten_cache`) and written to `memory/<app_id>_<model>.safetensors` in a background task.
-- **Page in:** when a `stateful_paging` agent returns and its cache isn't still in RAM, the saved tensors are loaded onto the device and injected into the model (`KvManager::unflatten_cache` → `set_kv_cache`).
+- **Page out:** when a different agent or a different model takes over the engine, or when the engine is unloaded (idle timeout, scheduler eviction, `ore expel`), the outgoing agent's cache is flattened (`KvManager::flatten_cache`) together with the token ids it holds, and written to `memory/<app_id>_<model>.safetensors` in a background task.
+- **Page in:** when a `stateful_paging` agent returns and its cache isn't still in RAM, the saved tensors and token ids are loaded onto the device and injected into the model (`KvManager::unflatten_cache` → `ActiveEngine::restore_cache`).
+
+Either way, the engine then reuses only the longest token prefix the cache shares with the new prompt, and recomputes the rest. See [Native Candle Engine → Token-prefix reuse](./native-candle-engine.md#token-prefix-reuse).
 
 If the same agent keeps using the same model, the cache simply stays in RAM ("hot hit") and the SSD isn't touched. See [Native Candle Engine → One Active Model, Many Agents](./native-candle-engine.md#one-active-model-many-agents).
 
@@ -71,6 +73,8 @@ If the same agent keeps using the same model, the cache simply stays in RAM ("ho
 Restoring a cache that doesn't match the conversation would corrupt the model's output. So with each cache, the pager writes `memory/<app_id>_<model>.hash`: a SHA-256 over every message's role and content in the JSON history at the time it was saved.
 
 On page-in, the saved hash must equal the fingerprint of the agent's current history. On a mismatch (the history was edited, compacted, or cleared), the cache is ignored (`Context Fingerprint MISMATCH … Forcing Cold Start`) and the model rebuilds its state from the JSON history.
+
+The fingerprint is a cheap first filter that avoids loading a cache that can't be useful. It is not what makes reuse safe: the history doesn't always hold the exact text the cache was computed from (Auto-RAG context is injected into the prompt but not stored). Safety comes from the recorded token ids. A page without them, written by an older Ore version, is not reused: the cache is rebuilt once and saved in the new format.
 
 ### Measured effect
 
@@ -140,7 +144,7 @@ All files live in `memory/` under the Ore base directory:
 | File | Contents |
 |---|---|
 | `<app_id>.json` | Chat history, human-readable JSON array of `{ role, content }` |
-| `<app_id>_<model>.safetensors` | Flattened KV-cache tensors (`:` in the model name becomes `-`) |
+| `<app_id>_<model>.safetensors` | Flattened KV-cache tensors (`layer_<n>_k` / `layer_<n>_v`) and `ore_token_ids`, the token ids the cache holds (`:` in the model name becomes `-`) |
 | `<app_id>_<model>.hash` | SHA-256 fingerprint of the history the cache belongs to |
 | `<pipe_name>.pipe` | Mode A Semantic Bus pipe (Bincode record: chunks + settings) |
 | `<pipe_name>.sq8pipe` | Mode C Semantic Bus pipe metadata (Bincode record: `int8` chunks, vector dimension, settings) |

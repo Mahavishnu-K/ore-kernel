@@ -5,10 +5,12 @@ pub mod models;
 
 use crate::driver::{DriverError, EmbedTask, InferenceDriver, LocalModel, VramProcess};
 use crate::memory::ContextMessage;
+use crate::memory::Pager;
 use anyhow::Result;
 use async_trait::async_trait;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device};
 use engine::ActiveEngine;
+use kv_manager::KvManager;
 use ore_common::constants;
 use ore_common::paths;
 use std::fs;
@@ -98,6 +100,23 @@ pub struct NativeDriver {
     /// Separate from `engine` so the embedder and the chat model never evict each other.
     embedder: Arc<StdMutex<Option<ResidentEmbedder>>>,
     device: Device,
+}
+
+/// Starts writing the agent's KV cache, and the token ids it holds, to SSD, stamped with
+/// the agent's current history fingerprint. `None` when there is nothing to keep: the
+/// agent doesn't page, or its cache is empty.
+fn page_out_task(active: &ActiveEngine) -> Option<tokio::task::JoinHandle<()>> {
+    if !active.stateful_paging || active.cached_tokens.is_empty() {
+        return None;
+    }
+    let flat_tensors =
+        KvManager::flatten_cache(&active.model.get_kv_cache(), &active.cached_tokens);
+    let out_id = active.current_app_id.clone();
+    let out_model = active.model_name.clone();
+    let out_fingerprint = Pager::get_history_fingerprint(&out_id);
+    Some(tokio::task::spawn_blocking(move || {
+        Pager::page_out_kv_cache(&out_id, &out_model, &flat_tensors, &out_fingerprint);
+    }))
 }
 
 fn same_model(a: &str, b: &str) -> bool {
@@ -224,12 +243,22 @@ impl InferenceDriver for NativeDriver {
                 return Ok(());
             }
         }
-        let mut state = self.engine.lock().unwrap();
-        if state
-            .as_ref()
-            .is_some_and(|a| same_model(&a.model_name, model))
-        {
+        let page_out = {
+            let mut state = self.engine.lock().unwrap();
+            if !state
+                .as_ref()
+                .is_some_and(|a| same_model(&a.model_name, model))
+            {
+                return Ok(());
+            }
+            // Save a paging agent's KV cache before the weights go, so an eviction by the
+            // scheduler costs an SSD page-in instead of a full prefill.
+            let task = state.as_ref().and_then(page_out_task);
             *state = None;
+            task
+        };
+        if let Some(task) = page_out {
+            let _ = task.await;
         }
         Ok(())
     }
@@ -259,29 +288,16 @@ impl InferenceDriver for NativeDriver {
             let needs_agent_swap = is_same_model && !is_same_agent;
 
             // 1. FREEZE OLD STATE TO SSD (If ANY switch is happening)
-            if ((needs_model_reload && state.is_some()) || needs_agent_swap)
-                && let Some(active) = state.as_mut()
-                && active.stateful_paging
+            if (needs_model_reload || needs_agent_swap)
+                && let Some(active) = state.as_ref()
             {
-                println!(
-                    "-> [NATIVE DRIVER] Lazy Eviction: Freezing Agent '{}' Brain State to SSD...",
-                    active.current_app_id
-                );
-                let raw_cache = active.model.get_kv_cache();
-                let flat_tensors =
-                    crate::inference::native::kv_manager::KvManager::flatten_cache(&raw_cache);
-                let out_id = active.current_app_id.clone();
-                let out_model = active.model_name.clone();
-                let out_fingerprint = crate::memory::Pager::get_history_fingerprint(&out_id);
-
-                eviction_task = Some(tokio::spawn(async move {
-                    crate::memory::Pager::page_out_kv_cache(
-                        &out_id,
-                        &out_model,
-                        &flat_tensors,
-                        &out_fingerprint,
+                eviction_task = page_out_task(active);
+                if eviction_task.is_some() {
+                    println!(
+                        "-> [NATIVE DRIVER] Lazy Eviction: Freezing Agent '{}' Brain State to SSD...",
+                        active.current_app_id
                     );
-                }));
+                }
             }
 
             // 2. APPLY THE NEW STATE
@@ -294,7 +310,7 @@ impl InferenceDriver for NativeDriver {
             } else if needs_agent_swap {
                 // BRAIN TRANSPLANT! Keep weights, just wipe the KV-Cache.
                 let active = state.as_mut().unwrap();
-                active.model.clear_kv_cache(); // Instantly frees the old agent's working memory
+                active.reset_cache(); // Instantly frees the old agent's working memory
                 active.current_app_id = app_id.to_string();
                 active.stateful_paging = stateful_paging;
                 active.last_used = std::time::Instant::now();
@@ -328,26 +344,30 @@ impl InferenceDriver for NativeDriver {
             let mut state_guard = engine_arc.lock().unwrap();
             let active = state_guard.as_mut().unwrap();
 
-            let mut current_cache_len = 0;
-
             if stateful_paging {
                 if is_hot_hit {
-                    current_cache_len = active.model.get_kv_cache_len();
-                    kprintln!("-> [NATIVE DRIVER] RAM Cache Hit ({} tokens). Bypassing SSD.", current_cache_len);
+                    kprintln!("-> [NATIVE DRIVER] RAM Cache Hit ({} tokens). Bypassing SSD.", active.cached_tokens.len());
                 } else if let Some(frozen_tensors) = crate::memory::Pager::page_in_kv_cache(&a_id, &model, &device_clone, &curr_fingerprint) {
-                    // Unflatten the SSD file back into 3D Neural Tensors
-                    let cache = crate::inference::native::kv_manager::KvManager::unflatten_cache(&frozen_tensors, active.model.num_layers());
-                    // Inject directly into the Engine's brain!
-                    active.model.set_kv_cache(cache);
-                    current_cache_len = active.model.get_kv_cache_len();
-                    kprintln!("-> [NATIVE DRIVER] KV-Cache injected ({} tokens). Bypassing Prefill.", current_cache_len);
+                    match KvManager::token_ids(&frozen_tensors) {
+                        Some(token_ids) => {
+                            // Unflatten the SSD file back into 3D Neural Tensors
+                            let cache = KvManager::unflatten_cache(&frozen_tensors, active.model.num_layers());
+                            active.restore_cache(cache, token_ids);
+                            kprintln!("-> [NATIVE DRIVER] KV-Cache injected ({} tokens).", active.cached_tokens.len());
+                        }
+                        None => {
+                            // Written before token ids were recorded: can't be checked, so rebuild.
+                            kprintln!("-> [NATIVE DRIVER] KV-Cache on SSD has no token record. Rebuilding brain from JSON history.");
+                            active.reset_cache();
+                        }
+                    }
                 } else {
                     kprintln!("-> [NATIVE DRIVER] No valid KV-Cache found. Rebuilding brain from JSON history.");
-                    active.model.clear_kv_cache();
+                    active.reset_cache();
                 }
             } else {
                 // If paging is off, ensure we start with a clean brain!
-                active.model.clear_kv_cache();
+                active.reset_cache();
             }
 
             let formatted_prompt = (active.config.formatter)(
@@ -355,89 +375,48 @@ impl InferenceDriver for NativeDriver {
                 &safe_prompt,
             );
 
-            let mut tokens = active
+            let tokens = active
                 .tokenizer
                 .encode(formatted_prompt, true)
-                .unwrap()
+                .map_err(|e| e.to_string())?
                 .get_ids()
                 .to_vec();
 
-            let mut start_pos = current_cache_len;
-
-            // Failsafe: If the JSON history was compacted, the cache length will be larger than the new tokens!
-            // We must clear the cache and do a cold start.
-            if start_pos > tokens.len() {
-                active.model.clear_kv_cache();
-                start_pos = 0;
+            // Reuse only the part of the cache whose tokens match this prompt exactly. The
+            // cache length alone isn't enough: Auto-RAG context is in the cache but not in
+            // the stored history, and a compacted history or a re-tokenized answer differs
+            // from what was cached.
+            let reused = active.reuse_prefix(&tokens);
+            if stateful_paging {
+                kprintln!(
+                    "-> [NATIVE DRIVER] Reusing {} cached tokens, computing {} new.",
+                    reused,
+                    tokens.len() - reused
+                );
             }
 
-            if start_pos > 0 {
-                let cached_last_token = tokens[start_pos - 1];
-                if active.config.stop_tokens.contains(&cached_last_token) {
-                    // Pull start_pos back by 1 so we overwrite the Stop Token in VRAM!
-                    start_pos -= 1;
-                }
-            }
+            let mut next_input = tokens[reused..].to_vec();
+            for _ in 0..8192 {
+                if next_input.is_empty() { break; } // Edge case protection
 
-            let overlap_start = if start_pos > 0 { start_pos - 1 } else { 0 };
+                let logits = active
+                    .feed(&next_input, &device_clone)
+                    .and_then(|l| Ok(l.squeeze(0)?.to_dtype(DType::F32)?))
+                    .map_err(|e| e.to_string())?;
 
-            // TRUNCATE THE KV-CACHE IN VRAM TO MATCH THE OVERLAP
-            if overlap_start < current_cache_len  {
-                active.model.truncate_kv_cache(overlap_start);
-            }
-
-            let unprocessed_tokens = tokens[overlap_start..].to_vec();
-
-            // Reset start_pos so the GPU loop math is perfectly aligned
-            start_pos = overlap_start;
-
-            println!("-> [NATIVE DRIVER] [DEBUG] Computing {} new tokens at position {}...", unprocessed_tokens.len(), start_pos);
-
-            for index in 0..8192 {
-
-                let input_len = if index == 0 { unprocessed_tokens.len() } else { 1 };
-
-                if input_len == 0 { break; } // Edge case protection
-
-                // Create the tensor instantly without holding a slice reference open!
-                let input_tensor = if index == 0 {
-                    Tensor::new(unprocessed_tokens.as_slice(), &device_clone)
-                        .unwrap()
-                        .unsqueeze(0)
-                        .unwrap()
-                } else {
-                    // Dereference (*) to COPY the last token out of the array. No borrows!
-                    let last_token = *tokens.last().unwrap();
-                    Tensor::new(&[last_token], &device_clone)
-                        .unwrap()
-                        .unsqueeze(0)
-                        .unwrap()
-                };
-
-                let logits = active.model.forward(&input_tensor, start_pos).unwrap();
-
-                let logits = logits
-                    .squeeze(0)
-                    .unwrap()
-                    .to_dtype(DType::F32)
-                    .unwrap();
-
-                let next_token_id = active.logits_processor.sample(&logits).unwrap();
+                let next_token_id = active.logits_processor.sample(&logits).map_err(|e| e.to_string())?;
 
                 if active.config.stop_tokens.contains(&next_token_id) {
                     break;
                 }
 
-                let word = active.tokenizer.decode(&[next_token_id], true).unwrap();
+                let word = active.tokenizer.decode(&[next_token_id], true).map_err(|e| e.to_string())?;
 
                 if tx.send(word).is_err() {
                     break;
                 }
 
-                tokens.push(next_token_id);
-
-                // CRITICAL: Advance start_pos by how many tokens we just processed!
-                start_pos += input_len;
+                next_input = vec![next_token_id];
             }
 
             drop(tx);
@@ -632,23 +611,7 @@ impl InferenceDriver for NativeDriver {
                     "-> [NATIVE DRIVER] Idle Timeout ({} mins) reached for '{}'. Evicting from RAM...",
                     idle_timeout_mins, active.current_app_id
                 );
-                if active.stateful_paging {
-                    let raw_cache = active.model.get_kv_cache();
-                    let flat_tensors =
-                        crate::inference::native::kv_manager::KvManager::flatten_cache(&raw_cache);
-                    let out_id = active.current_app_id.clone();
-                    let out_model = active.model_name.clone();
-                    let out_fingerprint = crate::memory::Pager::get_history_fingerprint(&out_id);
-
-                    eviction_task = Some(tokio::spawn(async move {
-                        crate::memory::Pager::page_out_kv_cache(
-                            &out_id,
-                            &out_model,
-                            &flat_tensors,
-                            &out_fingerprint,
-                        );
-                    }));
-                }
+                eviction_task = page_out_task(active);
                 *state = None; // Drop the engine entirely to free RAM/VRAM
             }
         }
@@ -668,7 +631,7 @@ impl InferenceDriver for NativeDriver {
                 "-> [NATIVE DRIVER] Surgical Cache Invalidation: Wiping RAM KV-Cache for '{}'...",
                 app_id
             );
-            active.model.clear_kv_cache();
+            active.reset_cache();
 
             // We set the ID to something invalid so the next request is forced to do a Page-In
             // or Cold Start, rather than triggering a False "Shared Memory Hit"
@@ -682,7 +645,7 @@ impl InferenceDriver for NativeDriver {
     async fn count_tokens(&self, model: &str, text: &str) -> Option<u32> {
         let safe_name = model.trim().replace(':', "-");
 
-        // 1. In-memory check: if the model is currently active, use its loaded tokenizer directly
+        // In-memory check: if the model is currently active, use its loaded tokenizer directly
         {
             let state = self.engine.lock().unwrap();
             if let Some(active) = &*state
@@ -693,7 +656,7 @@ impl InferenceDriver for NativeDriver {
             }
         }
 
-        // 2. On-disk check: read cached tokenizer.json if available
+        // On-disk check: read cached tokenizer.json if available
         let model_dir = paths::get_models_dir().join(&safe_name);
         let tokenizer_path = model_dir.join(constants::TOKENIZER_JSON_FILE_NAME);
         if tokenizer_path.exists()

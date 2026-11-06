@@ -92,7 +92,7 @@ Details: [GPU Scheduler](./kernel-internals/gpu-scheduler.md).
 
 When an inference engine switches from agent A to agent B, it normally discards A's KV cache. When A resumes, the engine re-runs prefill over A's whole history. On CPU this is the dominant cost.
 
-Ore serializes an agent's KV cache to `.safetensors` on disk when another agent or model takes over the engine, and restores it when the agent returns, so prefill isn't repeated. A fingerprint of the conversation is saved alongside, so a cache is only reused for exactly the history it was computed from.
+Ore serializes an agent's KV cache to `.safetensors` on disk when another agent or model takes over the engine, and restores it when the agent returns, so prefill isn't repeated. The exact token ids the cache holds are saved with it, and only the longest prefix shared with the next prompt is reused, so a cache is never applied to text it wasn't computed from.
 
 **Measured:** on a Ryzen 7 with 16 GB RAM (CPU only), resuming an agent took **37.03 s** when recomputing prefill and **2.41 s** when restoring the saved KV cache. That's **15.4× faster**.
 

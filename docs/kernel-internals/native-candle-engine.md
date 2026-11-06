@@ -81,7 +81,25 @@ Sampling uses Candle's `LogitsProcessor` with temperature `0.7` and a fixed seed
 | Same model, different agent | **Agent swap**: freeze the old agent's KV cache to SSD (if it uses `stateful_paging`), then clear the cache but keep the weights |
 | Different model | **Model reload**: freeze the old agent's KV cache, drop the weights, and memory-map the new model |
 
-Then, for a `stateful_paging` agent that wasn't a hot hit, the driver calls `Pager::page_in_kv_cache`. It restores the saved cache only if its **fingerprint** matches the agent's current history, so a stale cache is never applied to a changed conversation. With a valid cache, prefill is skipped for the saved tokens; otherwise the cache is rebuilt from the JSON history.
+Then, for a `stateful_paging` agent that wasn't a hot hit, the driver calls `Pager::page_in_kv_cache`. It restores the saved cache only if its **fingerprint** matches the agent's current history and the page records the token ids it was built from; otherwise the cache is rebuilt from the JSON history.
+
+### Token-prefix reuse
+
+The engine records the exact token ids its KV cache holds (`ActiveEngine::cached_tokens`). Every token goes through `ActiveEngine::feed`, which runs the model at position `cached_tokens.len()` and records the tokens, so the cache and the record cannot drift apart.
+
+Before running a prompt, `reuse_prefix` compares the recorded tokens with the new prompt's tokens. It keeps their **longest common prefix**, truncates the cache to it, and computes only the rest. At least one token is always recomputed, to produce logits. This is the same idea as prefix caching in llama.cpp and vLLM.
+
+A cached key/value depends only on the tokens at and before its position, so an identical token prefix means an identical cache. The check therefore covers every way the cache can differ from the next prompt:
+
+| Case | What is reused |
+|---|---|
+| Plain multi-turn chat | The whole previous conversation |
+| Auto-RAG | Everything before the previous turn. That turn's retrieved context was in the cache but isn't stored in history, so the previous turn is recomputed |
+| History compacted or edited | Up to the first changed token |
+| A generated answer that re-tokenizes differently inside the chat template | Up to the first differing token |
+| Any other agent's or model's prompt | Nothing beyond a shared system prompt |
+
+Comparing only the cache *length* with the new prompt, as earlier versions did, would resume mid-sequence on the wrong tokens. With Auto-RAG this silently grounded an answer in the previous turn's context. `ore-core/tests/kv_prefix_reuse.rs` checks, on a real model, that reused and SSD-restored caches give the same next-token logits as a cold prefill (`cargo test --release -p ore-core --test kv_prefix_reuse -- --ignored`).
 
 The SSD write runs as a background task, and generation waits for it to finish before starting. See [Memory Management](./memory-management.md) for the file format.
 

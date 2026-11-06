@@ -99,6 +99,19 @@ pub struct ModelConfig {
     pub formatter: fn(&[ContextMessage], &str) -> String,
 }
 
+/// How many leading tokens of `cached` can be kept when the model is next run on `next`:
+/// their common prefix, but never all of `next`, because the last token must be run
+/// again to produce logits.
+///
+/// A KV entry depends only on the tokens at and before its position, so an identical
+/// token prefix means identical cached keys and values. Anything after the first
+/// differing token (another retrieved context, a compacted history, a re-tokenized
+/// answer) is recomputed.
+pub fn reusable_prefix(cached: &[u32], next: &[u32]) -> usize {
+    let common = cached.iter().zip(next).take_while(|(a, b)| a == b).count();
+    common.min(next.len().saturating_sub(1))
+}
+
 pub struct ActiveEngine {
     pub model: OreEngine,
     pub tokenizer: Tokenizer,
@@ -108,10 +121,53 @@ pub struct ActiveEngine {
     pub current_app_id: String,
     pub stateful_paging: bool,
     pub last_used: std::time::Instant,
+    /// The token ids the KV cache holds, one per cached position. Kept in step with the
+    /// cache by `feed`, `reuse_prefix`, `reset_cache` and `restore_cache`.
+    pub cached_tokens: Vec<u32>,
     pub _mmap: memmap2::Mmap,
 }
 
 impl ActiveEngine {
+    /// Empties the KV cache.
+    pub fn reset_cache(&mut self) {
+        self.model.clear_kv_cache();
+        self.cached_tokens.clear();
+    }
+
+    /// Installs a KV cache paged in from SSD together with the token ids it was built from.
+    pub fn restore_cache(&mut self, cache: Vec<Option<(Tensor, Tensor)>>, tokens: Vec<u32>) {
+        self.model.set_kv_cache(cache);
+        self.cached_tokens = tokens;
+    }
+
+    /// Prepares the cache for running the model on `tokens`: keeps the longest prefix it
+    /// verifiably shares with them (see [`reusable_prefix`]) and drops the rest. Returns how
+    /// many tokens were kept; the caller feeds `tokens[kept..]`.
+    pub fn reuse_prefix(&mut self, tokens: &[u32]) -> usize {
+        // A cache whose contents aren't fully recorded can't be checked, so it isn't trusted.
+        if self.model.get_kv_cache_len() != self.cached_tokens.len() {
+            self.reset_cache();
+            return 0;
+        }
+        let keep = reusable_prefix(&self.cached_tokens, tokens);
+        if keep == 0 {
+            self.reset_cache();
+        } else if keep < self.cached_tokens.len() {
+            self.model.truncate_kv_cache(keep);
+            self.cached_tokens.truncate(keep);
+        }
+        keep
+    }
+
+    /// Runs the model on `ids`, appended after the cached tokens, and records them as cached.
+    /// Returns the logits for the last position.
+    pub fn feed(&mut self, ids: &[u32], device: &Device) -> Result<Tensor> {
+        let input = Tensor::new(ids, device)?.unsqueeze(0)?;
+        let logits = self.model.forward(&input, self.cached_tokens.len())?;
+        self.cached_tokens.extend_from_slice(ids);
+        Ok(logits)
+    }
+
     /// The ultra-fast, zero-copy GGUF loader using OS-level memory mapping (mmap)
     pub fn load(
         model_name: &str,
@@ -207,7 +263,49 @@ impl ActiveEngine {
             current_app_id: app_id.to_string(),
             stateful_paging,
             last_used: std::time::Instant::now(),
+            cached_tokens: Vec::new(),
             _mmap: mmap,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reusable_prefix;
+
+    #[test]
+    fn identical_prompt_recomputes_only_the_last_token() {
+        assert_eq!(reusable_prefix(&[1, 2, 3, 4], &[1, 2, 3, 4]), 3);
+    }
+
+    #[test]
+    fn growing_conversation_reuses_everything_cached() {
+        assert_eq!(reusable_prefix(&[1, 2, 3], &[1, 2, 3, 4, 5]), 3);
+    }
+
+    #[test]
+    fn auto_rag_context_is_not_reused_as_history() {
+        // cached: [sys, ctx1, ctx1, q1, a1]; next: [sys, q1, a1, ctx2, q2]
+        let cached = [7, 100, 101, 20, 30];
+        let next = [7, 20, 30, 200, 21];
+        assert_eq!(reusable_prefix(&cached, &next), 1);
+    }
+
+    #[test]
+    fn stale_tail_after_compaction_is_dropped() {
+        assert_eq!(reusable_prefix(&[1, 2, 3, 9, 9, 9], &[1, 2, 3, 4]), 3);
+    }
+
+    #[test]
+    fn shorter_prompt_still_leaves_a_token_to_run() {
+        assert_eq!(reusable_prefix(&[1, 2, 3, 4], &[1, 2]), 1);
+        assert_eq!(reusable_prefix(&[1, 2, 3], &[1]), 0);
+    }
+
+    #[test]
+    fn nothing_cached_or_nothing_to_run() {
+        assert_eq!(reusable_prefix(&[], &[1, 2, 3]), 0);
+        assert_eq!(reusable_prefix(&[1, 2, 3], &[]), 0);
+        assert_eq!(reusable_prefix(&[5, 6], &[1, 2, 3]), 0);
     }
 }
