@@ -1,0 +1,22 @@
+app_id = "mmu_guard"
+description = "Cognitive MMU suite: Auto-RAG reader with PII redaction, for the retrieved-context firewall test."
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true   # retrieved chunks are redacted before the model sees them
+
+[resources]
+allowed_models = ["qwen2.5:0.5b"]
+max_tokens_per_minute = 20000
+gpu_priority = "normal"
+
+[ipc]
+allowed_agent_targets = []
+# Auto-RAG searches the first pipe without a wildcard.
+allowed_semantic_pipes = ["mmu_guard_kb"]
+semantic_persistence = false
+
+[rag]
+auto_rag = true
+enable_hybrid = true
+enable_hyde = false

@@ -1,0 +1,16 @@
+app_id = "mmu_outsider"
+description = "Cognitive MMU suite: registered agent with no access to any mmu_* pipe or agent (negative tests)."
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true
+
+[resources]
+allowed_models = []
+max_tokens_per_minute = 1000
+gpu_priority = "low"
+
+[ipc]
+allowed_agent_targets = []
+allowed_semantic_pipes = ["other_*"]
+semantic_persistence = false

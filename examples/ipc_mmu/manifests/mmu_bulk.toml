@@ -1,0 +1,20 @@
+app_id = "mmu_bulk"
+description = "Cognitive MMU suite: bulk writer whose pipes migrate from Mode A to Mode C (SQ8 + mmap) at 256 chunks."
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true
+
+[resources]
+allowed_models = []
+max_tokens_per_minute = 1000
+gpu_priority = "low"
+
+[ipc]
+allowed_agent_targets = []
+allowed_semantic_pipes = ["mmu_bulk_*"]
+semantic_persistence = false
+
+[rag]
+vector_mode = "auto"
+max_hot_chunks = 256   # low on purpose, so the suite crosses the migration threshold quickly

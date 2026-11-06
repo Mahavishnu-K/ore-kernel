@@ -1,0 +1,17 @@
+app_id = "mmu_reviewer"
+description = "Cognitive MMU suite: owns the reviewed knowledge base; opens, diffs, and merges worker branches."
+version = "1.0.0"
+
+[privacy]
+enforce_pii_redaction = true
+
+[resources]
+allowed_models = []
+max_tokens_per_minute = 1000
+gpu_priority = "normal"
+
+[ipc]
+allowed_agent_targets = ["mmu_coordinator", "mmu_worker_a", "mmu_worker_b"]
+# Branching and merging need both the base (mmu_kb_*) and the branch (mmu_br_*).
+allowed_semantic_pipes = ["mmu_kb_*", "mmu_br_*"]
+semantic_persistence = false
