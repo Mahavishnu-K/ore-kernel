@@ -10,18 +10,18 @@ from ore_client import OreClient
 # A massive wall of text to force a heavy compute burden on the CPU.
 HEAVY_CONTEXT = """
 Please read the following system architecture manual carefully and remember the core principles.
-The ORE Kernel is a POSIX-like operating system designed for local artificial intelligence. 
-Unlike traditional Python wrappers such as LangChain or AutoGen, ORE operates at the metal layer.
+The Ore Kernel is a POSIX-like operating system designed for local artificial intelligence. 
+Unlike traditional Python wrappers such as LangChain or AutoGen, Ore operates at the metal layer.
 It features a GpuScheduler built on Tokio Semaphores, allowing safe time-slicing of a single GPU 
 across multiple autonomous agents. 
 
-Furthermore, ORE introduces the concept of Stateful Paging for LLMs. In standard architectures, 
+Furthermore, Ore introduces the concept of Stateful Paging for LLMs. In standard architectures, 
 when an agent finishes generating a response, its Attention Key-Value matrices (the KV-Cache) 
 are discarded. When the agent resumes, it must recalculate the entire history, known as the Prefill Penalty. 
-ORE skips this by utilizing an SSD Pager. The physical neural network state is serialized to 
+Ore skips this by utilizing an SSD Pager. The physical neural network state is serialized to 
 .safetensors format and paged to an NVMe drive. 
 
-To prevent SSD wear and tear, ORE uses a Lazy Eviction strategy. The ActiveEngine holds the 
+To prevent SSD wear and tear, Ore uses a Lazy Eviction strategy. The ActiveEngine holds the 
 KV-Cache in system RAM. It is only written to the SSD during an Agent Swap or a 5-minute idle timeout.
 This creates a 3-Tier memory hierarchy: GPU VRAM -> System RAM -> NVMe SSD.
 
@@ -87,7 +87,7 @@ def main():
     print("[*] TEST 3: Agent Swap (Forcing Eviction to SSD)")
     print("    Agent: terminal_user (/run) | Model: llama3.2:1b")
     print("    Prompt: 'What is 2+2?'")
-    print("    Action: ORE must freeze OpenClaw's heavy brain to the SSD to make room.")
+    print("    Action: Ore must freeze OpenClaw's heavy brain to the SSD to make room.")
     
     start_time = time.time()
     res3 = ore.run("llama3.2:1b", "What is 2+2?") 
@@ -102,7 +102,7 @@ def main():
     print("[*] TEST 4: Swap Back & Page-In (Memory Recovery)")
     print("    Agent: OpenClaw (/infer) | Model: llama3.2:1b")
     print("    Prompt: 'What is the lead architect's favorite beverage?'")
-    print("    If stateful=true, ORE reads the heavy brain from SSD instead of doing math!")
+    print("    If stateful=true, Ore reads the heavy brain from SSD instead of doing math!")
     
     start_time = time.time()
     res4 = ore.ask("What is the lead architect's favorite beverage?")

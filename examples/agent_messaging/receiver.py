@@ -1,7 +1,7 @@
 """
 agent_messaging/receiver.py - Listen for incoming agent messages.
 
-Registers agent_beta as a listener on ORE's Message Bus and polls
+Registers agent_beta as a listener on Ore's Message Bus and polls
 for incoming messages. Run this before sender.py.
 
 Usage:
@@ -19,7 +19,7 @@ def main():
     ore = OreClient()
 
     print("=" * 60)
-    print("  ORE Agent Messenger - Receiver")
+    print("  Ore Agent Messenger - Receiver")
     print(f"  Listening as: agent_beta")
     print("  Press Ctrl+C to stop")
     print("=" * 60)

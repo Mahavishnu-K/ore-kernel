@@ -1,5 +1,5 @@
 """
-ore_client.py - Lightweight Python client for the ORE Kernel API.
+ore_client.py - Lightweight Python client for the Ore Kernel API.
 
 Usage:
     from ore_client import OreClient
@@ -40,7 +40,7 @@ def get_ore_dir() -> Path:
 
 
 class OreClient:
-    """Minimal HTTP client for the ORE Kernel."""
+    """Minimal HTTP client for the Ore Kernel."""
 
     def __init__(self, base_url: str = None):
         self.base_url = (base_url or ORE_BASE_URL).rstrip("/")
@@ -60,13 +60,13 @@ class OreClient:
                 return f.read().strip()
         except FileNotFoundError:
             print(f"ERROR: Could not find token at {token_path}.")
-            print("Make sure the ORE Kernel is running (cargo run -p ore-server).")
+            print("Make sure the Ore Kernel is running (cargo run -p ore-server).")
             sys.exit(1)
 
     # ─── Inference ───────────────────────────────────────────────
 
     def run(self, model: str, prompt: str, app_id: str = "openclaw", stream: bool = False) -> str:
-        """Executes a prompt against the ORE Kernel."""
+        """Executes a prompt against the Ore Kernel."""
         payload = {
             "app_id": app_id,
             "model": model,

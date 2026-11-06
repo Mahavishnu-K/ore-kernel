@@ -1,13 +1,13 @@
 # 04 - Agent Messaging
 
-> Direct agent-to-agent communication through ORE's Message Bus.
+> Direct agent-to-agent communication through Ore's Message Bus.
 
 ## What It Does
 
 Two Python scripts simulate two agents communicating in real-time through Ore's IPC Message Bus:
 
 1. **`receiver.py`** registers as a listener and polls for incoming messages
-2. **`sender.py`** sends a direct message to the receiver through ORE
+2. **`sender.py`** sends a direct message to the receiver through Ore
 
 The kernel enforces that the sender's manifest lists the receiver in `allowed_agent_targets`. Unauthorized messages are blocked.
 
@@ -33,7 +33,7 @@ python sender.py --message "Hello from sender!"
 
 ```
 ┌───────────────┐   POST /ipc/send    ┌──────────────────────────┐
-│  sender.py    │ ────────────────────▶│      ORE KERNEL          │
+│  sender.py    │ ────────────────────▶│      Ore Kernel          │
 │  (agent_alpha)│                      │                          │
 └───────────────┘                      │  ┌────────────────────┐  │
                                        │  │    Message Bus     │  │

@@ -1,7 +1,7 @@
-# ORE Examples
+# Ore Examples
 
-> Real, runnable applications built on top of the ORE Kernel.
-> Each example is a standalone Python script that talks to ORE over HTTP.
+> Real, runnable applications built on top of the Ore Kernel.
+> Each example is a standalone Python script that talks to Ore over HTTP.
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ python bot.py
 
 ## Shared Utility
 
-All examples import [`ore_client.py`](./ore_client.py) - a lightweight Python wrapper around ORE's HTTP API. It handles token authentication, error formatting, and streaming automatically.
+All examples import [`ore_client.py`](./ore_client.py) - a lightweight Python wrapper around Ore's HTTP API. It handles token authentication, error formatting, and streaming automatically.
 
 ## Manifest Installation
 
