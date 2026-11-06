@@ -17,6 +17,7 @@
 | **Understand the security model and its limits** | [Security Model](./security-model.md) |
 | **Build dynamic WASM plugins** | [Building Plugins](./building-plugins.md) |
 | **Add a new driver or model** | [Extending Ore](./extending-ore.md) |
+| **See measured performance** | [Benchmarks](./benchmarks.md) |
 
 ## Kernel Internals
 

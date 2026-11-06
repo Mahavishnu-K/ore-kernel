@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Cognitive MMU suite** (`examples/ipc_mmu/`): 20 end-to-end scenarios run by a six-agent swarm with its own manifests; a labelled offline corpus (115 documents, 132 queries: near misses, multi-document, technical, long, CJK, unanswerable, adversarial) with Recall@k, MRR, nDCG@10, and CRAG threshold calibration; `web_search.py` (Wikipedia + DuckDuckGo through `/net/fetch`, with agent-side CRAG); HTTP benchmarks with p50/p95/p99; a `criterion` bench for the in-process search core (`cargo bench -p ore-core --bench cognitive_mmu`); and an offline firewall test over the adversarial cases (`cargo test -p ore-core --test firewall_corpus`).
+- **Published benchmarks** (`docs/benchmarks.md`): Cognitive MMU results on a Ryzen 7 5800HS (CPU only) from the `ipc_mmu` suite and the criterion bench: search latency by pipe size, concurrency, branches, Mode A vs C, Message Bus, retrieval quality, CRAG calibration and chunking. Headline numbers are in the README.
 - **Cognitive MMU**: the Semantic Bus is now a kernel-native agent memory system (`ore-core/src/ipc/`):
   - **Hybrid retrieval**: a BM25 sparse index alongside dense search, fused with Reciprocal Rank Fusion; scores are normalized to [0, 1].
   - **Memory tiers**: every chunk carries a `MemoryCategory` (`fact`, `skill`, `directive`, `general`), set on `/ipc/share` and filterable on `/ipc/search`.

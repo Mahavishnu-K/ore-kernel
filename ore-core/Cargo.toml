@@ -45,7 +45,7 @@ default = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [dev-dependencies]
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support", "html_reports"] }
+criterion = { version = "0.5", features = ["cargo_bench_support", "html_reports", "plotters"] }
 
 [[bench]]
 name = "cognitive_mmu"

@@ -31,7 +31,9 @@ Local inference engines are built for one client at a time. Run several agents a
 
 Ore is a single daemon that all your agents talk to. Applications never touch the GPU directly. They send requests to Ore, and Ore decides when they run, what they can access, and what they remember.
 
-## Benchmark
+## Benchmarks
+
+### Agent switching
 
 On CPU, the cost of switching between agents is prefill. Ore saves each agent's KV cache to disk and restores it instead of recomputing it:
 
@@ -42,6 +44,24 @@ On CPU, the cost of switching between agents is prefill. Ore saves each agent's 
 | **Speedup** | **15.4×** |
 
 Saved caches also survive restarts, so an agent can pick up a long conversation after a reboot without re-processing it.
+
+### Shared agent memory (Cognitive MMU)
+
+Agents share knowledge through the kernel's built-in vector store, with no separate database or message broker to run:
+
+| Ryzen 7 5800HS, 16 GB RAM, CPU only | Result |
+|---|---:|
+| Hybrid search (BM25 + dense), 10,000 chunks, 768-dim, in-process | 3.94 ms |
+| Hybrid search over HTTP, 5,000 chunks, p50 | 10.8 ms |
+| 16 agents searching one pipe at once | 389 searches/s |
+| Agent-to-agent message round trip (send + receive) | 4.7 ms |
+| CoW branch of a 5,000-chunk pipe, over HTTP | 7.2 ms |
+| Retrieval on 107 labelled queries, hybrid: Recall@5 / MRR | 0.94 / 0.844 |
+| Exact IDs and error codes, Recall@1: dense → hybrid | 0.25 → **0.88** |
+| Ingesting new knowledge (cold, Nomic 768-dim) | 12.7 chunks/s |
+| Re-sharing cached knowledge (warm, zero compute) | **31,083 chunks/s** |
+
+The embedder is the slow part: everything except writing new text runs in milliseconds. Methodology, every table and the known gaps are in **[docs/benchmarks.md](docs/benchmarks.md)**; the suite that produced them is [`examples/ipc_mmu/`](examples/ipc_mmu/).
 
 ## Nano-services: tools without containers
 
@@ -296,6 +316,7 @@ flowchart TB
 | [CLI Reference](docs/cli-reference.md) · [API Reference](docs/api-reference.md) | Every command and HTTP route |
 | [Manifest Reference](docs/manifest-reference.md) · [Configuration](docs/configuration.md) | Agent permissions and `ore.toml` |
 | [Security Model](docs/security-model.md) | Threat model and what each layer does and doesn't protect against |
+| [Benchmarks](docs/benchmarks.md) | Measured search, memory and retrieval-quality results, and how to reproduce them |
 | [Building Plugins](docs/building-plugins.md) · [Extending Ore](docs/extending-ore.md) | Writing `ore-ld` plugins, drivers, and model architectures |
 | [Kernel Internals](docs/kernel-internals/) | Subsystem-by-subsystem deep dives |
 
