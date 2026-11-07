@@ -3,6 +3,7 @@ use super::params::ExecuteParams;
 use super::state::OreSandboxState;
 use crate::linker::HasLinkerState;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
 use wasmtime::{Caller, Extern, Linker, Memory, Module, Store, Table, TableType};
 
@@ -25,6 +26,8 @@ pub fn register_ore_fetch(
               method_len: u32,
               url_ptr: u32,
               url_len: u32,
+              headers_ptr: u32,
+              headers_len: u32,
               body_ptr: u32,
               body_len: u32,
               filename_ptr: u32,
@@ -94,6 +97,28 @@ pub fn register_ore_fetch(
                 }
             };
 
+            // Parse headers safely: if len == 0, it's None. If len > 0, validate JSON.
+            let headers: Option<HashMap<String, String>> = if headers_len > 0 {
+                match read_string(&memory, &mut caller, headers_ptr, headers_len) {
+                    Some(s) => match serde_json::from_str::<HashMap<String, String>>(&s) {
+                        Ok(h) => Some(h),
+                        Err(e) => {
+                            crate::kprintln!(
+                                "-> [SANDBOX WARN] Malformed headers JSON passed to ore::fetch: {}",
+                                e
+                            );
+                            None
+                        }
+                    },
+                    None => return -1,
+                }
+            } else {
+                None
+            };
+
+            let meta_filename = format!("{}.meta", filename);
+            let tmp_meta_dest = tmp_dir.join(&meta_filename);
+
             let host_only = parsed_url.host_str().unwrap_or("");
             crate::kprintln!(
                 "-> [SANDBOX INTERCEPT] Guest requested {} to {}",
@@ -104,15 +129,20 @@ pub fn register_ore_fetch(
             let fetch_res = execute_ore_fetch(
                 &method,
                 &parsed_url,
-                None,
+                headers.as_ref(),
                 &body,
                 &filename,
                 network_enabled,
                 localhost_access,
                 &rules,
                 &tmp_dir,
-                |_| {},
+                |meta| {
+                    if let Ok(meta_json) = serde_json::to_string(meta) {
+                        let _ = std::fs::write(&tmp_meta_dest, meta_json);
+                    }
+                },
             );
+
             match fetch_res {
                 Ok(meta) => meta.status as i32,
                 Err((code, _)) => code,

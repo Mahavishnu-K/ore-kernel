@@ -8,6 +8,7 @@ extern "C" {
     fn fetch(
         method_ptr: *const u8, method_len: usize,
         url_ptr: *const u8, url_len: usize,
+        headers_ptr: *const u8, headers_len: usize,
         body_ptr: *const u8, body_len: usize,
         filename_ptr: *const u8, filename_len: usize,
     ) -> i32;
