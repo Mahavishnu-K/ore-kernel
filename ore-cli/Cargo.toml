@@ -2,7 +2,7 @@
 name = "ore-cli"
 version = "0.1.0"
 edition = "2024"
-description = "The CLI tool for the ORE AI Kernel."
+description = "The CLI tool for the Ore Kernel."
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/Mahavishnu-K/ore-kernel"
 keywords = ["ai", "kernel", "llm", "local-ai", "cli"] 

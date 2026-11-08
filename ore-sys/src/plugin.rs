@@ -7,7 +7,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-/// The ORE Plugin Macro
+/// The Ore Plugin Macro
 /// Automatically converts a standard Rust function into a C-ABI compliant WebAssembly export
 #[macro_export]
 macro_rules! ore_export {
