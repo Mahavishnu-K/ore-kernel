@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WebAssembly Host Syscalls (`ore::fetch` & `ore::fetch_async`)**:
+  - `ore::fetch` now supports passing custom HTTP headers via guest memory pointer and length (`headers_ptr`, `headers_len`) as a JSON string, parsed safely into `HashMap<String, String>` and forwarded to reqwest.
+  - Implemented asynchronous non-blocking fetch host syscall (`ore::fetch_async` in host linker, exported to guests as `ore_fetch_async` / `_ore.fetch_async` / `__ore__.fetchAsync`). Dispatches the egress request in a background thread and immediately returns status 0 to unblock the guest, writing streaming response metadata to `<filename>.meta` and completion status to `<filename>.done` (or 502 sentinel on failure).
+  - Enhanced memory boundary reading in `ore-core/src/sandbox/shims.rs`: `read_mem_bytes`, `read_mem_string`, and robust `parse_headers_json` validation preventing out-of-bounds reads.
+  - Integration tests in `tests/wasm_sandbox_tools/network_interception.rs` verifying both sync and async fetch host functions, custom headers, and response streaming.
+- **WASM Guest Runtimes Infrastructure (`guests/`)**:
+  - Added source code, native C extensions, Dockerfiles, and reproducible build pipelines for kernel guest runtimes:
+    - `guests/python/`: CPython 3.12.3 compiled for `wasm32-unknown-wasi` via wasi-sdk 22 in Docker (`Dockerfile.build`), cross-compiled with zlib 1.3.1 for WASI, built-in native C extension `_ore_module.c` exposing `_ore.fetch()` and `_ore.fetch_async()`, packed standard library using `wasi-vfs` with unchecked-hash `.pyc` (PEP 552) to avoid stdlib re-compilation and preserve CPU fuel budget (~700M instructions vs 5B fuel limit), and stripped DWARF debug symbols down to ~27 MB.
+    - `guests/quickjs/`: QuickJS-NG v0.18.0 compiled for `wasm32-wasi` via Zig 0.17 (`build.sh`), integrating native C bridge `quickjs-ore.c` / `quickjs-ore.h` injecting `globalThis.__ore__` (`__ore__.fetch`, `__ore__.fetchAsync`), and 2 MiB execution stack down to ~5 MB.
+    - Comprehensive guide in `guests/README.md` detailing runtime architecture, C bridge design, build instructions, and verification scripts (`run_inception.py`, `run_network.py`).
+    - Added manifests and scripts, e.g., `manifests/web_scrapper.toml` for sandboxed web scraping agents utilizing Inception Mode.
+- **TypeScript JIT Transpilation & Smart NPM Caching**:
+  - Upgraded `ore-server/src/execution/script.rs`:
+    - Pure TypeScript execution without external dependencies now uses a fast, dedicated staging directory (`_transpile_ts`) directly transpile-bundled with esbuild, eliminating unnecessary overhead.
+    - Deterministic SHA-256 package requirement hashing for NPM dependencies: dependency lists are sorted, hashed, and cached in `cache/npm/<hash>/`. Cache hits completely bypass `npm install`.
+    - Enhanced error handling when launching `npm` or `esbuild` with descriptive `KERNEL ERROR` reporting to STDERR.
 - **Cognitive MMU suite** (`examples/ipc_mmu/`): 20 end-to-end scenarios run by a six-agent swarm with its own manifests; a labelled offline corpus (115 documents, 132 queries: near misses, multi-document, technical, long, CJK, unanswerable, adversarial) with Recall@k, MRR, nDCG@10, and CRAG threshold calibration; `web_search.py` (Wikipedia + DuckDuckGo through `/net/fetch`, with agent-side CRAG); HTTP benchmarks with p50/p95/p99; a `criterion` bench for the in-process search core (`cargo bench -p ore-core --bench cognitive_mmu`); and an offline firewall test over the adversarial cases (`cargo test -p ore-core --test firewall_corpus`).
 - **Published benchmarks** (`docs/benchmarks.md`): Cognitive MMU results on a Ryzen 7 5800HS (CPU only) from the `ipc_mmu` suite and the criterion bench: search latency by pipe size, concurrency, branches, Mode A vs C, Message Bus, retrieval quality, CRAG calibration and chunking. Headline numbers are in the README.
 - **Cognitive MMU**: the Semantic Bus is now a kernel-native agent memory system (`ore-core/src/ipc/`):
@@ -55,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `net/`: Standalone Layer 7 egress proxy engine (`fetch.rs`).
 - **JavaScript/TypeScript Execution Safeguard**: Added `wrap_tla_with_error_boundary` in `ore-server/src/execution/script.rs` to automatically enclose autonomous script bodies inside Top-Level Await promise handlers with clean unhandled rejection routing to STDERR.
 ### Changed
+- **Nomenclature Standardization**: Standardized capitalization of "Ore" across documentation, crate descriptions (`Cargo.toml` in `ore-cli`, `ore-common`, `ore-sys`), code comments, and example files.
+- **Repository Cleanups**: Removed deprecated binary screenshots and diagrams from `docs/img/`. Added ignore rules to root `.gitignore` and `guests/.gitignore` for precompiled `.cwasm` artifacts, `quickjs-src/`, and WebAssembly binaries.
 - **Batched embeddings**: the BERT and NomicBert embedders run texts in length-bucketed, padded batches (up to 32 texts, bounded by padded tokens and attention size) instead of one forward pass per text. Padding is masked out of attention and pooling, so vectors match single-text embedding; `ore-core/tests/embedder_batching.rs` checks this against the installed models.
 - **Nomic task prefixes**: `system-embedder` (NomicBert) now embeds stored text with `search_document: ` and search queries with `search_query: `, as the model was trained. A HyDE excerpt counts as a document. `InferenceDriver::generate_embeddings` takes an `EmbedTask`, and the embedding cache keys query vectors apart from document vectors. MiniLM and the Ollama engine are unchanged. **Re-ingest persistent pipes written with `system-embedder` before this change**: their vectors have no prefix, so queries match them less well.
 - **Nomic input capped at 2,048 tokens** (the model's trained length, down from 8,192): one very long text needs about 200 MB of attention scores instead of about 3 GB.

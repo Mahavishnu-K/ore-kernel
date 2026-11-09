@@ -83,7 +83,7 @@ Ore adds a third option. A **nano-service** is a tool compiled to WebAssembly an
 
 - **A CPU budget.** `wasmtime` fuel metering is enabled for every store. When the manifest's `max_cpu_instructions` budget (default 5×10⁹) runs out, the guest traps instead of hanging the host.
 - **Only the files it's allowed.** The guest sees WASI pre-opened directories and nothing else: the manifest's paths, plus a private per-run `/ore_tmp`. Read-only paths are mounted without write rights, so the denial happens at the WASI layer, not in a policy check.
-- **No sockets.** The guest has no TCP or UDP access. Outbound HTTP goes through the `ore.fetch` host call to a Layer 7 proxy in the kernel, which checks domain, method, and path against `[[network.rules]]` and writes the response into `/ore_tmp`.
+- **No sockets.** The guest has no raw TCP or UDP access. Outbound HTTP goes through synchronous (`ore::fetch`) or asynchronous (`ore::fetch_async`) host syscalls to a Layer 7 proxy in the kernel, which checks domain, method, headers, and path against `[[network.rules]]` and streams the response into `/ore_tmp`.
 - **Fast start-up.** The first run compiles the module to native code and serializes it as `.cwasm`. Later runs memory-map that file instead of recompiling, cutting a 300–600 ms cold start to about 10 ms. The page cache shares the code pages across concurrent instances.
 
 ```bash
@@ -96,6 +96,27 @@ curl -X POST http://127.0.0.1:6767/execute \
 ```
 
 **Good fit:** tools that take data in, compute, call `ore.fetch` if they need the network, and write data out. **Not a fit:** browsers, GPU training loops, or anything that needs raw sockets or OS threads.
+
+### Autonomous Script Mode ("Inception Mode")
+
+Beyond precompiled tools, Ore allows AI agents to write and execute code on the fly without trusting it, using **`POST /execute`** with a `language` (`"python"`, `"js"`, `"javascript"`, `"ts"`, `"typescript"`), raw `script` body, and optional `dependencies`:
+
+- **Precompiled guest runtimes ([`guests/`](guests/README.md)):** Scripts execute inside isolated WebAssembly runtimes: **`system-py.wasm`** (CPython 3.12.3 with stdlib packed via `wasi-vfs` and PEP 552 unchecked `.pyc` caching) and **`system-js.wasm`** (QuickJS-NG v0.18.0 with Node.js polyfills).
+- **Native C host bridge:** Both runtimes compile in native C extensions (`guests/python/_ore_module.c` exposing built-in `_ore`, and `guests/quickjs/quickjs-ore.c` exposing `globalThis.__ore__`), allowing sandboxed code to call `fetch(...)` and `fetch_async(...)` directly without polling.
+- **TypeScript JIT transpilation:** Pure TypeScript scripts are transpiled on the fly through `esbuild` using a fast dedicated staging directory (`_transpile_ts`) with zero overhead.
+- **Smart NPM package caching:** Dynamic dependencies are sorted, SHA-256 hashed, and cached on disk (`cache/npm/<hash>/`). Cache hits bypass `npm install` entirely, bundling scripts instantly.
+- **Top-Level Await safeguard:** Scripts are enclosed in an async error boundary that safely captures top-level `await` and routes unhandled promise rejections to STDERR.
+
+```bash
+curl -X POST http://127.0.0.1:6767/execute \
+     -H "Authorization: Bearer $(cat ore-kernel.token)" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "app_id": "wasm_agent",
+       "language": "python",
+       "script": "import _ore\nstatus = _ore.fetch(\"GET\", \"https://jsonplaceholder.typicode.com/todos/1\", \"{}\", b\"\", \"todo.json\")\nprint(\"HTTP status:\", status)"
+     }'
+```
 
 ### Memory Fusion with `ore-ld`
 
@@ -185,7 +206,7 @@ More: [Polyglot Memory Fusion internals](docs/kernel-internals/polyglot-memory-f
 |---|---|
 | **GPU scheduler** | Agents acquire RAII leases before inference. Admission control reads real VRAM through NVML and estimates KV-cache size from GGUF geometry. Models that fit are loaded side by side, and the least recently used idle model is evicted when they don't. |
 | **KV-cache paging** | An agent's chat history and KV cache are written to `.safetensors` on disk when it goes idle and restored on its next turn. Background compaction caps disk usage. |
-| **WebAssembly sandbox** | Tools in eight languages run in-process under `wasmtime`, with fuel limits, scoped mounts, and an egress proxy. [Details ↓](#sandboxed-tools-wasm) |
+| **WebAssembly sandbox & Inception** | Tools in eight languages and autonomous dynamic scripts (Python, JS, TS) run in-process under `wasmtime`, with CPU fuel limits, scoped VFS mounts, zero-RAM AOT caching (`.cwasm`), and sync/async Layer 7 egress host syscalls (`ore::fetch`, `ore::fetch_async`). [Details ↓](#sandboxed-tools-wasm) |
 | **`ore-ld` dynamic linker** | Plugins are linked into a running WebAssembly host and share its memory, so data is passed by pointer. [Details ↓](#memory-fusion-with-ore-ld) |
 | **Agent manifests** | Each agent has a TOML manifest listing the models, files, network domains, tools, and IPC channels it may use, plus a token-per-minute rate limit. Requests are checked against it on every call. |
 | **Cognitive MMU (Semantic Bus)** | Shared agent memory in named pipes, with no external database. Hybrid search (BM25 + dense vectors, fused with RRF), `fact` / `skill` / `directive` memory tiers, sentence-window chunks, and copy-on-write branches that agents merge only after review. Large pipes move automatically from RAM to `int8` + memory-mapped storage. Optional HyDE, CRAG web fallback, and RAPTOR summary trees. Persistence is crash-safe. [Internals](docs/kernel-internals/ipc-and-semantic-bus.md) |
@@ -298,13 +319,14 @@ flowchart TB
     mem --> ollama
 ```
 
-| Crate | Role |
+| Crate / Directory | Role |
 |---|---|
 | [`ore-core`](ore-core/) | Kernel logic: scheduler, memory manager, sandbox, linker, IPC, firewall, inference drivers |
 | [`ore-server`](ore-server/) | Axum HTTP daemon, request handlers, execution modes |
 | [`ore-cli`](ore-cli/) | The `ore` command: setup, model management, manifests, `mktool` compiler |
 | [`ore-common`](ore-common/) | Shared types, protocol, config, and manifest schema |
 | [`ore-sys`](ore-sys/) | Rust SDK for writing `ore-ld` hosts and plugins |
+| [`guests/`](guests/) | WebAssembly guest runtimes (`system-py`, `system-js`), native C bridges, and build pipelines |
 
 ## Documentation
 
@@ -317,6 +339,7 @@ flowchart TB
 | [Manifest Reference](docs/manifest-reference.md) · [Configuration](docs/configuration.md) | Agent permissions and `ore.toml` |
 | [Security Model](docs/security-model.md) | Threat model and what each layer does and doesn't protect against |
 | [Benchmarks](docs/benchmarks.md) | Measured search, memory and retrieval-quality results, and how to reproduce them |
+| [Guest Runtimes](guests/README.md) | Inception execution engines (`system-py`, `system-js`), native C bridge, and builds |
 | [Building Plugins](docs/building-plugins.md) · [Extending Ore](docs/extending-ore.md) | Writing `ore-ld` plugins, drivers, and model architectures |
 | [Kernel Internals](docs/kernel-internals/) | Subsystem-by-subsystem deep dives |
 

@@ -57,14 +57,19 @@ POST /execute
 - Arguments passed via WASI command-line args; complex inputs piped via STDIN (`input_data`).
 
 ### 2. Autonomous Script Mode ("Inception Mode")
-- **Source:** [`ore-server/src/execution/script.rs`](../../ore-server/src/execution/script.rs)
+- **Source:** [`ore-server/src/execution/script.rs`](../../ore-server/src/execution/script.rs) · [`guests/`](../../guests/README.md)
 - Allows agents to dynamically materialize and execute scripts in Python or JavaScript/TypeScript.
 - Manifest check: Language in `allowed_language_runtimes` (or `"*"`).
-- Automatically provisions interpreters from `runtimes/` (e.g., `system-py.wasm`, `system-js.wasm`).
-- **Dynamic Dependency Management**:
+- Automatically provisions interpreters from `runtimes/` (`system-py.wasm`, `system-js.wasm`).
+- **Pre-compiled Guest Runtimes with Native C Bridges**:
+  - **Python (`system-py.wasm`)**: CPython 3.12.3 built with `wasi-sdk 22`, cross-compiled zlib 1.3.1, and stdlib packed via `wasi-vfs` with PEP 552 unchecked-hash `.pyc` files to prevent stdlib re-compilation and preserve CPU fuel (~700M instructions vs 5B fuel limit). Embeds native C extension `_ore_module.c` exposing `_ore.fetch()` and `_ore.fetch_async()`.
+  - **JavaScript (`system-js.wasm`)**: QuickJS-NG v0.18.0 built with Zig 0.17 with Node.js polyfills mounted to `/modules`. Embeds native C bridge `quickjs-ore.c` / `quickjs-ore.h` injecting `globalThis.__ore__`.
+- **Dynamic Dependency Management & JIT Caching**:
   - **Python**: Detects `requirements.txt` or explicit dependencies, stages modules, mounts them dynamically to VFS, and sets `PYTHONPATH=/packages:/app:/workspace/{hash}` with `PYTHONUNBUFFERED=1`.
-  - **JavaScript/Node.js**: Automatically mounts polyfilled modules into `/modules` (Read-Only) and injects CommonJS runtime shims.
+  - **Pure TypeScript Fast-Path**: Pure TypeScript scripts (`lang == "ts"` or `"typescript"` with no npm packages) use a dedicated staging directory (`cache/npm/_transpile_ts/`) directly bundled with `esbuild`, bypassing npm entirely.
+  - **Smart NPM Dependency Caching**: Package requirement lists are sorted and hashed via SHA-256 (`KernelCrypto::sha256`), cached under `cache/npm/<req_hash>/`. Cache hits instantly skip `npm install` and proceed directly to `esbuild` bundling with `--external:/modules/*`.
   - **Top-Level Await & Error Boundary**: JavaScript/TypeScript inception code is wrapped via `wrap_tla_with_error_boundary`, which isolates static ES module imports and encloses execution in a Promise block to enable native top-level `await` and safely route unhandled rejections to STDERR.
+  - **Robust Diagnostics**: If launching `npm` or `esbuild` fails or returns a non-zero exit code, clear `KERNEL ERROR: Failed to launch...` messages are routed back to the agent without crashing the kernel.
 
 ### 3. Raw Host Shell Bypass (UNSAFE)
 - **Source:** [`ore-server/src/execution/shell.rs`](../../ore-server/src/execution/shell.rs)
@@ -85,7 +90,7 @@ ore-core/src/sandbox/
 ├── state.rs             # OreSandboxState + RAII guards (TempDirGuard, ThreadJoinGuard)
 ├── cache.rs             # Ahead-Of-Time (.cwasm) compiler, timestamp validator & mmap loader
 ├── vfs.rs               # WASI VFS configuration, UNC sanitization & capability mounts
-├── shims.rs             # Host syscalls (ore::fetch), dynamic shadowing (sock_accept) & OS table
+├── shims.rs             # Host syscalls (ore::fetch, ore::fetch_async), dynamic shadowing (sock_accept) & OS table
 │                        # (the ore-ld linker in ore-core/src/linker/ is registered here too)
 ├── portals/             # Concurrent VFS background daemons
 │   ├── mod.rs           # Portal daemon coordinator (start_all)
@@ -137,32 +142,81 @@ Subsequent Executions (Cache Hit)                                  ▼
 
 ## Layer 7 Network Portal & Egress Firewall
 
-The sandbox has **zero raw TCP/UDP socket access**. All network I/O is routed through kernel-controlled portals:
+The sandbox has **zero raw TCP/UDP socket access**. Outbound HTTP traffic is strictly checked against manifest `[[network.rules]]` through two complementary channels:
+
+1. **Direct WASM Host Syscalls (`ore::fetch`, `ore::fetch_async`)**: Instant trap-based execution without file-polling overhead, used by native C bridges (`_ore`, `__ore__`) and compiled WASM tools.
+2. **Asynchronous File-based Portal (`.ore_network/`)**: High-level drop-in compatibility for un-ported Python/JS libraries (`requests`, `httpx`, `fetch`, `axios`).
 
 ```text
-WASM Guest (any language via ore.fetch, or Python / JS via the shims)
+WASM Guest (Direct Syscall or Language Shim)
        │
-       │ Writes request to .ore_network/req_<id>.json (in its /ore_tmp)
-       ▼
-┌──────────────────────────────────────────────┐
-│ Background Network Watcher Thread (Host)     │  sandbox/portals/network.rs
-│ 1. Parse URL & target host                   │
-│ 2. check_egress():                           │  sandbox/net/fetch.rs
-│    - http/https only                         │
-│    - Local-address block (loopback,          │
-│      link-local, metadata IP) unless allowed │
-│    - Host must equal `domain` (or "*")       │
-│    - Method in `allowed_methods`             │
-│    - Path matches `allowed_paths`            │
-│ 3. Execute reqwest call (60 s timeout);      │
-│    every redirect hop re-runs check_egress() │
-│ 4. Stream response body to disk              │
-│ 5. Write res_<id>.bin + res_<id>.meta        │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-       Guest reads the response files back
+       ├──────────────────────────────────────────────────────┐
+       │ (1) Direct Host Syscall: ore::fetch / fetch_async   │ (2) Language Shim File Portal
+       ▼                                                      ▼
+┌──────────────────────────────────────────────┐       ┌──────────────────────────────────────────────┐
+│ Host Linker Shims (ore-core/src/sandbox/     │       │ Background Network Watcher (portals/         │
+│ shims.rs)                                    │       │ network.rs)                                  │
+│ · Bounds-checked read_mem_bytes/string       │       │ · Watch .ore_network/req_<id>.json           │
+│ · Validate headers JSON: parse_headers_json  │       │ · Parse method, url, headers, body           │
+└──────────────────────┬───────────────────────┘       └──────────────────────┬───────────────────────┘
+                       │                                                      │
+                       └──────────────────────┬───────────────────────────────┘
+                                              ▼
+                               ┌──────────────────────────────────────────────┐
+                               │ check_egress() (sandbox/net/fetch.rs)        │
+                               │ · Protocol: http / https only                │
+                               │ · Localhost block (127.0.0.1, 169.254.x, etc)│
+                               │ · Domain match (manifest rule or "*")        │
+                               │ · Method match (GET, POST, etc.)             │
+                               │ · Path match (glob / prefix / exact)         │
+                               └──────────────────────┬───────────────────────┘
+                                                      │
+                                                      ▼
+                               ┌──────────────────────────────────────────────┐
+                               │ HTTP Execution (reqwest, 60s timeout)        │
+                               │ · Redirects re-checked via check_egress()    │
+                               │ · Stream response body directly to /ore_tmp  │
+                               │ · Write res.bin + res.meta (or .done)        │
+                               └──────────────────────────────────────────────┘
 ```
+
+### Direct Host Syscalls (`ore-core/src/sandbox/shims.rs`)
+
+Compiled tools and native C guest extensions import the host functions from the `ore` module:
+
+```c
+// 10-parameter ABI passing pointers and lengths in guest linear memory
+__attribute__((import_module("ore"), import_name("fetch")))
+extern int ore_fetch(
+    const char* method_ptr, int method_len,
+    const char* url_ptr, int url_len,
+    const char* headers_ptr, int headers_len,
+    const char* body_ptr, int body_len,
+    const char* filename_ptr, int filename_len
+);
+
+__attribute__((import_module("ore"), import_name("fetch_async")))
+extern int ore_fetch_async(
+    const char* method_ptr, int method_len,
+    const char* url_ptr, int url_len,
+    const char* headers_ptr, int headers_len,
+    const char* body_ptr, int body_len,
+    const char* filename_ptr, int filename_len
+);
+```
+
+- **`ore_fetch` (Synchronous)**: Blocks the guest thread while the host executes the request and streams the response body to `/ore_tmp/<filename>`. Returns the HTTP status code (`200`..`599`) or negative error code on firewall denial.
+- **`ore_fetch_async` (Asynchronous)**: Immediately queues the request on a background OS thread and returns `0`. The background thread streams metadata to `/ore_tmp/<filename>.meta` upon receipt of HTTP response headers and writes `/ore_tmp/<filename>.done` when transmission completes (or writes a 502 sentinel on failure).
+- **Linear Memory Safety**: All pointer/length pairs are validated via `read_mem_bytes` and `read_mem_string`. If `ptr + len` exceeds the guest's allocated WebAssembly memory, or if the headers JSON is malformed, the call fails immediately with `-1`.
+
+| Return Code | Meaning |
+|---|---|
+| `200`–`599` | Upstream HTTP response status |
+| `0` | Asynchronous fetch successfully dispatched |
+| `-1` | Firewall blocked (disallowed domain, path, localhost address, traversal in `filename`, or malformed headers) |
+| `-2` | Disallowed HTTP method for this domain |
+| `-3` | HTTP transport failure (connection error, timeout, aborted stream) |
+| `-4` | Failed to write response file to VFS |
 
 ### Key Security Guarantees
 - **No Direct Socket Access**: Guest tools cannot establish raw socket connections, scan ports, or bypass firewalls.

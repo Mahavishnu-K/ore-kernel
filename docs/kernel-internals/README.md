@@ -11,7 +11,8 @@
 | [Hardware Abstraction Layer](./hardware-abstraction-layer.md) | `ore-core/src/driver.rs` | Trait-based driver system for inference backends |
 | [Native Candle Engine](./native-candle-engine.md) | `ore-core/src/inference/native/` | Pure-Rust GGUF inference (Llama, Qwen2/3, Qwen3-MoE) + BERT/Nomic embedders |
 | [Polyglot Memory Fusion](./polyglot-memory-fusion.md) | `ore-core/src/linker/` | `dlopen`-style dynamic linker (`ore-ld`): load, bind, unload, errors, zero-copy calls |
-| [Zero-Trust WASM Sandbox](./wasm-sandbox.md) | `ore-core/src/sandbox/` | Multi-mode execution (Tool/Script/Shell), AOT caching, network portal, VFS & result reporting |
+| [Zero-Trust WASM Sandbox](./wasm-sandbox.md) | `ore-core/src/sandbox/` | Multi-mode execution (Tool/Script/Shell), AOT caching, Layer 7 sync/async host syscalls, VFS & result reporting |
+| [WASM Guest Runtimes](../../guests/README.md) | `guests/` | CPython & QuickJS runtime builds, native C bridge (`_ore`, `__ore__`), wasi-vfs stdlib packing |
 
 ## How to Read These Docs
 

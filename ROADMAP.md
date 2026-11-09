@@ -49,7 +49,9 @@ Ore is **alpha** (v0.1.0). This page tracks what's built, what's next, and where
 - [x] **Layer 7 egress proxy:** no raw sockets; outbound HTTP is checked against domain, method, and path rules.
 - [x] **AOT caching:** compiled modules are cached as `.cwasm` and memory-mapped on later runs (~10 ms start-up), and invalidated by file timestamps.
 - [x] **Polyglot toolchain:** `ore mktool` builds tools from Rust, Go, Python, JS, TS, Zig, C, and C++, including whole project directories.
-- [x] **Script mode (Inception):** agents can run generated Python/JS scripts in the sandbox, with runtime shims for `requests`, `httpx`, and CommonJS.
+- [x] **Script mode (Inception):** agents can run generated Python, JS, and TS scripts in the sandbox, with runtime shims for `requests`, `httpx`, and CommonJS, fast-path TypeScript transpilation, Top-Level Await promise wrapping, and SHA-256 dependency caching.
+- [x] **WASM Guest Runtimes (`guests/`):** reproducible build pipelines for `system-py.wasm` (CPython 3.12 + wasi-vfs) and `system-js.wasm` (QuickJS-NG + Node polyfills), with embedded native C bridges (`_ore`, `__ore__`).
+- [x] **Host Syscalls (`ore::fetch`, `ore::fetch_async`):** direct synchronous and non-blocking asynchronous egress HTTP syscalls with custom JSON request headers and response streaming.
 - [x] **`ore-ld` dynamic linker:** `ore_dlopen` / `ore_dlsym` load `.wasi.so` plugins into a host's linear memory for zero-copy calls, with SDKs for Rust (`ore-sys`), C/C++ (`ore.h`), and Zig (`ore.zig`).
 - [x] **Host shell mode:** an explicit escape hatch (`can_execute_shell = true`) that flags the agent as UNSAFE.
 
@@ -65,11 +67,11 @@ Ore is **alpha** (v0.1.0). This page tracks what's built, what's next, and where
 - [x] **Storage modes:** Mode A (RAM) with automatic migration to Mode C (`int8` in RAM + memory-mapped `f32` on disk) at `max_hot_chunks`.
 - [x] **RAPTOR summary trees:** recursive cluster summaries with centroid embeddings, built under a GPU lease.
 - [x] **Durable persistence:** load-before-write, `fsync` + atomic rename, settings stored with the data, corrupt files quarantined, restart tests for both modes.
+- [x] **Measured performance:** `criterion` benchmarks for `search_pipe` across pipe sizes and modes, published in `docs/benchmarks.md` and the README.
 - [ ] **Mode B in production:** train the PQ codebook on real data (`train_mini_batch` exists but isn't run outside tests) and persist Mode B pipes.
 - [ ] **Branch persistence:** branches are RAM-only and don't survive a restart.
 - [ ] **Distinct `hot_simd` mode:** currently identical to `auto`; it should keep a pipe in RAM and evict instead of migrating.
 - [ ] **Adaptive query routing, RAG-Fusion, contextual enrichment:** from the original Cognitive MMU design, not yet built.
-- [ ] **Measured performance:** `criterion` benchmarks for `search_pipe` across pipe sizes and modes, published in the README.
 
 ## Phase 4: Hardening (current focus)
 

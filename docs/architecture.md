@@ -40,10 +40,11 @@ Applications never talk to the GPU or host operating system directly. They talk 
 ║   ┌──────────────────────────────────────────────┐   ║
 ║   │  Modular Execution Engine & WASM Sandbox     │   ║
 ║   │  · Tool Mode: Pre-compiled Cartridges (.wasm)│   ║
-║   │  · Script Mode: Inception (Py/JS + VFS shims)│   ║
+║   │  · Script Mode: Inception (Py/JS/TS + Shims) │   ║
 ║   │  · Shell Mode: Host execution (UNSAFE audit) │   ║
 ║   │  · AOT Zero-RAM Caching (.cwasm via mmap)    │   ║
-║   │  · Layer 7 Egress Network & Crypto Portals   │   ║
+║   │  · Layer 7 Syscalls (ore::fetch/fetch_async) │   ║
+║   │  · Guest Runtimes with Native C Bridges      │   ║
 ║   └──────────────────────────────────────────────┘   ║
 ║                                                      ║
 ║   ┌──────────────────────────────────────────────┐   ║
@@ -227,7 +228,7 @@ ore-system/
 │   │   ├── state.rs         Master sandbox state & RAII Drop guards (TempDirGuard, ThreadJoinGuard)
 │   │   ├── cache.rs         AOT (.cwasm) compiler, metadata timestamp validator & mmap loader
 │   │   ├── vfs.rs           WASI capability directory mounting & UNC path sanitization
-│   │   ├── shims.rs         Host syscalls (ore::fetch), WasmEdge sock_accept shadowing & OS table
+│   │   ├── shims.rs         Host syscalls (ore::fetch, ore::fetch_async), WasmEdge sock_accept shadowing & OS table
 │   │   ├── portals/         Concurrent VFS IPC daemons (crypto.rs, network.rs)
 │   │   └── net/             Layer 7 Egress Network Engine (fetch.rs)
 │   ├── crypto.rs            VFS-mapped hardware cryptographic subsystem
@@ -251,6 +252,7 @@ ore-system/
 │               ├── qwen3_moe.rs Qwen3-MoE (also loads qwen2moe)
 │               ├── bert.rs      BERT embedder (all-MiniLM)
 │               ├── nomic.rs     Nomic v1.5 embedder (Safetensors)
+│               ├── embedding_batch.rs Batched forward pass for sentence embedders
 │               ├── transformers/ Quantized layers, fused MoE
 │               └── nn/          KV cache
 ├── ore-server/              Axum HTTP daemon
@@ -280,6 +282,10 @@ ore-system/
 ├── ore-sys/                 Rust SDK for ore-ld hosts and plugins
 │   ├── host.rs              `Plugin` (load, get_func, close, last_error, Drop) + `ore_bind!` (feature "host")
 │   └── plugin.rs            `ore_export!` + no_std panic handler (feature "plugin")
+├── guests/                  Guest WebAssembly runtimes source and build pipelines
+│   ├── python/              CPython 3.12.3 WASI + _ore_module.c + Dockerfile.build + build.sh
+│   ├── quickjs/             QuickJS-NG v0.18.0 WASI + quickjs-ore.c/.h + build.sh
+│   └── README.md            Guest runtimes architecture, native C bridges, and build guide
 ├── manifests/               App permission manifests (.toml files)
 ├── models/                  Downloaded model weights
 ├── memory/                  SSD page files for agent context and KV-caches

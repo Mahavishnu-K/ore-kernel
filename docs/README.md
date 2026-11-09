@@ -18,6 +18,7 @@
 | **Build dynamic WASM plugins** | [Building Plugins](./building-plugins.md) |
 | **Add a new driver or model** | [Extending Ore](./extending-ore.md) |
 | **See measured performance** | [Benchmarks](./benchmarks.md) |
+| **Understand guest runtimes & Inception** | [Guest Runtimes](../guests/README.md) |
 
 ## Kernel Internals
 
@@ -48,8 +49,9 @@ ore-system/
 │   └── shims/      Runtime polyfills (CommonJS require bridge, Python WASI bootstrap)
 ├── ore-cli/        Interactive CLI tool (ore init, ore mktool, ore run) + C/Zig SDK headers
 ├── ore-sys/        Rust SDK for ore-ld (`Plugin`, `ore_bind!`, `ore_export!`)
+├── guests/         WebAssembly guest runtimes (`system-py.wasm`, `system-js.wasm`) & native C bridges (`_ore`, `__ore__`)
 ├── tests/          Tool sources for Memory Fusion, plugin lifecycle & sandbox security tests
-├── examples/       Python agents and test runners (e.g. wasm_agents/run_plugin_lifecycle.py)
+├── examples/       Python agents and test runners (e.g. wasm_agents/run_inception.py, run_plugin_lifecycle.py)
 └── manifests/      Agent permission manifests (.toml)
 
 Runtime data lives in the Ore base directory (`$ORE_DIR`, or `~/.ore`): tools/, plugins/, models/, memory/, runtimes/.

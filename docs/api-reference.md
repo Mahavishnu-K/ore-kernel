@@ -222,7 +222,12 @@ curl -X POST \
 ```
 
 #### 2. Script Mode ("Inception")
-Materializes and runs dynamic Python or JavaScript scripts inside the WASM sandbox using pre-compiled runtimes (`system-py.wasm`, `system-js.wasm`). Requires language in `allowed_language_runtimes`. Supports transparent dependencies handling.
+Materializes and runs dynamic Python, JavaScript, or TypeScript scripts inside the WASM sandbox using pre-compiled runtimes (`system-py.wasm`, `system-js.wasm`). Requires language in `allowed_language_runtimes`.
+
+- **Pure TypeScript Fast-Path:** TypeScript (`"ts"` or `"typescript"`) with no external npm packages is transpiled on the fly via `esbuild` in a staging directory (`_transpile_ts`) with zero installation latency.
+- **Smart NPM Package Caching:** Package dependencies (`dependencies: ["lodash", "zod"]`) are sorted, SHA-256 hashed, and cached in `cache/npm/<hash>/`. Cache hits completely bypass `npm install` and bundle directly.
+- **Top-Level Await Safeguard:** Script bodies are wrapped in an async error boundary that safely captures top-level `await` and routes unhandled promise rejections to STDERR.
+- **Dual Network Access:** Sandboxed scripts can perform egress HTTP requests either via standard language libraries (`requests`, `httpx`, `fetch`, `axios`) routed through the kernel's Layer 7 portal, or directly via native C host extensions (`import _ore; _ore.fetch(...)` in Python; `globalThis.__ore__.fetch(...)` in JS/TS) without file polling. See [`guests/README.md`](../guests/README.md).
 
 ```bash
 curl -X POST \
@@ -260,7 +265,7 @@ curl -X POST \
 | `tool_name` | string | ❌ (Tool Mode) | Name of pre-compiled tool binary in `tools/` (without `.wasm`) |
 | `args` | string[] | ❌ (Tool Mode) | CLI arguments passed to the WASM cartridge |
 | `input_data` | string | ❌ (Tool/Script) | Complex text or JSON passed into the sandbox via STDIN |
-| `language` | string | ❌ (Script Mode) | Language runtime: `"python"`, `"js"`, `"javascript"`, `"ts"` |
+| `language` | string | ❌ (Script Mode) | Language runtime: `"python"`, `"py"`, `"js"`, `"javascript"`, `"ts"`, `"typescript"` |
 | `script` | string | ❌ (Script Mode) | Script code content to dynamically materialize and execute |
 | `dependencies` | string[] | ❌ (Script Mode) | List of package dependencies (e.g., `["requests", "numpy"]`) |
 | `shell_command` | string | ❌ (Shell Mode) | Host shell command to execute directly on the host OS |
