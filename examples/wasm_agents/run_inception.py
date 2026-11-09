@@ -18,11 +18,17 @@ def main():
         import math
         import sys
         import json
+        import zlib
+        import _ore
 
         # Let's prove we are inside the WASM Matrix
         print("--- INSIDE THE WASM SANDBOX ---")
         print(f"Python Version : {sys.version.split()[0]}")
         print(f"Platform       : {sys.platform}")
+
+        print("_ore:", _ore.fetch, _ore.fetch_async)
+        print("zlib:", len(zlib.compress(b"ore" * 100)), "bytes")
+        print("json:", json.dumps({"ok": True}))
         
         # Do some math
         data = {"target": 256, "multiplier": 3.14159}

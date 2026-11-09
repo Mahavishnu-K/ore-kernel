@@ -90,11 +90,20 @@ RUN find /opt/python-wasi/lib/python3.12 -name "*.opt-[12].pyc" -delete && \
     cd /opt/python-wasi/lib/python3.12 && \
     rm -rf idlelib tkinter turtledemo ensurepip lib2to3 config-3.12-wasm32-wasi
 
+# Recompile the stdlib as unchecked-hash .pyc (PEP 552). wasi-vfs reports every packed
+# file's mtime as 0, so timestamp-checked .pyc files all look stale and Python would
+# recompile the stdlib from source on every run (~5e9+ instructions: the kernel's fuel
+# limit). Unchecked-hash .pyc files are used without looking at the source, which is safe
+# because the packed stdlib can't change. Bootstrap imports drop to ~7e8 instructions.
+# (|| true: compileall exits 1 if any file fails to compile; those modules fall back to source.)
+RUN /build/host-python/bin/python3 -m compileall -q -f -j0 \
+        --invalidation-mode unchecked-hash /opt/python-wasi/lib/python3.12 > /dev/null || true
+
 # Strip DWARF debug info (~19 MB; CPython compiles with -g). The name section stays,
 # so traps still show function names.
 RUN "${WASI_SDK_PATH}/bin/llvm-strip" --strip-debug /build/cpython/builddir/wasi-build/python.wasm
 
 # Pack stdlib into the binary using wasi-vfs
 RUN wasi-vfs pack /build/cpython/builddir/wasi-build/python.wasm \
-    --mapdir /opt/python-wasi/lib/python3.12::/opt/python-wasi/lib/python3.12 \
+    --dir /opt/python-wasi/lib/python3.12::/opt/python-wasi/lib/python3.12 \
     -o /build/system-py.wasm
