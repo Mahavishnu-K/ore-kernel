@@ -7,6 +7,7 @@
 *.xml
 *.hash
 *.wasm
+*.cwasm
 *.wasi.so
 *.wat
 *.so
