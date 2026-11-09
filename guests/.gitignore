@@ -2,4 +2,4 @@
 *.wat
 *.log
 
-/guests/quickjs/quickjs-src/
+/quickjs/quickjs-src/
