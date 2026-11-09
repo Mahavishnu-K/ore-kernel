@@ -1,0 +1,78 @@
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 1. Install build tools
+RUN apt-get update && apt-get install -y \
+    build-essential git curl wget pkg-config ca-certificates python3 zip
+
+# 2. Install official WASI-SDK (v22)
+ENV WASI_VERSION=22
+ENV WASI_VERSION_FULL=${WASI_VERSION}.0
+RUN wget -q https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/wasi-sdk-${WASI_VERSION_FULL}-linux.tar.gz && \
+    tar -xzf wasi-sdk-${WASI_VERSION_FULL}-linux.tar.gz -C /opt && \
+    rm wasi-sdk-${WASI_VERSION_FULL}-linux.tar.gz
+
+ENV WASI_SDK_PATH=/opt/wasi-sdk-${WASI_VERSION_FULL}
+
+# 3. Install wasi-vfs CLI tool
+RUN wget -q https://github.com/kateinoigakukun/wasi-vfs/releases/download/v0.5.4/wasi-vfs-cli-x86_64-unknown-linux-gnu.zip && \
+    unzip wasi-vfs-cli-x86_64-unknown-linux-gnu.zip -d /usr/local/bin && \
+    chmod +x /usr/local/bin/wasi-vfs && \
+    rm wasi-vfs-cli-x86_64-unknown-linux-gnu.zip
+
+# 4. Download libwasi_vfs.a (required for wasi-vfs runtime interception)
+RUN wget -q https://github.com/kateinoigakukun/wasi-vfs/releases/download/v0.5.4/libwasi_vfs-wasm32-unknown-unknown.zip && \
+    unzip libwasi_vfs-wasm32-unknown-unknown.zip -d /opt/wasi-vfs-lib && \
+    rm libwasi_vfs-wasm32-unknown-unknown.zip
+
+# 5. Clone CPython 3.12.3
+WORKDIR /build
+RUN git clone --depth 1 --branch v3.12.3 https://github.com/python/cpython.git
+
+WORKDIR /build/cpython
+
+# Copy native linker bridge source to Modules
+COPY _ore_module.c Modules/_ore_module.c
+
+# 6. Build Host Python (needed to generate bytecode)
+RUN mkdir -p builddir/host-build && \
+    cd builddir/host-build && \
+    ../../configure --prefix=/build/host-python && \
+    make -j$(nproc) && \
+    make install
+
+# 7. Configure WASI build with site overrides and libwasi_vfs linkage
+RUN mkdir -p builddir/wasi-build && \
+    cd builddir/wasi-build && \
+    CONFIG_SITE=../../Tools/wasm/config.site-wasm32-wasi \
+    ../../configure \
+        --host=wasm32-unknown-wasi \
+        --build=$(../../config.guess) \
+        --with-build-python=/build/host-python/bin/python3 \
+        --prefix=/opt/python-wasi \
+        --disable-test-modules \
+        --without-pymalloc \
+        CC="${WASI_SDK_PATH}/bin/clang" \
+        CXX="${WASI_SDK_PATH}/bin/clang++" \
+        AR="${WASI_SDK_PATH}/bin/llvm-ar" \
+        RANLIB="${WASI_SDK_PATH}/bin/llvm-ranlib" \
+        LIBS="-lwasi_vfs" \
+        LDFLAGS="-L/opt/wasi-vfs-lib"
+
+# 8. Inject _ore into the out-of-tree builddir Modules/Setup.local
+RUN echo "_ore _ore_module.c" > builddir/wasi-build/Modules/Setup.local
+
+# 9. Build python.wasm and install stdlib to prefix
+RUN cd builddir/wasi-build && \
+    make -j$(nproc) python.wasm && \
+    make install
+
+# 10. Prune GUI libraries and extra optimization bytecodes to optimize size
+RUN find /opt/python-wasi/lib/python3.12 -name "*.opt-[12].pyc" -delete && \
+    rm -rf /opt/python-wasi/lib/python3.12/{idlelib,tkinter,turtledemo,ensurepip,lib2to3}
+
+# 11. Pack stdlib into the binary using wasi-vfs
+RUN wasi-vfs pack /build/cpython/builddir/wasi-build/python.wasm \
+    --mapdir /opt/python-wasi/lib/python3.12::/opt/python-wasi/lib/python3.12 \
+    -o /build/system-py.wasm
