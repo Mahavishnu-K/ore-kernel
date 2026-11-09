@@ -25,25 +25,20 @@ cp quickjs-ore.h quickjs-src/
 
 cd quickjs-src
 
-# Reset qjs.c to ensure a clean slate
-git checkout -- qjs.c 2>/dev/null || true
+# Reset qjs.c (and the shipped gen/ files, in case an older build overwrote them)
+git checkout -- qjs.c gen/repl.c gen/standalone.c 2>/dev/null || true
 
-# Build gen/repl.c and gen/standalone.c using host native tools
-echo "[*] Generating required gen/ bytecode files..."
-mkdir -p gen
+# v0.18.0 ships gen/repl.c and gen/standalone.c; nothing to generate.
 
-# Build host qjsc compiler
-$ZIG_CMD cc -O2 -D_GNU_SOURCE quickjs.c libregexp.c libunicode.c dtoa.c qjsc.c -o qjsc-host
-
-# Generate repl and standalone bytecode
-./qjsc-host -c -o gen/repl.c -m repl.js
-./qjsc-host -c -o gen/standalone.c -m standalone.js
-
-# Patch qjs.c safely AFTER the NULL check
+# Patch qjs.c: register the bridge inside JS_NewCustomContext, after its NULL check.
+# The anchor occurs once in qjs.c, so every context qjs creates gets globalThis.__ore__.
 echo "[*] Patching qjs.c..."
 sed -i '1i #include "quickjs-ore.h"' qjs.c
-# Inject after error check so we never run on a NULL context
-sed -i '/if (!ctx)/a \    js_init_ore_bridge(ctx);' qjs.c
+sed -i '/js_init_module_std(ctx, "qjs:std");/i \    js_init_ore_bridge(ctx);' qjs.c
+if [ "$(grep -c 'js_init_ore_bridge(ctx);' qjs.c)" != "1" ]; then
+    echo "[-] Error: qjs.c patch did not apply exactly once. Upstream qjs.c changed?"
+    exit 1
+fi
 
 # Compile to wasm32-wasi with required WASI clock & signal emulation and 2MB stack
 echo "[*] Compiling with Zig to wasm32-wasi..."
