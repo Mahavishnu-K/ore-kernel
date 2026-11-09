@@ -153,7 +153,7 @@ pub fn prepare_script(
             .join("system-js.wasm");
         run_args.push("quickjs".to_string());
 
-        let ext = if lang.starts_with("ts") || lang == "typescript" {
+        let ext = if lang == "ts" || lang == "typescript" || lang.starts_with("ts") {
             "ts"
         } else {
             "js"
@@ -221,74 +221,89 @@ pub fn prepare_script(
 
         let wrapped_script = wrap_tla_with_error_boundary(&routed_script);
 
-        let final_script = if let Some(deps) = dependencies
-            && !deps.is_empty()
-        {
-            crate::kprintln!("-> [JIT NPM] AI requested dependencies: {:?}", deps);
+        let is_ts = lang == "ts" || lang == "typescript" || lang.starts_with("ts");
+        let has_deps = dependencies.is_some_and(|d| !d.is_empty());
 
-            let mut sorted = deps.clone();
-            sorted.sort();
-            let req_string = sorted.join(",");
+        // Always transpile through esbuild if it's TypeScript or has external dependencies
+        let final_script = if has_deps || is_ts {
+            // Resolve cache directory and install packages IF dependencies were requested
+            let cache_dir = if has_deps {
+                let deps = dependencies.unwrap();
+                crate::kprintln!("-> [JIT NPM] AI requested dependencies: {:?}", deps);
 
-            let hash_bytes = KernelCrypto::sha256(req_string.as_bytes());
-            let req_hash: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-            let cache_dir = base_dir
-                .join(constants::CACHE_DIR_NAME)
-                .join("npm")
-                .join(&req_hash);
+                let mut sorted = deps.clone();
+                sorted.sort();
+                let req_string = sorted.join(",");
 
-            if !cache_dir.exists() {
-                crate::kprintln!("-> [JIT NPM] Cache miss. Host OS downloading packages...");
-                fs::create_dir_all(&cache_dir).unwrap();
-                fs::write(
-                    cache_dir.join("package.json"),
-                    r#"{"name":"ore-jit","version":"1.0.0"}"#,
-                )
-                .unwrap();
+                let hash_bytes = KernelCrypto::sha256(req_string.as_bytes());
+                let req_hash: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                let c_dir = base_dir
+                    .join(constants::CACHE_DIR_NAME)
+                    .join("npm")
+                    .join(&req_hash);
 
-                let mut npm_install = if cfg!(target_os = "windows") {
-                    let mut cmd = std::process::Command::new("cmd");
-                    cmd.arg("/C").arg("npm").arg("install");
-                    cmd
-                } else {
-                    let mut cmd = std::process::Command::new("npm");
-                    cmd.arg("install");
-                    cmd
-                };
+                if !c_dir.exists() {
+                    crate::kprintln!("-> [JIT NPM] Cache miss. Host OS downloading packages...");
+                    fs::create_dir_all(&c_dir).unwrap();
+                    fs::write(
+                        c_dir.join("package.json"),
+                        r#"{"name":"ore-jit","version":"1.0.0"}"#,
+                    )
+                    .unwrap();
 
-                npm_install.current_dir(&cache_dir);
-                for dep in deps {
-                    npm_install.arg(dep);
-                }
+                    let mut npm_install = if cfg!(target_os = "windows") {
+                        let mut cmd = std::process::Command::new("cmd");
+                        cmd.arg("/C").arg("npm").arg("install");
+                        cmd
+                    } else {
+                        let mut cmd = std::process::Command::new("npm");
+                        cmd.arg("install");
+                        cmd
+                    };
 
-                let npm_output = match npm_install.output() {
-                    Ok(output) => output,
-                    Err(e) => {
-                        let _ = fs::remove_dir_all(&cache_dir);
-                        crate::kprintln!("-> [JIT NPM ERROR] Failed to launch npm: {}", e);
+                    npm_install.current_dir(&c_dir);
+                    for dep in deps {
+                        npm_install.arg(dep);
+                    }
+
+                    let npm_output = match npm_install.output() {
+                        Ok(output) => output,
+                        Err(e) => {
+                            let _ = fs::remove_dir_all(&c_dir);
+                            crate::kprintln!("-> [JIT NPM ERROR] Failed to launch npm: {}", e);
+                            return Err(format!(
+                                "KERNEL ERROR: Failed to launch npm: {}. \
+                                 Make sure Node.js/npm is installed and available in the ORE server PATH.",
+                                e
+                            ));
+                        }
+                    };
+
+                    if !npm_output.status.success() {
+                        let _ = fs::remove_dir_all(&c_dir);
+                        crate::kprintln!(
+                            "-> [JIT NPM ERROR] npm install failed.\nSTDOUT:\n{}\nSTDERR:\n{}",
+                            String::from_utf8_lossy(&npm_output.stdout),
+                            String::from_utf8_lossy(&npm_output.stderr),
+                        );
                         return Err(format!(
-                            "KERNEL ERROR: Failed to launch npm: {}. \
-                                Make sure Node.js/npm is installed and available in the ORE server PATH.",
-                            e
+                            "KERNEL ERROR: Failed to install NPM dependencies:\n{}",
+                            String::from_utf8_lossy(&npm_output.stderr)
                         ));
                     }
-                };
-
-                if !npm_output.status.success() {
-                    let _ = fs::remove_dir_all(&cache_dir);
-                    crate::kprintln!(
-                        "-> [JIT NPM ERROR] npm install failed.\nSTDOUT:\n{}\nSTDERR:\n{}",
-                        String::from_utf8_lossy(&npm_output.stdout),
-                        String::from_utf8_lossy(&npm_output.stderr),
-                    );
-                    return Err(format!(
-                        "KERNEL ERROR: Failed to install NPM dependencies:\n{}",
-                        String::from_utf8_lossy(&npm_output.stderr)
-                    ));
+                } else {
+                    crate::kprintln!("-> [JIT NPM] Cache hit! Bypassing npm install.");
                 }
+                c_dir
             } else {
-                crate::kprintln!("-> [JIT NPM] Cache hit! Bypassing npm install.");
-            }
+                // Pure TypeScript (no npm dependencies): use a fast staging directory for esbuild
+                let c_dir = base_dir
+                    .join(constants::CACHE_DIR_NAME)
+                    .join("npm")
+                    .join("_transpile_ts");
+                let _ = fs::create_dir_all(&c_dir);
+                c_dir
+            };
 
             let run_id = uuid::Uuid::new_v4().to_string();
             let entry_file = cache_dir.join(format!("index_{}.{}", run_id, ext));
@@ -356,7 +371,18 @@ pub fn prepare_script(
             }
             esbuild.arg("--external:/modules/*");
 
-            let build_res = esbuild.output().unwrap();
+            let build_res = match esbuild.output() {
+                Ok(out) => out,
+                Err(e) => {
+                    let _ = fs::remove_file(&entry_file);
+                    let _ = fs::remove_file(&out_file);
+                    return Err(format!(
+                        "KERNEL ERROR: Failed to launch esbuild: {}. Make sure Node.js/npx is installed and in PATH.",
+                        e
+                    ));
+                }
+            };
+
             if build_res.status.success() {
                 let bundled_code = std::fs::read_to_string(&out_file).unwrap();
                 crate::kprintln!("-> [JIT NPM] Script successfully bundled.");
@@ -372,6 +398,7 @@ pub fn prepare_script(
                 ));
             }
         } else {
+            // Pure JavaScript with no dependencies: direct passthrough
             format!("{}\n{}", CJS_BRIDGE, wrapped_script)
         };
 
