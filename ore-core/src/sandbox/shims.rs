@@ -5,7 +5,7 @@ use crate::linker::HasLinkerState;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
-use wasmtime::{AsContext, Caller, Extern, Linker, Memory, Module, Store, Table, TableType};
+use wasmtime::{AsContext, Caller, Extern, Linker, Memory, Store, Table, TableType};
 
 fn read_mem_bytes(mem: &Memory, caller: &impl AsContext, ptr: u32, len: u32) -> Option<Vec<u8>> {
     if len == 0 {
