@@ -42,7 +42,7 @@ fi
 
 # Compile to wasm32-wasi with required WASI clock & signal emulation and 2MB stack
 echo "[*] Compiling with Zig to wasm32-wasi..."
-$ZIG_CMD cc -target wasm32-wasi -O3 \
+"$ZIG_CMD" cc -target wasm32-wasi -O3 \
     -D_GNU_SOURCE \
     -D_WASI_EMULATED_PROCESS_CLOCKS \
     -D_WASI_EMULATED_SIGNAL \
