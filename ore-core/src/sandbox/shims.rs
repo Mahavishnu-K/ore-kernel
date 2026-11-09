@@ -318,36 +318,6 @@ pub fn register_ore_fetch(
     Ok(())
 }
 
-/// Injects dynamic shadowing for legacy WasmEdge sock_accept
-pub fn register_legacy_sock_accept(
-    linker: &mut Linker<OreSandboxState>,
-    store: &mut Store<OreSandboxState>,
-    module: &Module,
-) -> Result<()> {
-    linker.allow_shadowing(true);
-
-    for import in module.imports() {
-        if import.module() == "wasi_snapshot_preview1"
-            && import.name() == "sock_accept"
-            && let Some(func_ty) = import.ty().func()
-        {
-            let dummy_func = wasmtime::Func::new(&mut *store, func_ty.clone(), |_, _, results| {
-                if !results.is_empty() {
-                    results[0] = wasmtime::Val::I32(52); // ENOSYS
-                }
-                Ok(())
-            });
-            linker.define(&mut *store, import.module(), import.name(), dummy_func)?;
-            crate::kprintln!(
-                "-> [SANDBOX] Dynamically shadowed legacy WasmEdge socket: 'sock_accept'"
-            );
-        }
-    }
-
-    linker.allow_shadowing(false);
-    Ok(())
-}
-
 /// Sets up the indirect OS table for dynamic linking
 pub fn create_os_routing_table(
     linker: &mut Linker<OreSandboxState>,

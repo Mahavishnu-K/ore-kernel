@@ -69,8 +69,7 @@ impl WasmSandbox {
         // AOT Module Resolution
         let module = cache::load_or_compile_module(&self.engine, &params)?;
 
-        // Legacy shims & trap stubs
-        shims::register_legacy_sock_accept(&mut linker, &mut store, &module)?;
+        // Safety net: stub unmapped imports with traps so dead code doesn't break instantiation
         linker.define_unknown_imports_as_traps(&module)?;
 
         // Instantiate & Run
