@@ -141,7 +141,7 @@ QuickJS-NG has no Node APIs. Its built-in modules are `qjs:std`, `qjs:os` and `q
 
 - The kernel rewrites a script's `import fs from 'fs'` (and `node:fs`, `require('fs')`) to `/modules/fs.js`, and prepends `ore-server/shims/javascript/commonjs.js`, which sets up `process`, `Buffer`, `fetch`, `require()` and other globals.
 - The polyfills import QuickJS-NG's modules by their real names (`qjs:std`, `qjs:os`) and each other by relative path. There are no bare specifiers.
-- QuickJS-NG has timers only on `qjs:os`, so `_host_timers.js` installs Node-compatible global `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval`. Every polyfill that uses timers imports it. QuickJS can't make a timer stop holding the script open, so `unref()` only records the flag.
+- QuickJS-NG has timers only on `qjs:os`, so `_host_timers.js` installs Node-compatible global `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval`, and every polyfill that uses timers imports it. It schedules all timers itself on a single QuickJS timer, armed only while a ref'd timer is pending, so `unref()` works as in Node: the script ends when only unref'd timers remain. Due timers fire in deadline and creation order, with promise callbacks running in between (Node 11+ ordering).
 - `crypto.createHash` and similar run in the kernel through the crypto portal (`/ore_tmp/.ore_crypto/`); QuickJS-NG has no crypto.
 
 **Release them together.** `ore pull system-js` installs `system-js.wasm` and the `modules/` folder from the same GitHub release. The polyfills need QuickJS-NG (`qjs:std`), and the runtime needs these polyfills, so always publish both.
